@@ -1,0 +1,34 @@
+# Build and compilation outputs
+build/
+bin/
+out/
+Release/
+Debug/
+x64/
+*.dir/
+
+# Binary files
+*.obj
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.idb
+*.tlog
+*.lastbuildstate
+*.log
+
+# Visual Studio & IDE files
+.vs/
+*.suo
+*.user
+*.vcxproj.user
+
+# External dependencies fetched during build
+_deps/
+
+# OS specific files
+.DS_Store
+Thumbs.db
