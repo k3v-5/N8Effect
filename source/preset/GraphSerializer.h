@@ -23,6 +23,8 @@ struct PresetMetadata {
     std::string author{ "N8Audio" };
     std::string category{ "General" };
     std::string description{ "" };
+    std::vector<std::string> tags{};
+    bool favorite{ false };
     float dryLevel{ 1.0f };
     float wetLevel{ 1.0f };
 };
@@ -47,6 +49,12 @@ public:
         ss << "  \"author\": \"" << escapeJson(meta.author) << "\",\n";
         ss << "  \"category\": \"" << escapeJson(meta.category) << "\",\n";
         ss << "  \"description\": \"" << escapeJson(meta.description) << "\",\n";
+        ss << "  \"favorite\": " << (meta.favorite ? "true" : "false") << ",\n";
+        ss << "  \"tags\": [";
+        for (size_t i = 0; i < meta.tags.size(); ++i) {
+            ss << "\"" << escapeJson(meta.tags[i]) << "\"" << (i + 1 < meta.tags.size() ? ", " : "");
+        }
+        ss << "],\n";
         ss << "  \"dryLevel\": " << meta.dryLevel << ",\n";
         ss << "  \"wetLevel\": " << meta.wetLevel << ",\n";
 
@@ -96,6 +104,47 @@ public:
                << ", \"destPin\": " << c.destPinId << " }"
                << (cIdx + 1 < connections.size() ? "," : "") << "\n";
         }
+        ss << "  ],\n";
+
+        // Grupos de nodos (Regla R2)
+        ss << "  \"groups\": [\n";
+        const auto& groups = graph.getGroups();
+        size_t gIdx = 0;
+        for (const auto& [gid, grp] : groups) {
+            if (!grp) continue;
+            ss << "    {\n";
+            ss << "      \"id\": " << grp->id << ",\n";
+            ss << "      \"name\": \"" << escapeJson(grp->name) << "\",\n";
+            ss << "      \"colorRgba\": " << grp->colorRgba << ",\n";
+            ss << "      \"isBypassed\": " << (grp->isBypassed ? "true" : "false") << ",\n";
+            ss << "      \"isCollapsed\": " << (grp->isCollapsed ? "true" : "false") << ",\n";
+            ss << "      \"memberNodeIds\": [";
+            for (size_t m = 0; m < grp->memberNodeIds.size(); ++m) {
+                ss << grp->memberNodeIds[m] << (m + 1 < grp->memberNodeIds.size() ? ", " : "");
+            }
+            ss << "],\n";
+            ss << "      \"macros\": [\n";
+            for (size_t mi = 0; mi < grp->macros.size(); ++mi) {
+                const auto& macro = grp->macros[mi];
+                ss << "        {\n";
+                ss << "          \"name\": \"" << escapeJson(macro.name) << "\",\n";
+                ss << "          \"value\": " << macro.value << ",\n";
+                ss << "          \"mappings\": [\n";
+                for (size_t mp = 0; mp < macro.mappings.size(); ++mp) {
+                    const auto& mapping = macro.mappings[mp];
+                    ss << "            { "
+                       << "\"targetNodeId\": " << mapping.targetNodeId << ", "
+                       << "\"targetParamId\": " << mapping.targetParamId << ", "
+                       << "\"depth\": " << mapping.depth << ", "
+                       << "\"baseValue\": " << mapping.baseValue
+                       << " }" << (mp + 1 < macro.mappings.size() ? "," : "") << "\n";
+                }
+                ss << "          ]\n";
+                ss << "        }" << (mi + 1 < grp->macros.size() ? "," : "") << "\n";
+            }
+            ss << "      ]\n";
+            ss << "    }" << (++gIdx < groups.size() ? "," : "") << "\n";
+        }
         ss << "  ]\n";
         ss << "}\n";
 
@@ -120,6 +169,11 @@ public:
         outMeta.author = extractString(json, "author", "Unknown");
         outMeta.category = extractString(json, "category", "General");
         outMeta.description = extractString(json, "description", "");
+        outMeta.favorite = (extractString(json, "favorite", "false") == "true");
+        const auto tagsSec = extractArraySection(json, "tags");
+        if (!tagsSec.empty()) {
+            outMeta.tags = parseStringList(tagsSec);
+        }
         outMeta.dryLevel = extractFloat(json, "dryLevel", 1.0f);
         outMeta.wetLevel = extractFloat(json, "wetLevel", 1.0f);
 
@@ -205,6 +259,73 @@ public:
             }
         }
 
+        // 5. Extraer Grupos (Regla R2)
+        const auto groupsSec = extractArraySection(json, "groups");
+        if (!groupsSec.empty()) {
+            const auto groupObjs = splitObjects(groupsSec);
+            for (const auto& gJson : groupObjs) {
+                auto grp = std::make_unique<NodeGroup>();
+                grp->id = extractUInt(gJson, "id", 0);
+                grp->name = extractString(gJson, "name", "Group");
+                grp->colorRgba = extractUInt(gJson, "colorRgba", 0x00d4ffff);
+                grp->isBypassed = (extractString(gJson, "isBypassed", "false") == "true");
+                grp->isCollapsed = (extractString(gJson, "isCollapsed", "false") == "true");
+
+                // Mapear memberNodeIds
+                auto membersSec = extractArraySection(gJson, "memberNodeIds");
+                if (membersSec.empty()) {
+                    membersSec = extractArraySection(gJson, "members");
+                }
+                if (!membersSec.empty()) {
+                    const auto memList = parseNumberList(membersSec);
+                    for (float oldIdF : memList) {
+                        NodeId oldId = static_cast<NodeId>(oldIdF);
+                        if (idMap.contains(oldId)) {
+                            grp->memberNodeIds.push_back(idMap[oldId]);
+                        }
+                    }
+                }
+
+                // Mapear macros
+                const auto macrosSec = extractArraySection(gJson, "macros");
+                if (!macrosSec.empty()) {
+                    const auto macroObjs = splitObjects(macrosSec);
+                    for (size_t mIdx = 0; mIdx < std::min(macroObjs.size(), size_t(3)); ++mIdx) {
+                        const auto& mJson = macroObjs[mIdx];
+                        grp->macros[mIdx].name = extractString(mJson, "name", "CTRL " + std::to_string(mIdx + 1));
+                        grp->macros[mIdx].value = extractFloat(mJson, "value", 0.5f);
+
+                        auto mapsSec = extractArraySection(mJson, "mappings");
+                        if (mapsSec.empty()) {
+                            mapsSec = extractArraySection(mJson, "targets");
+                        }
+                        if (!mapsSec.empty()) {
+                            const auto mapObjs = splitObjects(mapsSec);
+                            for (const auto& mapJson : mapObjs) {
+                                NodeId oldTgtId = extractUInt(mapJson, "targetNodeId", InvalidNodeId);
+                                if (oldTgtId == InvalidNodeId) {
+                                    oldTgtId = extractUInt(mapJson, "nodeId", InvalidNodeId);
+                                }
+                                if (idMap.contains(oldTgtId)) {
+                                    GroupMacroMapping mapping;
+                                    mapping.targetNodeId = idMap[oldTgtId];
+                                    mapping.targetParamId = extractUInt(mapJson, "targetParamId", 0);
+                                    if (mapping.targetParamId == 0 && extractKey(mapJson, "paramId").size() > 0) {
+                                        mapping.targetParamId = extractUInt(mapJson, "paramId", 0);
+                                    }
+                                    mapping.depth = extractFloat(mapJson, "depth", 0.0f);
+                                    mapping.baseValue = extractFloat(mapJson, "baseValue", 0.0f);
+                                    grp->macros[mIdx].mappings.push_back(mapping);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                outGraph.addGroup(std::move(grp));
+            }
+        }
+
         // Validar el grafo restaurado
         std::vector<NodeId> sorted;
         if (!outGraph.validateAndTopologicalSort(sorted, outError)) {
@@ -214,7 +335,7 @@ public:
         return true;
     }
 
-private:
+public:
     static void migrateSchema(uint32_t fromVersion, uint32_t toVersion) noexcept {
         // Regla 21: Rutinas de migración entre versiones de esquema
         (void)fromVersion;
@@ -378,6 +499,20 @@ private:
         }
 
         return pairs;
+    }
+
+    static std::vector<std::string> parseStringList(std::string_view arrayContent) {
+        std::vector<std::string> items;
+        size_t pos = 0;
+        while (pos < arrayContent.size()) {
+            auto quoteStart = arrayContent.find('"', pos);
+            if (quoteStart == std::string_view::npos) break;
+            auto quoteEnd = arrayContent.find('"', quoteStart + 1);
+            if (quoteEnd == std::string_view::npos) break;
+            items.push_back(std::string(arrayContent.substr(quoteStart + 1, quoteEnd - quoteStart - 1)));
+            pos = quoteEnd + 1;
+        }
+        return items;
     }
 };
 

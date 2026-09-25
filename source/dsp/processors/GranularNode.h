@@ -23,7 +23,9 @@ public:
         PitchSemitones = 4,
         PitchSpray = 5,
         PanSpray = 6,
-        DryWet = 7
+        DryWet = 7,
+        ScrubPosition = 8,
+        Freeze = 9
     };
 
     GranularNode() {
@@ -37,6 +39,8 @@ public:
         params_[4] = { PitchSpray, "Pitch Spray", 0.0f, 0.0f, 12.0f, true };
         params_[5] = { PanSpray, "Pan Spray", 0.5f, 0.0f, 1.0f, true };
         params_[6] = { DryWet, "Mix", 0.5f, 0.0f, 1.0f, true };
+        params_[7] = { ScrubPosition, "Scrub Pos", 0.0f, 0.0f, 1.0f, true };
+        params_[8] = { Freeze, "Freeze", 0.0f, 0.0f, 1.0f, true };
     }
 
     void prepare(const ProcessSpec& spec) override {
@@ -87,11 +91,13 @@ public:
             const float drySampleL = inL[s];
             const float drySampleR = inR[s];
 
-            ringBufferL_[writePos_] = drySampleL;
-            ringBufferR_[writePos_] = drySampleR;
+            if (targetFreeze_ <= 0.5f) {
+                ringBufferL_[writePos_] = drySampleL;
+                ringBufferR_[writePos_] = drySampleR;
+                writePos_ = (writePos_ + 1 < bufferCapacity_) ? (writePos_ + 1) : 0;
+                totalSamplesRecorded_++;
+            }
             const size_t currentWrite = writePos_;
-            writePos_ = (writePos_ + 1 < bufferCapacity_) ? (writePos_ + 1) : 0;
-            totalSamplesRecorded_++;
 
             samplesUntilNextGrain_ -= 1.0f;
             if (samplesUntilNextGrain_ <= 0.0f) {
@@ -105,7 +111,12 @@ public:
 
                     const float offsetSamples = posSprayMs * 0.001f * static_cast<float>(spec_.sampleRate) * rPos;
                     float startPos = 0.0f;
-                    if (totalSamplesRecorded_ < bufferCapacity_) {
+                    if (targetScrubPos_ > 0.0001f) {
+                        float centerPos = targetScrubPos_ * static_cast<float>(bufferCapacity_);
+                        startPos = centerPos - offsetSamples;
+                        while (startPos < 0.0f) startPos += static_cast<float>(bufferCapacity_);
+                        while (startPos >= static_cast<float>(bufferCapacity_)) startPos -= static_cast<float>(bufferCapacity_);
+                    } else if (totalSamplesRecorded_ < bufferCapacity_) {
                         // Al inicio, no leer más allá de lo grabado
                         const float maxBack = static_cast<float>(currentWrite);
                         startPos = std::max(0.0f, maxBack - offsetSamples - static_cast<float>(baseGrainDuration) * 0.5f);
@@ -182,6 +193,8 @@ public:
             case PitchSpray: targetPitchSpray_ = std::clamp(value, 0.0f, 12.0f); break;
             case PanSpray: targetPanSpray_ = std::clamp(value, 0.0f, 1.0f); break;
             case DryWet: targetMix_ = std::clamp(value, 0.0f, 1.0f); break;
+            case ScrubPosition: targetScrubPos_ = std::clamp(value, 0.0f, 1.0f); break;
+            case Freeze: targetFreeze_ = (value > 0.5f) ? 1.0f : 0.0f; break;
         }
     }
 
@@ -194,6 +207,8 @@ public:
             case PitchSpray: return targetPitchSpray_;
             case PanSpray: return targetPanSpray_;
             case DryWet: return targetMix_;
+            case ScrubPosition: return targetScrubPos_;
+            case Freeze: return targetFreeze_;
             default: return 0.0f;
         }
     }
@@ -207,6 +222,53 @@ public:
 
     std::span<const PinDescriptor> getPins() const override { return pins_; }
     std::span<const ParameterInfo> getParameters() const override { return params_; }
+
+    struct GrainCloudPoint {
+        float normPosition{ 0.0f }; // 0.0 to 1.0
+        float pitchRatio{ 1.0f };
+        float pan{ 0.5f };
+        float envelope{ 0.0f };
+        bool active{ false };
+    };
+
+    size_t copyWaveformOverview(float* outMinMax, size_t numPairs) const noexcept {
+        if (ringBufferL_.empty() || bufferCapacity_ == 0 || outMinMax == nullptr || numPairs == 0) return 0;
+        const size_t step = std::max<size_t>(1, bufferCapacity_ / numPairs);
+        for (size_t p = 0; p < numPairs; ++p) {
+            float minVal = 0.0f;
+            float maxVal = 0.0f;
+            const size_t startIdx = p * step;
+            const size_t endIdx = std::min(startIdx + step, bufferCapacity_);
+            for (size_t i = startIdx; i < endIdx; ++i) {
+                float s = 0.5f * (ringBufferL_[i] + ringBufferR_[i]);
+                if (s < minVal) minVal = s;
+                if (s > maxVal) maxVal = s;
+            }
+            outMinMax[p * 2] = minVal;
+            outMinMax[p * 2 + 1] = maxVal;
+        }
+        return numPairs;
+    }
+
+    size_t copyActiveGrainsSnapshot(std::span<GrainCloudPoint> outPoints) const noexcept {
+        if (outPoints.empty() || bufferCapacity_ == 0) return 0;
+        size_t written = 0;
+        for (size_t g = 0; g < GrainPool::MaxGrains && written < outPoints.size(); ++g) {
+            const Grain& grain = grainPool_.getGrain(g);
+            if (!grain.active) continue;
+            auto& pt = outPoints[written++];
+            pt.normPosition = std::clamp(grain.currentPlayhead / static_cast<float>(bufferCapacity_), 0.0f, 1.0f);
+            pt.pitchRatio = grain.playbackRate;
+            pt.pan = std::clamp(std::atan2(grain.panR, grain.panL) / 1.5707963f, 0.0f, 1.0f);
+            pt.envelope = grain.getWindowEnvelope();
+            pt.active = true;
+        }
+        return written;
+    }
+
+    float getWritePositionNormalized() const noexcept {
+        return (bufferCapacity_ > 0) ? (static_cast<float>(writePos_) / static_cast<float>(bufferCapacity_)) : 0.0f;
+    }
 
 private:
     [[nodiscard]] float nextRandomFloat() noexcept {
@@ -233,9 +295,11 @@ private:
     float targetPitchSpray_{ 0.0f };
     float targetPanSpray_{ 0.5f };
     float targetMix_{ 0.5f };
+    float targetScrubPos_{ 0.0f };
+    float targetFreeze_{ 0.0f };
 
     std::array<PinDescriptor, 2> pins_;
-    std::array<ParameterInfo, 7> params_;
+    std::array<ParameterInfo, 9> params_;
 };
 
 inline AutoRegisterNode<GranularNode> registerGranular(NodeType::Granular, "granular", "Granular");

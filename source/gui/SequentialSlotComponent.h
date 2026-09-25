@@ -40,10 +40,10 @@ public:
         };
         addAndMakeVisible(moveRightBtn_);
 
-        // 3. Botón Bypass / Power
+        // 3. Botón Bypass / Power (Rocker switch táctil estilo consola)
         bypassBtn_.setButtonText("ON");
-        bypassBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff162828));
-        bypassBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff00f0ff));
+        bypassBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff122420));
+        bypassBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff00ff88));
         bypassBtn_.onClick = [this]() {
             isBypassed_ = !isBypassed_;
             updateBypassVisuals();
@@ -53,7 +53,7 @@ public:
 
         // 4. Botón Eliminar Slot ✕
         deleteBtn_.setButtonText(juce::CharPointer_UTF8("\xE2\x9C\x95")); // ✕
-        deleteBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff221418));
+        deleteBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1c1216));
         deleteBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffff5566));
         deleteBtn_.onClick = [this]() {
             if (onDeleteRequested_) onDeleteRequested_(id_);
@@ -82,7 +82,7 @@ public:
             }
         }
 
-        setSize(184, 260);
+        setSize(196, 280);
     }
 
     NodeId getNodeId() const noexcept { return id_; }
@@ -90,6 +90,12 @@ public:
     NodeType getNodeType() const noexcept { return type_; }
     const juce::String& getNodeName() const noexcept { return name_; }
     bool isBypassed() const noexcept { return isBypassed_; }
+    void setBypassed(bool b) {
+        if (isBypassed_ != b) {
+            isBypassed_ = b;
+            updateBypassVisuals();
+        }
+    }
 
     void setSlotIndex(int idx, bool isFirst, bool isLast) {
         slotIndex_ = idx;
@@ -109,13 +115,13 @@ public:
     void updateBypassVisuals() {
         if (isBypassed_) {
             bypassBtn_.setButtonText("BYP");
-            bypassBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff22222a));
-            bypassBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff777788));
-            setAlpha(0.6f);
+            bypassBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff221418));
+            bypassBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff886677));
+            setAlpha(0.68f);
         } else {
             bypassBtn_.setButtonText("ON");
-            bypassBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff162828));
-            bypassBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff00f0ff));
+            bypassBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff122420));
+            bypassBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff00ff88));
             setAlpha(1.0f);
         }
         repaint();
@@ -127,23 +133,30 @@ public:
 
         // 1. Sombra exterior
         g.setColour(juce::Colour(0x60000000));
-        g.fillRoundedRectangle(bounds.translated(0.0f, 3.0f), 10.0f);
+        g.fillRoundedRectangle(bounds.translated(0.0f, 4.0f), 8.0f);
 
-        // 2. Fondo del Slot (Chasis Arturia oscuro)
-        g.setColour(juce::Colour(0xff13141f));
-        g.fillRoundedRectangle(bounds, 10.0f);
+        // 2. Chasis de titanio oscuro cepillado (Arturia / FLEX Hardware Card)
+        juce::ColourGradient chassisGrad(juce::Colour(0xff161924), bounds.getX(), bounds.getY(),
+                                         juce::Colour(0xff0a0c10), bounds.getX(), bounds.getBottom(), false);
+        g.setGradientFill(chassisGrad);
+        g.fillRoundedRectangle(bounds, 8.0f);
 
-        // 3. Cabecera con degradado de categoría
-        auto header = bounds.removeFromTop(36.0f);
-        juce::ColourGradient grad(catColor.withAlpha(0.65f), header.getX(), header.getY(),
-                                  catColor.withAlpha(0.12f), header.getX(), header.getBottom(), false);
-        g.setGradientFill(grad);
-        g.fillRoundedRectangle(header, 10.0f);
-        g.fillRect(header.removeFromBottom(8.0f)); // Ensamble recto con el cuerpo
+        // Bisel metálico superior 3D
+        g.setColour(juce::Colour(0xff2d3748).withAlpha(0.5f));
+        g.drawHorizontalLine(static_cast<int>(bounds.getY() + 1.0f), bounds.getX() + 6.0f, bounds.getRight() - 6.0f);
 
-        // 4. Badge circular con el índice del slot (ej. "01", "02")
+        // 3. Tira de Luz LED de Categoría con resplandor en el borde superior
+        g.setColour(catColor.withAlpha(0.35f));
+        g.fillRect(bounds.getX() + 4.0f, bounds.getY() + 1.0f, bounds.getWidth() - 8.0f, 4.0f);
+        g.setColour(catColor);
+        g.fillRect(bounds.getX() + 8.0f, bounds.getY() + 1.0f, bounds.getWidth() - 16.0f, 2.0f);
+
+        // 4. Cabecera (Badge de índice, Nombre y Subtítulo)
+        auto header = bounds.removeFromTop(34.0f);
+
+        // Badge circular de índice de slot ("01", "02")
         const juce::Rectangle<float> badgeRect(bounds.getX() + 8.0f, 8.0f, 20.0f, 20.0f);
-        g.setColour(juce::Colour(0xff090910));
+        g.setColour(juce::Colour(0xff06070a));
         g.fillEllipse(badgeRect);
         g.setColour(catColor);
         g.drawEllipse(badgeRect, 1.5f);
@@ -153,41 +166,52 @@ public:
         juce::String idxStr = (slotIndex_ < 9 ? "0" : "") + juce::String(slotIndex_ + 1);
         g.drawText(idxStr, badgeRect, juce::Justification::centred, false);
 
-        // 5. Nombre del Procesador
-        g.setFont(juce::FontOptions(12.5f, juce::Font::bold));
-        juce::Rectangle<float> titleRect(34.0f, 8.0f, 70.0f, 20.0f);
+        // Nombre del Procesador
+        g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+        g.setColour(juce::Colours::white);
+        juce::Rectangle<float> titleRect(34.0f, 8.0f, getWidth() - 130.0f, 18.0f);
         g.drawText(name_, titleRect, juce::Justification::centredLeft, true);
 
-        // 6. Barra indicadora de categoría / tag
-        g.setColour(catColor.withAlpha(0.25f));
-        g.fillRect(8.0f, 40.0f, getWidth() - 16.0f, 15.0f);
+        // 5. Barra / Pastilla de Subtítulo de Categoría
+        juce::Rectangle<float> subRect(8.0f, 36.0f, static_cast<float>(getWidth() - 16), 14.0f);
+        g.setColour(catColor.withAlpha(0.18f));
+        g.fillRoundedRectangle(subRect, 3.0f);
         g.setColour(catColor);
-        g.drawText(getCategoryName(type_), juce::Rectangle<float>(12.0f, 40.0f, static_cast<float>(getWidth() - 24), 15.0f), juce::Justification::centredLeft, false);
+        g.setFont(juce::FontOptions(9.0f, juce::Font::bold));
+        g.drawText(NodeComponent::getCategorySubtitle(type_), subRect.reduced(6.0f, 0.0f), juce::Justification::centredLeft, false);
+
+        // 6. Mini Pantalla Gráfica LCD Interactiva
+        juce::Rectangle<float> lcdBounds(8.0f, 54.0f, static_cast<float>(getWidth() - 16), 34.0f);
+        NodeComponent::drawMiniVisualCurve(g, lcdBounds, type_, catColor, isBypassed_);
 
         // 7. Borde de la tarjeta
-        g.setColour(isDragging_ ? juce::Colour(0xff00f0ff) : juce::Colour(0xff222436));
-        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 10.0f, isDragging_ ? 2.0f : 1.0f);
+        if (isDragging_) {
+            g.setColour(juce::Colour(0xff00f0ff));
+            g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 8.0f, 2.0f);
+        } else {
+            g.setColour(juce::Colour(0xff202534));
+            g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 8.0f, 1.0f);
+        }
     }
 
     void resized() override {
-        // Cabecera: Botones de control a la derecha
-        const int btnY = 7;
-        const int btnW = 16;
-        const int btnH = 20;
+        // Cabecera: Botones de control táctiles a la derecha
+        const int btnY = 8;
+        const int btnH = 18;
 
-        deleteBtn_.setBounds(getWidth() - 22, btnY, btnW, btnH);
-        bypassBtn_.setBounds(getWidth() - 48, btnY, 24, btnH);
-        moveRightBtn_.setBounds(getWidth() - 66, btnY, btnW, btnH);
-        moveLeftBtn_.setBounds(getWidth() - 84, btnY, btnW, btnH);
+        deleteBtn_.setBounds(getWidth() - 24, btnY, 18, btnH);
+        bypassBtn_.setBounds(getWidth() - 58, btnY, 30, btnH);
+        moveRightBtn_.setBounds(getWidth() - 76, btnY, 16, btnH);
+        moveLeftBtn_.setBounds(getWidth() - 94, btnY, 16, btnH);
 
-        // Área de Sliders de Parámetros
+        // Área de Sliders de Parámetros (debajo de cabecera + categoría + mini LCD)
         auto area = getLocalBounds();
-        area.removeFromTop(60); // Cabecera + barra de categoría
+        area.removeFromTop(94); // Cabecera (34) + Categoría (18) + Mini LCD (36) + Margen (6)
         area.removeFromBottom(8);
         area.reduce(10, 0);
 
         for (auto& slider : sliders_) {
-            slider->setBounds(area.removeFromTop(26));
+            slider->setBounds(area.removeFromTop(25));
             area.removeFromTop(6); // Espacio entre sliders
         }
     }

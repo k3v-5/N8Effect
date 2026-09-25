@@ -104,6 +104,7 @@ void N8AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
 
     dualWorldEngine_.prepare(currentSpec_);
     testSynth_.prepare(sampleRate, samplesPerBlock);
+    mpeManager_.prepare(sampleRate);
     dualWorldEngine_.getExecutor().setProbeVisualizer(&probeVisualizerBuffer_);
 
     for (const auto& [_, inst] : graph_.getNodes()) {
@@ -116,11 +117,13 @@ void N8AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
 void N8AudioProcessor::releaseResources() {
     dualWorldEngine_.reset();
     testSynth_.reset();
+    mpeManager_.reset();
 }
 
 void N8AudioProcessor::reset() {
     dualWorldEngine_.reset();
     testSynth_.reset();
+    mpeManager_.reset();
     for (const auto& [_, inst] : graph_.getNodes()) {
         if (inst && inst->processor) {
             inst->processor->reset();
@@ -147,7 +150,7 @@ bool N8AudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const 
     return true;
 }
 
-void N8AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/) {
+void N8AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) {
     if (isSuspended()) {
         buffer.clear();
         return;
@@ -163,6 +166,35 @@ void N8AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Midi
     const int totalNumInputChannels = getTotalNumInputChannels();
     const int totalNumOutputChannels = getTotalNumOutputChannels();
     const int numSamples = buffer.getNumSamples();
+
+    // Decodificar mensajes MIDI entrantes en tiempo real: MPE 5D + MIDI Learn CC Mapping + Test Synth
+    for (const auto metadata : midiMessages) {
+        const auto msg = metadata.getMessage();
+        const auto* rawData = msg.getRawData();
+        const int numBytes = msg.getRawDataSize();
+        if (numBytes >= 1 && rawData != nullptr) {
+            const uint8_t status = rawData[0];
+            const uint8_t d1 = (numBytes > 1) ? rawData[1] : 0;
+            const uint8_t d2 = (numBytes > 2) ? rawData[2] : 0;
+
+            // 1. MPE Decodificación y Voicing
+            mpeManager_.processMidiMessage(status, d1, d2, &dualWorldEngine_.getEventManager());
+
+            // 2. Control Change (MIDI Learn y mapeos de controladores)
+            if ((status & 0xF0) == 0xB0) {
+                const uint8_t ch = status & 0x0F;
+                midiMappingManager_.processControlChange(ch, d1, d2, &graph_);
+            }
+
+            // 3. Disparo del sintetizador de prueba si es Note On/Off
+            if ((status & 0xF0) == 0x90) {
+                if (d2 > 0) testSynth_.noteOn(d1, d2 / 127.0f);
+                else testSynth_.noteOff(d1);
+            } else if ((status & 0xF0) == 0x80) {
+                testSynth_.noteOff(d1);
+            }
+        }
+    }
 
     // Limpiar canales de salida no utilizados
     for (int i = totalNumInputChannels; i < totalNumOutputChannels; ++i) {
@@ -305,6 +337,18 @@ bool N8AudioProcessor::recompilePlan() {
         return true;
     }
     return false;
+}
+
+void N8AudioProcessor::setNodeBypassed(NodeId id, bool bypassed) {
+    executeSafeGraphMutation([this, id, bypassed]() {
+        graph_.setNodeBypassed(id, bypassed);
+        recompilePlan();
+        return true;
+    });
+}
+
+bool N8AudioProcessor::isNodeBypassed(NodeId id) const {
+    return graph_.isNodeBypassed(id);
 }
 
 NodeId N8AudioProcessor::addNodeToGraph(NodeType type, float x, float y) {
@@ -465,6 +509,88 @@ bool N8AudioProcessor::randomizeGraph(SmartRandomizer::RandomMode mode) {
         std::array<float, 8> macros{ 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
         if (SmartRandomizer::applyRandom(graph_, meta, macros, undoManager_, mode)) {
             recompilePlan();
+            return true;
+        }
+        return false;
+    });
+}
+
+std::vector<NodeId> N8AudioProcessor::getLinearNodeChain() {
+    std::vector<NodeId> validChain;
+    for (NodeId id : linearNodeOrder_) {
+        if (graph_.getNode(id) != nullptr) {
+            validChain.push_back(id);
+        }
+    }
+    if (validChain.empty()) {
+        for (NodeId id : graph_.getNodeIds()) {
+            validChain.push_back(id);
+        }
+    }
+    linearNodeOrder_ = validChain;
+    return linearNodeOrder_;
+}
+
+void N8AudioProcessor::moveNodeInLinearChain(int fromIdx, int toIdx) {
+    auto chain = getLinearNodeChain();
+    if (fromIdx < 0 || fromIdx >= static_cast<int>(chain.size()) ||
+        toIdx < 0 || toIdx >= static_cast<int>(chain.size()) || fromIdx == toIdx) {
+        return;
+    }
+
+    executeSafeGraphMutation([this, fromIdx, toIdx, &chain]() -> bool {
+        NodeId item = chain[static_cast<size_t>(fromIdx)];
+        chain.erase(chain.begin() + fromIdx);
+        chain.insert(chain.begin() + toIdx, item);
+        linearNodeOrder_ = chain;
+
+        for (size_t i = 0; i + 1 < linearNodeOrder_.size(); ++i) {
+            NodeId src = linearNodeOrder_[i];
+            NodeId dst = linearNodeOrder_[i + 1];
+            graph_.connect(src, 2, dst, 1);
+        }
+        recompilePlan();
+        undoManager_.pushState(graph_);
+        return true;
+    });
+}
+
+void N8AudioProcessor::removeNodeFromLinearChain(NodeId id) {
+    auto chain = getLinearNodeChain();
+    auto it = std::find(chain.begin(), chain.end(), id);
+    if (it != chain.end()) {
+        chain.erase(it);
+        linearNodeOrder_ = chain;
+    }
+    removeNodeFromGraph(id);
+}
+
+void N8AudioProcessor::insertNodeInLinearChain(NodeType type, int insertIndex) {
+    executeSafeGraphMutation([this, type, insertIndex]() -> bool {
+        auto chain = getLinearNodeChain();
+        float xPos = 120.0f + static_cast<float>(insertIndex) * 200.0f;
+        float yPos = 140.0f;
+
+        auto proc = NodeFactory::getInstance().create(type);
+        if (!proc) return false;
+        proc->prepare(currentSpec_);
+        NodeId newId = graph_.addNode(std::move(proc), "", xPos, yPos);
+
+        if (newId != InvalidNodeId) {
+            if (insertIndex >= 0 && insertIndex <= static_cast<int>(chain.size())) {
+                chain.insert(chain.begin() + insertIndex, newId);
+            } else {
+                chain.push_back(newId);
+            }
+            linearNodeOrder_ = chain;
+
+            for (size_t i = 0; i + 1 < linearNodeOrder_.size(); ++i) {
+                NodeId src = linearNodeOrder_[i];
+                NodeId dst = linearNodeOrder_[i + 1];
+                graph_.connect(src, 2, dst, 1);
+            }
+            recompilePlan();
+            undoManager_.pushState(graph_);
             return true;
         }
         return false;

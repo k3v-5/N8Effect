@@ -5,19 +5,104 @@
 #include <array>
 #include <memory>
 #include <functional>
+#include <cmath>
 #include "../plugin/PluginProcessor.h"
 #include "../modulation/MacroManager.h"
 #include "../modulation/ModulationTypes.h"
+#include "ModulationDragPayload.h"
 
 namespace audio_graph {
 
 /**
- * @brief Control rotatorio estilizado para un Macro individual con anillo luminoso (Reglas 8, 23, 25).
+ * @brief Micro-conector de parcheo de modulacion minimalista estilo jack modular (Reglas 7, 23, 25, 48).
+ * Elimina los botones toscos rectangulares '+ DRAG' en favor de un puerto concentrico aeroespacial.
+ */
+class MacroDragPin : public juce::Component, public juce::SettableTooltipClient {
+public:
+    MacroDragPin(ModSourceType srcType, const juce::String& srcName, juce::Colour col)
+        : srcType_(srcType), srcName_(srcName), col_(col)
+    {
+        setRepaintsOnMouseActivity(true);
+        setTooltip("Arrastra al dial de un nodo para modular, o haz clic para mapeo rapido");
+    }
+
+    void setSourceInfo(ModSourceType type, const juce::String& name, juce::Colour col) {
+        srcType_ = type;
+        srcName_ = name;
+        col_ = col;
+        repaint();
+    }
+
+    void setOnClick(std::function<void()> cb) { onClick_ = std::move(cb); }
+
+    void mouseDown(const juce::MouseEvent& /*e*/) override {
+        hasDragged_ = false;
+        repaint();
+    }
+
+    void mouseDrag(const juce::MouseEvent& e) override {
+        auto* ddc = juce::DragAndDropContainer::findParentDragContainerFor(this);
+        const bool isDnd = (ddc != nullptr && ddc->isDragAndDropActive());
+        if (!hasDragged_ && (e.getDistanceFromDragStart() > 4 || isDnd)) {
+            hasDragged_ = true;
+            if (ddc != nullptr) {
+                auto encoded = ModulationDragPayload::encode(srcType_, srcName_, col_);
+                auto snapshot = createComponentSnapshot(getLocalBounds());
+                ddc->startDragging(encoded, this, juce::ScaledImage(snapshot), true);
+            }
+        }
+    }
+
+    void mouseUp(const juce::MouseEvent& e) override {
+        if (hasDragged_) {
+            hasDragged_ = false;
+            repaint();
+            return; // Invariante Regla 48: supresion de clic tras arrastre
+        }
+        if (e.getDistanceFromDragStart() <= 4 && onClick_) {
+            onClick_();
+        }
+        repaint();
+    }
+
+    void paint(juce::Graphics& g) override {
+        auto bounds = getLocalBounds().toFloat().reduced(1.0f);
+        const float cx = bounds.getCentreX();
+        const float cy = bounds.getCentreY();
+        const float r = std::min(bounds.getWidth(), bounds.getHeight()) * 0.44f;
+
+        // Anillo exterior mecanizado
+        g.setColour(juce::Colour(0xff181d26));
+        g.fillEllipse(cx - r, cy - r, r * 2.0f, r * 2.0f);
+        g.setColour(isMouseOver() ? col_ : juce::Colour(0xff2d3646));
+        g.drawEllipse(cx - r, cy - r, r * 2.0f, r * 2.0f, 1.0f);
+
+        // Agujero central
+        const float innerR = r * 0.55f;
+        g.setColour(juce::Colour(0xff080a0e));
+        g.fillEllipse(cx - innerR, cy - innerR, innerR * 2.0f, innerR * 2.0f);
+
+        // LED central luminoso
+        g.setColour(col_.withAlpha(isMouseOver() ? 1.0f : 0.8f));
+        g.fillEllipse(cx - innerR * 0.55f, cy - innerR * 0.55f, innerR * 1.1f, innerR * 1.1f);
+    }
+
+private:
+    ModSourceType srcType_{ ModSourceType::None };
+    juce::String srcName_;
+    juce::Colour col_{ juce::Colours::white };
+    bool hasDragged_{ false };
+    std::function<void()> onClick_;
+};
+
+/**
+ * @brief Dial rotatorio ultra-minimalista para Macro individual (Estilo Arturia / FLEX / Pigments).
  */
 class MacroKnob : public juce::Component {
 public:
-    MacroKnob(const juce::String& name, juce::RangedAudioParameter* param)
-        : name_(name), param_(param)
+    MacroKnob(const juce::String& name, juce::RangedAudioParameter* param, ModSourceType srcType, juce::Colour col)
+        : name_(name), param_(param), sourceType_(srcType), color_(col),
+          dragPin_(srcType, name, col)
     {
         slider_.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
         slider_.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
@@ -36,15 +121,12 @@ public:
 
         addAndMakeVisible(slider_);
 
-        mapBtn_.setButtonText("+ MAP");
-        mapBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff141414));
-        mapBtn_.setColour(juce::TextButton::textColourOffId, juce::Colours::white.withAlpha(0.75f));
-        mapBtn_.onClick = [this]() {
+        dragPin_.setOnClick([this]() {
             if (onMapClicked_) {
                 onMapClicked_();
             }
-        };
-        addAndMakeVisible(mapBtn_);
+        });
+        addAndMakeVisible(dragPin_);
     }
 
     void setValue(float v) {
@@ -60,58 +142,74 @@ public:
     void setOnMapClicked(std::function<void()> cb) { onMapClicked_ = std::move(cb); }
 
     void paint(juce::Graphics& g) override {
-        auto bounds = getLocalBounds().toFloat();
-        const auto knobArea = bounds.removeFromTop(bounds.getHeight() - 32.0f).reduced(4.0f);
-
-        const float centreX = knobArea.getCentreX();
-        const float centreY = knobArea.getCentreY();
-        const float radius = std::min(knobArea.getWidth(), knobArea.getHeight()) * 0.42f;
+        // Area del dial rotatorio (izquierda)
+        const float dialSize = 26.0f;
+        const float dialX = 4.0f;
+        const float dialY = (getHeight() - dialSize) * 0.5f;
+        const float cx = dialX + dialSize * 0.5f;
+        const float cy = dialY + dialSize * 0.5f;
+        const float radius = dialSize * 0.44f;
 
         // Anillo de fondo
-        g.setColour(juce::Colour(0xff1a1a1a));
-        g.drawEllipse(centreX - radius, centreY - radius, radius * 2.0f, radius * 2.0f, 3.0f);
+        g.setColour(juce::Colour(0xff141820));
+        g.drawEllipse(cx - radius, cy - radius, radius * 2.0f, radius * 2.0f, 2.0f);
 
-        // Anillo de valor activo (Arco blanco luminoso de 7 a 5 en reloj)
+        // Anillo de valor activo (Arco luminoso de 2.4 rad a 7.0 rad)
         constexpr float startAngle = 2.4f;
         constexpr float endAngle = 7.0f;
         const float currentAngle = startAngle + static_cast<float>(slider_.getValue()) * (endAngle - startAngle);
 
         juce::Path arcPath;
-        arcPath.addCentredArc(centreX, centreY, radius, radius, 0.0f, startAngle, currentAngle, true);
-        g.setColour(juce::Colours::white);
-        g.strokePath(arcPath, juce::PathStrokeType(3.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        arcPath.addCentredArc(cx, cy, radius, radius, 0.0f, startAngle, currentAngle, true);
+        g.setColour(color_);
+        g.strokePath(arcPath, juce::PathStrokeType(2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
-        // Núcleo central
-        g.setColour(juce::Colour(0xff0d0d0d));
-        g.fillEllipse(centreX - radius * 0.7f, centreY - radius * 0.7f, radius * 1.4f, radius * 1.4f);
-        g.setColour(juce::Colours::white.withAlpha(0.2f));
-        g.drawEllipse(centreX - radius * 0.7f, centreY - radius * 0.7f, radius * 1.4f, radius * 1.4f, 1.0f);
+        // Tapa central del dial
+        const float capR = radius * 0.68f;
+        g.setColour(juce::Colour(0xff090c10));
+        g.fillEllipse(cx - capR, cy - capR, capR * 2.0f, capR * 2.0f);
+        g.setColour(juce::Colour(0xff1e2530));
+        g.drawEllipse(cx - capR, cy - capR, capR * 2.0f, capR * 2.0f, 1.0f);
 
-        // Indicador de aguja
-        const float needleLen = radius * 0.65f;
-        const float nx = centreX + std::sin(currentAngle) * needleLen;
-        const float ny = centreY - std::cos(currentAngle) * needleLen;
+        // Aguja / Notch indicador
+        const float needleLen = capR * 0.85f;
+        const float nx = cx + std::sin(currentAngle) * needleLen;
+        const float ny = cy - std::cos(currentAngle) * needleLen;
         g.setColour(juce::Colours::white);
-        g.drawLine(centreX, centreY, nx, ny, 1.8f);
+        g.drawLine(cx, cy, nx, ny, 1.4f);
 
-        // Título del Macro
-        g.setFont(juce::FontOptions(10.0f, juce::Font::bold));
-        g.setColour(juce::Colours::white);
-        g.drawText(name_, 0, static_cast<int>(bounds.getY() - 4), getWidth(), 14, juce::Justification::centred);
+        // Textos del Macro (derecha del dial)
+        const int textLeft = static_cast<int>(dialX + dialSize + 6.0f);
+        const int textWidth = getWidth() - textLeft - 20;
+
+        // Fila 1: Nombre en negrita
+        g.setFont(juce::FontOptions(8.5f, juce::Font::bold));
+        g.setColour(color_.withAlpha(0.95f));
+        g.drawText(name_, textLeft, 6, textWidth, 12, juce::Justification::centredLeft, true);
+
+        // Fila 2: Valor porcentual sutil
+        const int pct = static_cast<int>(std::round(slider_.getValue() * 100.0));
+        g.setFont(juce::FontOptions(8.0f, juce::Font::plain));
+        g.setColour(juce::Colour(0xff8c96a5));
+        g.drawText(juce::String(pct) + "%", textLeft, 18, textWidth, 12, juce::Justification::centredLeft, true);
     }
 
     void resized() override {
-        auto area = getLocalBounds();
-        mapBtn_.setBounds(area.removeFromBottom(16).reduced(6, 0));
-        area.removeFromBottom(16); // Espacio para el texto de nombre
-        slider_.setBounds(area);
+        // El slider cubre el area del dial rotatorio en el lado izquierdo
+        slider_.setBounds(2, static_cast<int>((getHeight() - 28) * 0.5f), 28, 28);
+
+        // El pin de modulacion se ubica en el extremo derecho
+        const int pinSize = 14;
+        dragPin_.setBounds(getWidth() - pinSize - 4, static_cast<int>((getHeight() - pinSize) * 0.5f), pinSize, pinSize);
     }
 
 private:
     juce::String name_;
     juce::RangedAudioParameter* param_{ nullptr };
+    ModSourceType sourceType_{ ModSourceType::None };
+    juce::Colour color_{ juce::Colours::white };
     juce::Slider slider_;
-    juce::TextButton mapBtn_;
+    MacroDragPin dragPin_;
 
     std::function<void(float)> onValueChanged_;
     std::function<void()> onMapClicked_;
@@ -119,6 +217,7 @@ private:
 
 /**
  * @brief Dashboard visual con 8 Performance Macros globales (Reglas 7, 8, 23, 25).
+ * Estilo dock minimalista horizontal para anclaje inferior.
  */
 class MacroDashboardComponent : public juce::Component {
 public:
@@ -138,7 +237,9 @@ public:
 
         for (size_t i = 0; i < 8; ++i) {
             auto* param = processor_.getAPVTS().getParameter(macroIds[i]);
-            auto knob = std::make_unique<MacroKnob>(macroNames[i], param);
+            const auto srcType = static_cast<ModSourceType>(static_cast<size_t>(ModSourceType::MacroTexture) + i);
+            const auto col = ModulationDragPayload::getDefaultColor(srcType);
+            auto knob = std::make_unique<MacroKnob>(macroNames[i], param, srcType, col);
 
             const size_t macroIdx = i;
             knob->setOnMapClicked([this, macroIdx]() {
@@ -169,21 +270,34 @@ public:
     void paint(juce::Graphics& g) override {
         auto bounds = getLocalBounds().toFloat();
 
-        // Fondo oscuro
-        g.setColour(juce::Colour(0xff080808));
-        g.fillRoundedRectangle(bounds, 4.0f);
+        // Chasis titanio oscuro minimalista de consola
+        juce::ColourGradient bgGrad(juce::Colour(0xff0c0f16), bounds.getTopLeft(),
+                                    juce::Colour(0xff06070a), bounds.getBottomLeft(), false);
+        g.setGradientFill(bgGrad);
+        g.fillRect(bounds);
 
-        // Borde fino
-        g.setColour(juce::Colours::white.withAlpha(0.2f));
-        g.drawRoundedRectangle(bounds.reduced(0.5f), 4.0f, 1.0f);
+        // Borde superior luminoso sutil
+        g.setColour(juce::Colour(0xff1e2634));
+        g.drawHorizontalLine(0, bounds.getX(), bounds.getRight());
+
+        // Divisores sutiles entre los 8 slots
+        const float slotW = bounds.getWidth() / 8.0f;
+        g.setColour(juce::Colour(0xff121620));
+        for (int i = 1; i < 8; ++i) {
+            const float x = std::round(slotW * static_cast<float>(i));
+            g.drawVerticalLine(static_cast<int>(x), 4.0f, bounds.getBottom() - 4.0f);
+        }
     }
 
     void resized() override {
-        auto area = getLocalBounds().reduced(6, 4);
-        const int knobWidth = area.getWidth() / 8;
+        auto area = getLocalBounds();
+        const int totalW = area.getWidth();
+        const int slotW = totalW / 8;
 
         for (size_t i = 0; i < 8; ++i) {
-            knobs_[i]->setBounds(area.removeFromLeft(knobWidth).reduced(3, 0));
+            const int x = static_cast<int>(i) * slotW;
+            const int w = (i == 7) ? (totalW - x) : slotW;
+            knobs_[i]->setBounds(x, 0, w, area.getHeight());
         }
     }
 
@@ -203,7 +317,6 @@ private:
         auto params = node->processor->getParameters();
         if (params.empty()) return;
 
-        // Mapear automáticamente al primer parámetro libre o abrir menú emergente
         juce::PopupMenu menu;
         menu.addSectionHeader("Mapear a: " + juce::String(node->name));
 

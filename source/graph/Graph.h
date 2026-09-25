@@ -5,11 +5,18 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
+#include <string_view>
 #include <queue>
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include "AudioProcessorNode.h"
 #include "../modulation/NodeAutomationSequencer.h"
 
 namespace audio_graph {
+
+using GroupId = uint32_t;
+constexpr GroupId InvalidGroupId = 0;
 
 /**
  * @brief Conexión dirigida entre un pin de salida y un pin de entrada (Regla 4)
@@ -23,6 +30,46 @@ struct Connection {
 };
 
 /**
+ * @brief Mapeo de control macro de grupo a un parámetro de nodo interno (Reglas 4, 8, R2).
+ */
+struct GroupMacroMapping {
+    NodeId targetNodeId{ InvalidNodeId };
+    ParameterId targetParamId{ InvalidParameterId };
+    float depth{ 0.0f };      // Bipolar depth [-1.0f .. +1.0f]
+    float baseValue{ 0.0f };  // Base parameter value
+};
+
+/**
+ * @brief Control macro de grupo con nombre, valor normalizado y mapeos hacia nodos internos.
+ */
+struct GroupMacro {
+    std::string name{ "CTRL" };
+    float value{ 0.5f };      // Normalized [0.0f .. 1.0f], default centered
+    std::vector<GroupMacroMapping> mappings;
+};
+
+/**
+ * @brief Caja de Agrupación Visual de Nodos en el Grafo (Reglas 4, 8, 22, R2).
+ */
+struct NodeGroup {
+    GroupId id{ InvalidGroupId };
+    std::string name{ "Group" };
+    uint32_t colorRgba{ 0x00d4ffff }; // Default neon cyan (RGBA)
+    bool isBypassed{ false };
+    bool isCollapsed{ false };
+    std::vector<NodeId> memberNodeIds;
+    std::array<GroupMacro, 3> macros{
+        GroupMacro{ "CTRL 1", 0.5f, {} },
+        GroupMacro{ "CTRL 2", 0.5f, {} },
+        GroupMacro{ "CTRL 3", 0.5f, {} }
+    };
+
+    bool containsNode(NodeId nid) const noexcept {
+        return std::find(memberNodeIds.begin(), memberNodeIds.end(), nid) != memberNodeIds.end();
+    }
+};
+
+/**
  * @brief Nodo instanciado dentro del Grafo de Usuario
  */
 struct NodeInstance {
@@ -32,6 +79,7 @@ struct NodeInstance {
     std::unique_ptr<AudioProcessorNode> processor;
     float posX{ 0.0f };
     float posY{ 0.0f };
+    bool isBypassed{ false };
     NodeAutomationBank sequencer; // Secuenciador personal de automatización rítmica por efecto
 };
 
@@ -67,6 +115,16 @@ public:
         std::erase_if(connections_, [id](const Connection& c) {
             return c.sourceNodeId == id || c.destNodeId == id;
         });
+
+        // Limpiar membresía en grupos y mapeos de macro (Regla R2)
+        for (auto& [gid, grp] : groups_) {
+            std::erase(grp->memberNodeIds, id);
+            for (auto& macro : grp->macros) {
+                std::erase_if(macro.mappings, [id](const GroupMacroMapping& m) {
+                    return m.targetNodeId == id;
+                });
+            }
+        }
 
         nodes_.erase(it);
         return true;
@@ -110,8 +168,10 @@ public:
     void clear() noexcept {
         connections_.clear();
         nodes_.clear();
+        groups_.clear();
         nextNodeId_ = 0;
         nextConnectionId_ = 0;
+        nextGroupId_ = 0;
     }
 
     NodeInstance* getNode(NodeId id) noexcept {
@@ -128,6 +188,19 @@ public:
         return nodes_.contains(id);
     }
 
+    bool setNodeBypassed(NodeId id, bool bypassed) noexcept {
+        auto it = nodes_.find(id);
+        if (it == nodes_.end()) return false;
+        it->second->isBypassed = bypassed;
+        return true;
+    }
+
+    bool isNodeBypassed(NodeId id) const noexcept {
+        auto it = nodes_.find(id);
+        if (it == nodes_.end()) return false;
+        return it->second->isBypassed;
+    }
+
     AudioProcessorNode* getNodeProcessor(NodeId id) const noexcept {
         auto it = nodes_.find(id);
         if (it != nodes_.end()) {
@@ -140,8 +213,158 @@ public:
         return nodes_;
     }
 
+    std::vector<NodeId> getNodeIds() const {
+        std::vector<NodeId> ids;
+        ids.reserve(nodes_.size());
+        for (const auto& [id, _] : nodes_) {
+            ids.push_back(id);
+        }
+        return ids;
+    }
+
     const std::vector<Connection>& getConnections() const noexcept {
         return connections_;
+    }
+
+    // ==============================================================================
+    // Gestión de Grupos de Nodos y Macros de Grupo (Reglas 4, 8, 21, 22, R2)
+    // ==============================================================================
+    GroupId addGroup(std::string_view name = "Group", uint32_t colorRgba = 0x00d4ffff, const std::vector<NodeId>& memberNodeIds = {}) {
+        GroupId gid = ++nextGroupId_;
+        auto grp = std::make_unique<NodeGroup>();
+        grp->id = gid;
+        grp->name = name.empty() ? ("Group " + std::to_string(gid)) : std::string(name);
+        grp->colorRgba = colorRgba;
+        grp->memberNodeIds = memberNodeIds;
+        groups_[gid] = std::move(grp);
+        return gid;
+    }
+
+    GroupId addGroup(std::unique_ptr<NodeGroup> group) {
+        if (!group) return InvalidGroupId;
+        if (group->id == InvalidGroupId) {
+            group->id = ++nextGroupId_;
+        } else {
+            nextGroupId_ = std::max(nextGroupId_, group->id);
+        }
+        GroupId gid = group->id;
+        groups_[gid] = std::move(group);
+        return gid;
+    }
+
+    bool removeGroup(GroupId id) {
+        return groups_.erase(id) > 0;
+    }
+
+    bool addNodeToGroup(GroupId gid, NodeId nid) {
+        auto* grp = getGroup(gid);
+        if (!grp || !hasNode(nid)) return false;
+
+        // Garantizar pertenencia a un único grupo
+        for (auto& [otherId, otherGrp] : groups_) {
+            if (otherId != gid) {
+                std::erase(otherGrp->memberNodeIds, nid);
+            }
+        }
+
+        if (!grp->containsNode(nid)) {
+            grp->memberNodeIds.push_back(nid);
+        }
+        return true;
+    }
+
+    bool removeNodeFromGroup(GroupId gid, NodeId nid) {
+        auto* grp = getGroup(gid);
+        if (!grp) return false;
+
+        auto it = std::find(grp->memberNodeIds.begin(), grp->memberNodeIds.end(), nid);
+        if (it != grp->memberNodeIds.end()) {
+            grp->memberNodeIds.erase(it);
+            for (auto& macro : grp->macros) {
+                std::erase_if(macro.mappings, [nid](const GroupMacroMapping& m) {
+                    return m.targetNodeId == nid;
+                });
+            }
+            return true;
+        }
+        return false;
+    }
+
+    void setGroupBypassed(GroupId gid, bool bypassed) {
+        auto* grp = getGroup(gid);
+        if (!grp) return;
+        grp->isBypassed = bypassed;
+        for (NodeId nid : grp->memberNodeIds) {
+            setNodeBypassed(nid, bypassed);
+        }
+    }
+
+    bool isGroupBypassed(GroupId gid) const noexcept {
+        auto it = groups_.find(gid);
+        return (it != groups_.end()) ? it->second->isBypassed : false;
+    }
+
+    void setGroupCollapsed(GroupId gid, bool collapsed) {
+        auto* grp = getGroup(gid);
+        if (!grp) return;
+        grp->isCollapsed = collapsed;
+    }
+
+    bool isGroupCollapsed(GroupId gid) const noexcept {
+        auto it = groups_.find(gid);
+        return (it != groups_.end()) ? it->second->isCollapsed : false;
+    }
+
+    void applyGroupMacroValue(GroupId gid, size_t macroIndex, float macroValue) {
+        auto* grp = getGroup(gid);
+        if (!grp || macroIndex >= grp->macros.size()) return;
+
+        macroValue = std::clamp(macroValue, 0.0f, 1.0f);
+        grp->macros[macroIndex].value = macroValue;
+
+        for (const auto& mapping : grp->macros[macroIndex].mappings) {
+            auto* node = getNode(mapping.targetNodeId);
+            if (!node || !node->processor) continue;
+
+            float minValue = 0.0f;
+            float maxValue = 1.0f;
+            bool found = false;
+            for (const auto& pInfo : node->processor->getParameters()) {
+                if (pInfo.id == mapping.targetParamId) {
+                    minValue = pInfo.minValue;
+                    maxValue = pInfo.maxValue;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) continue;
+
+            float val = std::clamp(mapping.baseValue + (macroValue - 0.5f) * mapping.depth * (maxValue - minValue), minValue, maxValue);
+            node->processor->setParameter(mapping.targetParamId, val);
+        }
+    }
+
+    const std::unordered_map<GroupId, std::unique_ptr<NodeGroup>>& getGroups() const noexcept {
+        return groups_;
+    }
+
+    NodeGroup* getGroup(GroupId id) noexcept {
+        auto it = groups_.find(id);
+        return (it != groups_.end()) ? it->second.get() : nullptr;
+    }
+
+    const NodeGroup* getGroup(GroupId id) const noexcept {
+        auto it = groups_.find(id);
+        return (it != groups_.end()) ? it->second.get() : nullptr;
+    }
+
+    std::vector<GroupId> getGroupIds() const {
+        std::vector<GroupId> ids;
+        ids.reserve(groups_.size());
+        for (const auto& [id, _] : groups_) {
+            ids.push_back(id);
+        }
+        return ids;
     }
 
     // Validación y ordenamiento topológico acíclico (Regla 29)
@@ -200,8 +423,10 @@ public:
 private:
     NodeId nextNodeId_{ 0 };
     ConnectionId nextConnectionId_{ 0 };
+    GroupId nextGroupId_{ 0 };
     std::unordered_map<NodeId, std::unique_ptr<NodeInstance>> nodes_;
     std::vector<Connection> connections_;
+    std::unordered_map<GroupId, std::unique_ptr<NodeGroup>> groups_;
 };
 
 } // namespace audio_graph

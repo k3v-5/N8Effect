@@ -8,6 +8,7 @@
 #include "../dsp/AllDspNodes.h"
 #include "GraphSerializer.h"
 #include "FactoryPresetCatalog.h"
+#include "UserPresetBank.h"
 
 namespace audio_graph {
 
@@ -70,12 +71,20 @@ public:
 
     std::vector<std::string> getUserPresetNames() const {
         std::vector<std::string> names;
-        names.reserve(userPresets_.size());
+        names.reserve(userBank_.getPresetCount() + userPresets_.size());
+        for (const auto& p : userBank_.getPresets()) {
+            names.push_back(p.metadata.name);
+        }
         for (const auto& [name, _] : userPresets_) {
-            names.push_back(name);
+            if (std::find(names.begin(), names.end(), name) == names.end()) {
+                names.push_back(name);
+            }
         }
         return names;
     }
+
+    UserPresetBank& getUserBank() noexcept { return userBank_; }
+    const UserPresetBank& getUserBank() const noexcept { return userBank_; }
 
 private:
     void populateFactoryPresets() {
@@ -84,6 +93,7 @@ private:
 
     std::vector<PresetEntry> factoryPresets_;
     std::unordered_map<std::string, std::string> userPresets_;
+    UserPresetBank userBank_;
 };
 
 } // namespace audio_graph

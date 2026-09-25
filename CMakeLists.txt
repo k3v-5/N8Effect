@@ -61,6 +61,7 @@ add_executable(N8Effect_Tests
     source/event/Event.h
     source/event/EventPool.h
     source/event/EventManager.h
+    source/event/EventTelemetryBuffer.h
     source/modulation/ModulationTypes.h
     source/modulation/LFO.h
     source/modulation/EnvelopeGenerator.h
@@ -73,6 +74,7 @@ add_executable(N8Effect_Tests
     source/preset/SceneManager.h
     source/preset/GraphUndoManager.h
     source/preset/PresetManager.h
+    source/preset/UserPresetBank.h
     source/analysis/TransientDetector.h
     source/analysis/PitchTracker.h
     source/analysis/SpectralFeatureExtractor.h
@@ -81,6 +83,8 @@ add_executable(N8Effect_Tests
     source/dsp/processors/MidiArpeggiatorNode.h
     source/dsp/processors/MidiChordEngineNode.h
     source/dsp/processors/MidiScaleQuantizerNode.h
+    source/midi/MpeManager.h
+    source/midi/MidiMappingManager.h
     source/plugin/DualWorldEngine.h
 )
 
@@ -176,6 +180,7 @@ target_sources(N8Effect PRIVATE
     source/event/Event.h
     source/event/EventPool.h
     source/event/EventManager.h
+    source/event/EventTelemetryBuffer.h
     source/modulation/ModulationTypes.h
     source/modulation/LFO.h
     source/modulation/EnvelopeGenerator.h
@@ -184,18 +189,35 @@ target_sources(N8Effect PRIVATE
     source/modulation/MacroManager.h
     source/modulation/ModulationMatrix.h
     source/modulation/ModulationEngine.h
+    source/modulation/NodeAutomationSequencer.h
+    source/modulation/MSEGModulator.h
+    source/modulation/EuclideanModulator.h
+    source/modulation/ChaosModulator.h
     source/gui/WireRenderer.h
     source/gui/ModulationSlider.h
+    source/gui/ModulationDragPayload.h
     source/gui/NodeComponent.h
     source/gui/NodePaletteComponent.h
     source/gui/PresetBarComponent.h
+    source/gui/PresetBrowserDrawerComponent.h
     source/gui/PerformanceHudComponent.h
     source/gui/GraphCanvasComponent.h
     source/gui/GraphCanvasComponent.cpp
+    source/gui/VirtualPianoComponent.h
+    source/gui/VirtualKeyboardComponent.h
+    source/gui/NodeAutomationSequencerComponent.h
+    source/gui/EngineConfigModalComponent.h
+    source/gui/SequentialSlotComponent.h
+    source/gui/SequentialStripComponent.h
+    source/gui/SequentialStripComponent.cpp
     source/preset/GraphSerializer.h
     source/preset/SceneManager.h
     source/preset/GraphUndoManager.h
     source/preset/PresetManager.h
+    source/preset/UserPresetBank.h
+    source/preset/FactoryPresetCatalog.h
+    source/preset/SmartRandomizer.h
+    source/dsp/core/TestInputSynthesizer.h
     source/analysis/TransientDetector.h
     source/analysis/PitchTracker.h
     source/analysis/SpectralFeatureExtractor.h
@@ -204,6 +226,15 @@ target_sources(N8Effect PRIVATE
     source/dsp/processors/MidiArpeggiatorNode.h
     source/dsp/processors/MidiChordEngineNode.h
     source/dsp/processors/MidiScaleQuantizerNode.h
+    source/dsp/core/PolyphaseOversampler.h
+    source/dsp/processors/ConvolutionNode.h
+    source/dsp/processors/OversamplerNode.h
+    source/midi/MpeManager.h
+    source/midi/MidiMappingManager.h
+    source/preset/PresetPackager.h
+    source/gui/WaterfallVisualizerComponent.h
+    source/gui/GranularEditorComponent.h
+    source/gui/UndoTimelineComponent.h
     source/gui/AudioVisualizerComponent.h
     source/gui/AudioVisualizerComponent.cpp
     source/gui/MacroDashboardComponent.h
@@ -237,3 +268,43 @@ target_link_libraries(N8Effect PRIVATE
 if (MSVC)
     target_compile_options(N8Effect PRIVATE /utf-8)
 endif()
+
+# ==============================================================================
+# Soporte para Formato CLAP via clap-juce-extensions (Regla 0: Descarga ZIP sin Git)
+# ==============================================================================
+message(STATUS "Configurando extensiones de formato CLAP (No Git)...")
+
+FetchContent_Declare(
+    clap-juce-extensions
+    URL "https://github.com/free-audio/clap-juce-extensions/archive/refs/heads/main.zip"
+)
+
+FetchContent_GetProperties(clap-juce-extensions)
+if(NOT clap-juce-extensions_POPULATED)
+    FetchContent_Populate(clap-juce-extensions)
+
+    # Descarga directa de archivos ZIP de dependencias de CLAP en clap-libs
+    if(NOT EXISTS "${clap-juce-extensions_SOURCE_DIR}/clap-libs/clap/CMakeLists.txt")
+        message(STATUS "Descargando CLAP base headers...")
+        file(DOWNLOAD "https://github.com/free-audio/clap/archive/refs/heads/main.zip" "${CMAKE_BINARY_DIR}/_clap.zip")
+        file(ARCHIVE_EXTRACT INPUT "${CMAKE_BINARY_DIR}/_clap.zip" DESTINATION "${CMAKE_BINARY_DIR}/_clap_tmp")
+        file(GLOB CLAP_SUBDIR "${CMAKE_BINARY_DIR}/_clap_tmp/*")
+        file(COPY ${CLAP_SUBDIR}/ DESTINATION "${clap-juce-extensions_SOURCE_DIR}/clap-libs/clap")
+    endif()
+
+    if(NOT EXISTS "${clap-juce-extensions_SOURCE_DIR}/clap-libs/clap-helpers/CMakeLists.txt")
+        message(STATUS "Descargando CLAP helpers...")
+        file(DOWNLOAD "https://github.com/free-audio/clap-helpers/archive/refs/heads/main.zip" "${CMAKE_BINARY_DIR}/_clap_helpers.zip")
+        file(ARCHIVE_EXTRACT INPUT "${CMAKE_BINARY_DIR}/_clap_helpers.zip" DESTINATION "${CMAKE_BINARY_DIR}/_clap_helpers_tmp")
+        file(GLOB CLAP_HELPERS_SUBDIR "${CMAKE_BINARY_DIR}/_clap_helpers_tmp/*")
+        file(COPY ${CLAP_HELPERS_SUBDIR}/ DESTINATION "${clap-juce-extensions_SOURCE_DIR}/clap-libs/clap-helpers")
+    endif()
+
+    add_subdirectory(${clap-juce-extensions_SOURCE_DIR} ${clap-juce-extensions_BINARY_DIR} EXCLUDE_FROM_ALL)
+endif()
+
+clap_juce_extensions_plugin(
+    TARGET N8Effect
+    CLAP_ID "com.n8audio.n8effect"
+    CLAP_FEATURES audio-effect filter distortion delay reverb granular
+)

@@ -14,11 +14,14 @@
 #include "../gui/NodeAutomationSequencerComponent.h"
 #include "../gui/AudioVisualizerComponent.h"
 #include "../gui/MacroDashboardComponent.h"
+#include "../gui/PresetBrowserDrawerComponent.h"
+#include "../gui/ThemeManager.h"
 
 namespace audio_graph {
 
 class N8AudioProcessorEditor : public juce::AudioProcessorEditor,
                                public juce::DragAndDropContainer,
+                               public ThemeManager::Listener,
                                private juce::Timer {
 public:
     explicit N8AudioProcessorEditor(N8AudioProcessor&);
@@ -27,6 +30,9 @@ public:
     void paint(juce::Graphics&) override;
     void resized() override;
     void parentHierarchyChanged() override;
+
+    // ThemeManager::Listener
+    void themeChanged(const ThemeColors& newTheme, ThemePreset preset) override;
 
 private:
     void timerCallback() override;
@@ -44,6 +50,7 @@ private:
     AudioVisualizerComponent visualizer_;
     MacroDashboardComponent macroDashboard_;
     EngineConfigModalComponent configModal_;
+    PresetBrowserDrawerComponent presetDrawer_;
 
     bool isPianoVisible_{ true };
     bool isSeqVisible_{ true };
@@ -51,6 +58,7 @@ private:
     bool isMacrosVisible_{ true };
     bool isHudVisible_{ true };
     bool isConfigModalVisible_{ false };
+    bool isPresetDrawerVisible_{ false };
     std::unique_ptr<juce::FileChooser> fileChooser_;
 
     // Cabecera Master

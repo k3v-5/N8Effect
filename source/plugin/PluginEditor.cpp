@@ -8,7 +8,8 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
       palette_(),
       canvas_(p),
       visualizer_(p),
-      macroDashboard_(p)
+      macroDashboard_(p),
+      presetDrawer_(p)
 {
     // Asegurar que el modo Standalone tenga siempre la entrada desmuteada (Regla 1 y 17)
     {
@@ -31,6 +32,8 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
     setSize(1200, 840);
 
     setLookAndFeel(&lookAndFeel_);
+    ThemeManager::getInstance().applyToLookAndFeel(lookAndFeel_);
+    ThemeManager::getInstance().addListener(this);
 
     // 1. Título Minimalista y Botón de Configuración
     titleLabel_.setText("N8 EFFECT", juce::dontSendNotification);
@@ -88,6 +91,7 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
     presetBar_.setOnPresetSelected([this](int index) {
         if (processorRef.loadFactoryPreset(static_cast<size_t>(index))) {
             canvas_.rebuildFromGraph();
+            macroDashboard_.updateKnobValues();
         }
     });
 
@@ -129,6 +133,30 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
         piano_.setVisible(vis);
         resized();
     });
+
+    presetBar_.setOnBrowseRequested([this]() {
+        isPresetDrawerVisible_ = !isPresetDrawerVisible_;
+        presetDrawer_.setVisible(isPresetDrawerVisible_);
+        if (isPresetDrawerVisible_) {
+            presetDrawer_.reloadPresets();
+            presetDrawer_.toFront(true);
+        }
+        resized();
+    });
+
+    presetDrawer_.setOnPresetLoaded([this]() {
+        canvas_.rebuildFromGraph();
+        auto name = presetDrawer_.getSelectedPresetName();
+        auto cat = presetDrawer_.getSelectedPresetCategory();
+        presetBar_.setCurrentPreset(name, cat);
+    });
+
+    presetDrawer_.setOnCloseRequested([this]() {
+        isPresetDrawerVisible_ = false;
+        resized();
+    });
+
+    addChildComponent(presetDrawer_);
 
     presetBar_.setOnRandomizeRequested([this](int modeIdx) {
         auto mode = static_cast<SmartRandomizer::RandomMode>(std::clamp(modeIdx, 0, 2));
@@ -290,8 +318,19 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
 }
 
 N8AudioProcessorEditor::~N8AudioProcessorEditor() {
+    ThemeManager::getInstance().removeListener(this);
     stopTimer();
     setLookAndFeel(nullptr);
+}
+
+void N8AudioProcessorEditor::themeChanged(const ThemeColors& /*newTheme*/, ThemePreset /*preset*/) {
+    ThemeManager::getInstance().applyToLookAndFeel(lookAndFeel_);
+    repaint();
+    canvas_.repaint();
+    palette_.repaint();
+    presetBar_.repaint();
+    visualizer_.repaint();
+    macroDashboard_.repaint();
 }
 
 void N8AudioProcessorEditor::parentHierarchyChanged() {
@@ -344,13 +383,14 @@ void N8AudioProcessorEditor::timerCallback() {
 }
 
 void N8AudioProcessorEditor::paint(juce::Graphics& g) {
-    // Fondo negro absoluto de la barra superior
-    g.setColour(juce::Colour(0xff000000));
-    g.fillRect(0, 0, getWidth(), 84);
+    const auto& theme = ThemeManager::getInstance().getColors();
+    // Fondo de la barra superior según tema activo
+    g.setColour(theme.headerDark);
+    g.fillRect(0, 0, getWidth(), 88);
 
-    // Divisor de barra superior en blanco nítido
-    g.setColour(juce::Colours::white);
-    g.drawHorizontalLine(83, 0.0f, static_cast<float>(getWidth()));
+    // Divisor de barra superior
+    g.setColour(theme.borderMuted);
+    g.drawHorizontalLine(87, 0.0f, static_cast<float>(getWidth()));
 }
 
 void N8AudioProcessorEditor::resized() {
@@ -381,13 +421,8 @@ void N8AudioProcessorEditor::resized() {
 
     titleLabel_.setBounds(header.removeFromTop(32));
 
-    // 2. Barra de Presets y Escenas
-    presetBar_.setBounds(area.removeFromTop(28));
-
-    // 2.1 Dashboard de 8 Macros de Rendimiento si está activo
-    if (isMacrosVisible_) {
-        macroDashboard_.setBounds(area.removeFromTop(62));
-    }
+    // 2. Barra de Presets y Escenas (estilo Arturia / FLEX)
+    presetBar_.setBounds(area.removeFromTop(32));
 
     // 3. Piano visual en la parte inferior si está activo
     if (isPianoVisible_) {
@@ -404,14 +439,25 @@ void N8AudioProcessorEditor::resized() {
         visualizer_.setBounds(area.removeFromBottom(125));
     }
 
-    // 5. Barra lateral de paleta de módulos
-    palette_.setBounds(area.removeFromLeft(150));
+    // 4.2 Dashboard de 8 Macros de Rendimiento reacomodado en el dock inferior (minimalista 42px)
+    if (isMacrosVisible_) {
+        macroDashboard_.setBounds(area.removeFromBottom(42));
+    }
+
+    // 5. Barra lateral de paleta de módulos (espaciosa 195px para tarjetas categorizadas y buscador)
+    palette_.setBounds(area.removeFromLeft(195));
 
     // 6. Canvas del grafo DAG
     canvas_.setBounds(area);
 
     // 7. Modal de configuración cubre toda la ventana cuando está activo
     configModal_.setBounds(getLocalBounds());
+
+    // 8. Drawer de Presets de Usuario y Fábrica
+    if (isPresetDrawerVisible_) {
+        presetDrawer_.setBounds(getLocalBounds().reduced(48, 32));
+        presetDrawer_.toFront(true);
+    }
 }
 
 } // namespace audio_graph

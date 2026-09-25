@@ -46,6 +46,7 @@ void SequentialStripComponent::rebuild() {
             id, i, inst->name, inst->type, inst->processor.get());
 
         slot->setSlotIndex(i, i == 0, i == numSlots - 1);
+        slot->setBypassed(inst->isBypassed);
 
         slot->setOnMoveLeftRequested([this](int idx) {
             if (idx > 0) {
@@ -65,19 +66,7 @@ void SequentialStripComponent::rebuild() {
         });
 
         slot->setOnBypassToggled([this, id](NodeId /*nodeId*/, bool isBypassed) {
-            // Manejo de bypass en el nodo
-            if (auto* nodeInst = processor_.getGraph().getNode(id)) {
-                if (nodeInst->processor != nullptr) {
-                    // Si el nodo tiene parámetro Mix (ID 1 o 100), se ajusta según corresponda
-                    const auto params = nodeInst->processor->getParameters();
-                    for (const auto& p : params) {
-                        if (juce::String(p.name).equalsIgnoreCase("Mix")) {
-                            nodeInst->processor->setParameter(p.id, isBypassed ? 0.0f : p.defaultValue);
-                            break;
-                        }
-                    }
-                }
-            }
+            processor_.setNodeBypassed(id, isBypassed);
         });
 
         contentContainer_.addAndMakeVisible(*slot);
@@ -113,56 +102,75 @@ void SequentialStripComponent::rebuild() {
 void SequentialStripComponent::showAddEffectMenu(int insertIndex) {
     juce::PopupMenu menu;
 
-    // 1. Dinámica
+    // 1. Dinámica & Control
     juce::PopupMenu dynMenu;
     dynMenu.addItem(1, "Compresor VCA (Soft-Knee)");
     dynMenu.addItem(2, "Multibanda OTT (3-Band Dynamics)");
+    dynMenu.addItem(3, "Limitador Brickwall (True Peak)");
+    dynMenu.addItem(4, "Compuerta de Ruido (Noise Gate)");
+    dynMenu.addItem(5, "De-Esser Quirúrgico");
+    dynMenu.addItem(6, "Modelador de Transitorios (Transient Shaper)");
     menu.addSubMenu("Dinámica & Ganancia", dynMenu);
 
-    // 2. Filtros y EQ
+    // 2. Filtros & Ecualización
     juce::PopupMenu filterMenu;
-    filterMenu.addItem(3, "EQ Paramétrico (3 Bandas)");
-    filterMenu.addItem(4, "Filtro Simple (State Variable)");
-    filterMenu.addItem(5, "Banco de Resonadores (6 Modos)");
+    filterMenu.addItem(7, "EQ Paramétrico (3 Bandas)");
+    filterMenu.addItem(8, "Filtro SVF State-Variable");
+    filterMenu.addItem(9, "Filtro de Formantes (Vocales A-E-I-O-U)");
+    filterMenu.addItem(10, "Banco de Resonadores (6 Modos)");
     menu.addSubMenu("Filtros & EQ", filterMenu);
 
-    // 3. Tiempo y Espacio
+    // 3. Tiempo & Espacio
     juce::PopupMenu timeMenu;
-    timeMenu.addItem(6, "Stereo Delay (Ping-Pong)");
-    timeMenu.addItem(7, "Reverb FDN (4-Line Householder)");
-    timeMenu.addItem(8, "Spatial Panner 3D (Woodworth ITD/ILD)");
+    timeMenu.addItem(11, "Stereo Delay (Ping-Pong)");
+    timeMenu.addItem(12, "Delay Simple");
+    timeMenu.addItem(13, "Reverb FDN (4-Line Householder)");
+    timeMenu.addItem(14, "Reverb Inversa (Pre-Swell Bloom)");
+    timeMenu.addItem(15, "Spatial Panner 3D (Woodworth ITD/ILD)");
+    timeMenu.addItem(42, "Convolución Particionada Zero-Latency (IR)");
     menu.addSubMenu("Tiempo & Espacio", timeMenu);
 
-    // 4. Modulación & Tono
+    // 4. Modulación & Pitch
     juce::PopupMenu modMenu;
-    modMenu.addItem(9, "Phaser (6 Etapas Allpass)");
-    modMenu.addItem(10, "Chorus (4 Voces Cuadratura)");
-    modMenu.addItem(11, "Flanger (Comb Bipolar)");
-    modMenu.addItem(12, "Modulador en Anillo (4 Cuadrantes)");
-    modMenu.addItem(13, "Desplazador de Frecuencia (Hilbert SSB)");
-    modMenu.addItem(14, "Pitch Shifter (Doble Cabezal)");
+    modMenu.addItem(16, "Phaser (6 Etapas Allpass)");
+    modMenu.addItem(17, "Chorus (4 Voces Cuadratura)");
+    modMenu.addItem(18, "Flanger (Comb Bipolar)");
+    modMenu.addItem(19, "Modulador en Anillo (4 Cuadrantes)");
+    modMenu.addItem(20, "Desplazador de Frecuencia (Hilbert SSB)");
+    modMenu.addItem(21, "Pitch Shifter (Doble Cabezal)");
+    modMenu.addItem(22, "Altavoz Giratorio (Leslie Rotary)");
     menu.addSubMenu("Modulación & Pitch", modMenu);
 
     // 5. Granular & Glitch
     juce::PopupMenu grainMenu;
-    grainMenu.addItem(15, "Sintetizador Granular en Nube");
-    grainMenu.addItem(16, "Glitch Beat Slicer");
-    grainMenu.addItem(17, "Spectral Freeze (STFT Drone)");
+    grainMenu.addItem(23, "Sintetizador Granular en Nube");
+    grainMenu.addItem(24, "Glitch Beat Slicer");
+    grainMenu.addItem(25, "Spectral Freeze (STFT Drone)");
+    grainMenu.addItem(26, "Procesador Espectral (Gate / Tilt)");
+    grainMenu.addItem(27, "Simulador Karplus-Strong (Cuerda)");
+    grainMenu.addItem(28, "Efecto Tape Stop (Frenado)");
     menu.addSubMenu("Granular & Glitch", grainMenu);
 
-    // 6. Saturación & Calor
+    // 6. Saturación & Textura
     juce::PopupMenu distMenu;
-    distMenu.addItem(18, "Distorsión (5 Shapers Analógicos)");
-    distMenu.addItem(19, "Saturación de Cinta (Wow & Flutter)");
+    distMenu.addItem(29, "Distorsión (5 Shapers Analógicos)");
+    distMenu.addItem(30, "Saturación de Cinta (Wow & Flutter)");
+    distMenu.addItem(31, "Bitcrusher Lo-Fi (Quantize)");
+    distMenu.addItem(32, "Excitador Armónico (Air Sheen & Sub)");
+    distMenu.addItem(33, "Textura de Ruido Orgánico");
+    distMenu.addItem(34, "Vocoder de 16 Bandas");
+    distMenu.addItem(43, "Oversampling Polifásico HQ (Anti-Aliasing)");
     menu.addSubMenu("Color & Distorsión", distMenu);
 
     // 7. Ruteo & Contenedores
     juce::PopupMenu routeMenu;
-    routeMenu.addItem(20, "Codificador Mid/Side");
-    routeMenu.addItem(21, "Decodificador Mid/Side (Mono Bass Maker)");
-    routeMenu.addItem(22, "Contenedor de Subgrafo");
-    routeMenu.addItem(23, "Lazo de Feedback Controlado");
-    routeMenu.addItem(24, "Rack de Eventos Acústicos");
+    routeMenu.addItem(35, "Codificador Mid/Side");
+    routeMenu.addItem(36, "Decodificador Mid/Side (Mono Bass)");
+    routeMenu.addItem(37, "Contenedor de Subgrafo");
+    routeMenu.addItem(38, "Lazo de Feedback Controlado");
+    routeMenu.addItem(39, "Rack de Eventos Acústicos");
+    routeMenu.addItem(40, "Sidechain Externo (Ducking)");
+    routeMenu.addItem(41, "Ganancia / Passthrough");
     menu.addSubMenu("Ruteo & Contenedores", routeMenu);
 
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this, insertIndex](int result) {
@@ -172,28 +180,47 @@ void SequentialStripComponent::showAddEffectMenu(int insertIndex) {
         switch (result) {
             case 1:  type = NodeType::Compressor; break;
             case 2:  type = NodeType::Multiband; break;
-            case 3:  type = NodeType::Filter; break;
-            case 4:  type = NodeType::Passthrough; break; // o SimpleFilter
-            case 5:  type = NodeType::Resonator; break;
-            case 6:  type = NodeType::Delay; break;
-            case 7:  type = NodeType::Reverb; break;
-            case 8:  type = NodeType::SpatialPanner; break;
-            case 9:  type = NodeType::Phaser; break;
-            case 10: type = NodeType::Chorus; break;
-            case 11: type = NodeType::Flanger; break;
-            case 12: type = NodeType::RingModulator; break;
-            case 13: type = NodeType::FrequencyShifter; break;
-            case 14: type = NodeType::PitchShifter; break;
-            case 15: type = NodeType::Granular; break;
-            case 16: type = NodeType::Glitch; break;
-            case 17: type = NodeType::Spectral; break;
-            case 18: type = NodeType::Distortion; break;
-            case 19: type = NodeType::Tape; break;
-            case 20: type = NodeType::MidSideEncoder; break;
-            case 21: type = NodeType::MidSideDecoder; break;
-            case 22: type = NodeType::Container; break;
-            case 23: type = NodeType::Feedback; break;
-            case 24: type = NodeType::EventContainer; break;
+            case 3:  type = NodeType::BrickwallLimiter; break;
+            case 4:  type = NodeType::NoiseGate; break;
+            case 5:  type = NodeType::DeEsser; break;
+            case 6:  type = NodeType::TransientShaper; break;
+            case 7:  type = NodeType::ParametricEQ; break;
+            case 8:  type = NodeType::Filter; break;
+            case 9:  type = NodeType::FormantFilter; break;
+            case 10: type = NodeType::Resonator; break;
+            case 11: type = NodeType::AdvancedDelay; break;
+            case 12: type = NodeType::Delay; break;
+            case 13: type = NodeType::Reverb; break;
+            case 14: type = NodeType::ReverseReverb; break;
+            case 15: type = NodeType::SpatialPanner; break;
+            case 16: type = NodeType::Phaser; break;
+            case 17: type = NodeType::Chorus; break;
+            case 18: type = NodeType::Flanger; break;
+            case 19: type = NodeType::RingModulator; break;
+            case 20: type = NodeType::FrequencyShifter; break;
+            case 21: type = NodeType::PitchShifter; break;
+            case 22: type = NodeType::RotarySpeaker; break;
+            case 23: type = NodeType::Granular; break;
+            case 24: type = NodeType::Glitch; break;
+            case 25: type = NodeType::Spectral; break;
+            case 26: type = NodeType::SpectralProcessor; break;
+            case 27: type = NodeType::KarplusStrong; break;
+            case 28: type = NodeType::TapeStop; break;
+            case 29: type = NodeType::Distortion; break;
+            case 30: type = NodeType::Tape; break;
+            case 31: type = NodeType::Bitcrusher; break;
+            case 32: type = NodeType::HarmonicExciter; break;
+            case 33: type = NodeType::NoiseTexture; break;
+            case 34: type = NodeType::Vocoder; break;
+            case 35: type = NodeType::MidSideEncoder; break;
+            case 36: type = NodeType::MidSideDecoder; break;
+            case 37: type = NodeType::Container; break;
+            case 38: type = NodeType::Feedback; break;
+            case 39: type = NodeType::EventContainer; break;
+            case 40: type = NodeType::ExternalSidechain; break;
+            case 41: type = NodeType::Passthrough; break;
+            case 42: type = NodeType::Convolution; break;
+            case 43: type = NodeType::Oversampler; break;
             default: break;
         }
 
@@ -221,8 +248,8 @@ void SequentialStripComponent::paint(juce::Graphics& g) {
 void SequentialStripComponent::resized() {
     viewport_.setBounds(getLocalBounds());
 
-    const int slotW = 184;
-    const int slotH = 260;
+    const int slotW = 196;
+    const int slotH = 280;
     const int arrowW = 38;
     const int startX = 110; // Espacio tras la placa de entrada
     const int numSlots = static_cast<int>(slots_.size());

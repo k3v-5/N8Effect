@@ -45,3 +45,6 @@
 #include "../graph/ContainerNode.h"
 #include "processors/FeedbackContainerNode.h"
 #include "processors/EventContainerNode.h"
+#include "processors/ConvolutionNode.h"
+#include "processors/OversamplerNode.h"
+#include "processors/AudioSlicerNode.h"

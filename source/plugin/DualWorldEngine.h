@@ -128,28 +128,53 @@ public:
 
         // B. Calcular nivel RMS de la fuente para Source Following (Regla 3)
         float sourceEnergy = 0.0f;
+        float energyL = 0.0f;
+        float energyR = 0.0f;
         if (context.numInputChannels > 0 && context.inputChannels[0] != nullptr) {
             for (uint32_t s = 0; s < numSamples; ++s) {
-                sourceEnergy += std::abs(context.inputChannels[0][s]);
+                const float sL = std::abs(context.inputChannels[0][s]);
+                const float sR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr)
+                    ? std::abs(context.inputChannels[1][s]) : sL;
+                energyL += sL;
+                energyR += sR;
             }
-            sourceEnergy /= static_cast<float>(numSamples);
+            sourceEnergy = (energyL + energyR) / (static_cast<float>(numSamples) * 2.0f);
         }
 
-        // C. Renderizar eventos activos en el eventBuffer
-        eventBuffer_.clear(numSamples);
+        // C. Renderizar eventos activos en el eventBuffer sumados al audio entrante (Reglas 1, 2, 17)
+        eventBuffer_.copyFrom(context.inputChannels, context.numInputChannels, numSamples);
         if (numChannels >= 2) {
             eventManager_.render(eventBuffer_.getWritePointer(0), eventBuffer_.getWritePointer(1), numSamples, sourceEnergy);
         }
         profiler_.endStage(ProfilerStage::Events);
 
-        // D. Si hay eventos activos, se envían al Grafo de Efectos; si no, pasa el audio directo al grafo
-        ProcessContext eventContext = context;
-        if (eventManager_.getActiveEventCount() > 0) {
-            eventContext.inputChannels = eventBuffer_.getArrayOfReadPointers();
-            eventContext.numInputChannels = eventBuffer_.getNumChannels();
+        // D. Telemetría reactiva en tiempo real para el Radar 3D (Reglas 9, 23, 26)
+        if (snap.onsetStrength > 0.15f || sourceEnergy > 0.003f) {
+            const float tot = energyL + energyR;
+            const float pan = (tot > 1e-5f) ? std::clamp((energyR - energyL) / tot, -1.0f, 1.0f) : 0.0f;
+            const float pitchRatio = (snap.pitchNormalized > 0.01f)
+                ? std::clamp(std::pow(2.0f, (snap.pitchNormalized - 0.5f) * 2.5f), 0.25f, 4.0f)
+                : 1.0f;
+            const float dist = std::clamp(10.0f * (1.0f - snap.spectralCentroid * 0.7f) / (sourceEnergy + 0.2f), 0.5f, 10.0f);
+
+            EventTelemetryItem tItem;
+            tItem.pan = pan;
+            tItem.pitchRatio = pitchRatio;
+            tItem.energy = std::clamp(snap.onsetStrength * 1.2f + sourceEnergy * 3.0f, 0.2f, 1.0f);
+            tItem.distance = dist;
+            tItem.azimuth = pan * 90.0f;
+            tItem.type = (snap.onsetStrength > 0.35f) ? EventType::Transient : EventType::Fragment;
+            tItem.generation = 0;
+            tItem.isAlive = true;
+            eventManager_.getTelemetryBuffer().push(tItem);
         }
 
-        // E. Ejecución del grafo de efectos en un buffer aislado sin tocar el Dry
+        // E. El Grafo de Efectos recibe la suma de audio entrante + eventos en eventBuffer
+        ProcessContext eventContext = context;
+        eventContext.inputChannels = eventBuffer_.getArrayOfReadPointers();
+        eventContext.numInputChannels = eventBuffer_.getNumChannels();
+
+        // F. Ejecución del grafo de efectos en un buffer aislado sin tocar el Dry
         profiler_.startStage(ProfilerStage::Graph);
         executor_.process(plan, eventContext, wetBuffer_);
         profiler_.endStage(ProfilerStage::Graph);

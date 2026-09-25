@@ -8,6 +8,7 @@
 #include "../graph/Graph.h"
 #include "NodeComponent.h"
 #include "WireRenderer.h"
+#include "NodeGroupComponent.h"
 
 namespace audio_graph {
 
@@ -17,7 +18,9 @@ class N8AudioProcessor;
  * @brief Canvas interactivo para edición y visualización del Grafo Modular DAG (Reglas 4, 23, 24, 25).
  * Soporta cableado directo con snapping magnético, desconexión por clic, y encadenamiento automático Drag & Drop.
  */
-class GraphCanvasComponent : public juce::Component, public juce::DragAndDropTarget {
+class GraphCanvasComponent : public juce::Component,
+                             public juce::DragAndDropTarget,
+                             public juce::FileDragAndDropTarget {
 public:
     explicit GraphCanvasComponent(N8AudioProcessor& processor);
     ~GraphCanvasComponent() override = default;
@@ -31,6 +34,13 @@ public:
     NodeId getSelectedNodeId() const noexcept { return selectedNodeId_; }
     void setOnNodeSelected(std::function<void(NodeId)> cb) { onNodeSelected_ = std::move(cb); }
 
+    // Gestión de Nodos y Cajas de Grupo (Regla R2)
+    NodeComponent* findNodeComponent(NodeId id) const;
+    NodeGroupComponent* findGroupComponent(GroupId id) const;
+    const std::vector<std::unique_ptr<NodeGroupComponent>>& getNodeGroups() const noexcept { return nodeGroups_; }
+    void createGroup(const std::vector<NodeId>& nodeIds, std::string_view name = "Group");
+    void removeGroup(GroupId id);
+
     void paint(juce::Graphics& g) override;
     void resized() override;
 
@@ -38,24 +48,32 @@ public:
     void mouseDrag(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e) override;
 
-    // Métodos Drag and Drop (juce::DragAndDropTarget)
+    // Métodos Drag and Drop de Módulos (juce::DragAndDropTarget)
     bool isInterestedInDragSource(const SourceDetails& dragSourceDetails) override;
     void itemDragEnter(const SourceDetails& dragSourceDetails) override;
     void itemDragMove(const SourceDetails& dragSourceDetails) override;
     void itemDragExit(const SourceDetails& dragSourceDetails) override;
     void itemDropped(const SourceDetails& dragSourceDetails) override;
 
+    // Métodos File Drag and Drop para Respuestas al Impulso IR (juce::FileDragAndDropTarget)
+    bool isInterestedInFileDrag(const juce::StringArray& files) override;
+    void fileDragEnter(const juce::StringArray& files, int x, int y) override;
+    void fileDragMove(const juce::StringArray& files, int x, int y) override;
+    void fileDragExit(const juce::StringArray& files) override;
+    void filesDropped(const juce::StringArray& files, int x, int y) override;
+
     // Encadenamiento automático Drag & Drop entre nodos
     void handleNodeDragging(NodeId draggedNodeId, juce::Rectangle<int> draggedBounds);
     void handleNodeDropped(NodeId draggedNodeId, juce::Rectangle<int> draggedBounds);
 
 private:
-    NodeComponent* findNodeComponent(NodeId id) const;
+    void loadIRFileIntoNode(NodeId id, const juce::File& file);
     bool findPinAtCanvasPos(juce::Point<float> pos, NodeId& outNodeId, PinId& outPinId, PinType& outType, PinDataType& outDataType, juce::Point<float>& outCenter, float tolerance = 18.0f) const;
     ConnectionId findConnectionNear(juce::Point<float> pos, float threshold = 8.0f) const;
 
     N8AudioProcessor& processor_;
     std::vector<std::unique_ptr<NodeComponent>> nodeComponents_;
+    std::vector<std::unique_ptr<NodeGroupComponent>> nodeGroups_;
     NodeId selectedNodeId_{ InvalidNodeId };
     std::function<void(NodeId)> onNodeSelected_;
 

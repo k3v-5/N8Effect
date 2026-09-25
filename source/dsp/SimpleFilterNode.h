@@ -25,6 +25,7 @@ public:
     SimpleFilterNode() {
         pins_[0] = { 1, "Audio In", PinType::AudioInput, PinDataType::AudioStereo };
         pins_[1] = { 2, "Audio Out", PinType::AudioOutput, PinDataType::AudioStereo };
+        pins_[2] = { 4, "FM In", PinType::AudioRateModulationInput, PinDataType::AudioStereo };
         params_[0] = { CutoffHz, "Cutoff", 1000.0f, 20.0f, 20000.0f, true };
         params_[1] = { Resonance, "Resonance", 0.707f, 0.1f, 10.0f, true };
         params_[2] = { Mode, "Mode", 0.0f, 0.0f, 2.0f, false };
@@ -44,17 +45,37 @@ public:
     void process(ProcessContext& context) override {
         updateCoefficients();
 
+        const bool hasFM = (context.numAudioRateModChannels > 0 && context.audioRateModChannels != nullptr);
+        const float sampleRate = static_cast<float>(spec_.sampleRate > 0.0 ? spec_.sampleRate : 44100.0);
+        const float maxNyquist = std::max(100.0f, sampleRate * 0.48f);
         const uint32_t channels = std::min(context.numOutputChannels, static_cast<uint32_t>(2));
+
         for (uint32_t s = 0; s < context.numSamples; ++s) {
+            float g = g_;
+            float h = h_;
+            float r = r_;
+
+            // Modulación FM muestra a muestra (Módulo 3)
+            if (hasFM) {
+                float fmMod = context.audioRateModChannels[0] ? context.audioRateModChannels[0][s] : 0.0f;
+                float modCutoff = std::clamp(targetCutoff_ * std::pow(2.0f, fmMod * 2.5f), 20.0f, maxNyquist);
+                float wd = 2.0f * std::numbers::pi_v<float> * modCutoff;
+                float T = 1.0f / sampleRate;
+                float wa = (2.0f / T) * std::tan(wd * T * 0.5f);
+                g = wa * T * 0.5f;
+                r = 1.0f / (2.0f * targetResonance_);
+                h = 1.0f + 2.0f * r * g + g * g;
+            }
+
             for (uint32_t ch = 0; ch < channels; ++ch) {
                 const float in = (ch < context.numInputChannels && context.inputChannels[ch] != nullptr)
                     ? context.inputChannels[ch][s]
                     : 0.0f;
 
                 // TPT State Variable Filter equations
-                const float hp = (in - (2.0f * r_ + g_) * s1_[ch] - s2_[ch]) / h_;
-                const float bp = g_ * hp + s1_[ch];
-                const float lp = g_ * bp + s2_[ch];
+                const float hp = (in - (2.0f * r + g) * s1_[ch] - s2_[ch]) / h;
+                const float bp = g * hp + s1_[ch];
+                const float lp = g * bp + s2_[ch];
 
                 s1_[ch] = 2.0f * bp - s1_[ch];
                 s2_[ch] = 2.0f * lp - s2_[ch];
@@ -119,7 +140,7 @@ private:
     std::array<float, 2> s1_{ 0.0f, 0.0f };
     std::array<float, 2> s2_{ 0.0f, 0.0f };
 
-    std::array<PinDescriptor, 2> pins_;
+    std::array<PinDescriptor, 3> pins_;
     std::array<ParameterInfo, 3> params_;
 };
 

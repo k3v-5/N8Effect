@@ -129,6 +129,14 @@ public:
         a2_ = static_cast<float>(a2 * invA0);
     }
 
+    void setLowpass(double sampleRate, float frequencyHz, float q = 0.707f) noexcept {
+        setCoefficients(Type::Lowpass, sampleRate, frequencyHz, q);
+    }
+
+    void setHighpass(double sampleRate, float frequencyHz, float q = 0.707f) noexcept {
+        setCoefficients(Type::Highpass, sampleRate, frequencyHz, q);
+    }
+
     // Procesa una muestra con protección estricta contra NaN/Inf (Regla 38)
     float processSample(float in) noexcept {
         const float out = b0_ * in + z1_;
@@ -139,6 +147,10 @@ public:
         if (std::isnan(z2_) || std::isinf(z2_)) z2_ = 0.0f;
 
         return out;
+    }
+
+    float process(float in) noexcept {
+        return processSample(in);
     }
 
 private:

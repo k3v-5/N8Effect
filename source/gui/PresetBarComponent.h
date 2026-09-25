@@ -4,12 +4,105 @@
 #include <functional>
 #include <vector>
 #include <string>
+#include <algorithm>
 
 namespace audio_graph {
 
 /**
+ * @brief Capsula de visualizacion central de presets inspirada en Arturia (Pigments/V Collection) y Image-Line FLEX.
+ * Muestra la categoria tematica, titulo de preset en negrita de alta definicion, tira LED y boton de apertura directa de browser.
+ */
+class ArturiaPresetCapsule : public juce::Component, public juce::SettableTooltipClient {
+public:
+    ArturiaPresetCapsule() {
+        setRepaintsOnMouseActivity(true);
+        setTooltip("Haz clic para abrir el Navegador de Presets Profesional");
+    }
+
+    void setPreset(const juce::String& name, const juce::String& category) {
+        name_ = name.isEmpty() ? "Select Preset..." : name;
+        category_ = category.isEmpty() ? "FACTORY" : category;
+        repaint();
+    }
+
+    void setOnClick(std::function<void()> cb) { onClick_ = std::move(cb); }
+
+    void mouseDown(const juce::MouseEvent& /*e*/) override {
+        isDown_ = true;
+        repaint();
+    }
+
+    void mouseUp(const juce::MouseEvent& e) override {
+        if (isDown_ && e.getDistanceFromDragStart() <= 4 && onClick_) {
+            onClick_();
+        }
+        isDown_ = false;
+        repaint();
+    }
+
+    void paint(juce::Graphics& g) override {
+        auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+        const bool hovered = isMouseOver();
+
+        // 1. Chasis estilo capsula de aluminio titanio
+        juce::ColourGradient grad(
+            isDown_ ? juce::Colour(0xff090c12) : (hovered ? juce::Colour(0xff182230) : juce::Colour(0xff0e131c)),
+            bounds.getTopLeft(),
+            juce::Colour(0xff06080e), bounds.getBottomLeft(), false);
+        g.setGradientFill(grad);
+        g.fillRoundedRectangle(bounds, 4.0f);
+
+        // Borde reactivo
+        g.setColour(hovered ? juce::Colour(0xff00d4ff).withAlpha(0.65f) : juce::Colour(0xff1e2636));
+        g.drawRoundedRectangle(bounds, 4.0f, 1.0f);
+
+        // Tira LED lateral izquierda con color de categoria
+        const auto catCol = getCategoryColor(category_);
+        auto led = bounds.removeFromLeft(3.0f).reduced(0.0f, 2.0f);
+        g.setColour(catCol);
+        g.fillRoundedRectangle(led, 1.5f);
+
+        bounds.removeFromLeft(6.0f);
+        auto browseIconArea = bounds.removeFromRight(60.0f);
+
+        // 2. Fila superior: Categoria
+        auto catArea = bounds.removeFromTop(bounds.getHeight() * 0.44f);
+        g.setFont(juce::FontOptions(7.5f, juce::Font::bold));
+        g.setColour(catCol.withAlpha(0.9f));
+        g.drawText(category_.toUpperCase(), catArea, juce::Justification::centredLeft, true);
+
+        // 3. Fila inferior: Nombre del Preset
+        g.setFont(juce::FontOptions(10.5f, juce::Font::bold));
+        g.setColour(hovered ? juce::Colours::white : juce::Colour(0xffe2e8f0));
+        g.drawText(name_, bounds, juce::Justification::centredLeft, true);
+
+        // 4. Boton / Distintivo BROWSE a la derecha
+        g.setColour(hovered ? juce::Colour(0xff00d4ff) : juce::Colour(0xff556477));
+        g.setFont(juce::FontOptions(8.5f, juce::Font::bold));
+        g.drawText(juce::String::fromUTF8("\xE2\x97\x88 BROWSE"), browseIconArea, juce::Justification::centredRight, true);
+    }
+
+private:
+    static juce::Colour getCategoryColor(const juce::String& cat) {
+        auto c = cat.toLowerCase();
+        if (c.contains("space") || c.contains("reverb") || c.contains("ambient")) return juce::Colour(0xff00e5ff);
+        if (c.contains("glitch") || c.contains("grain") || c.contains("spectral")) return juce::Colour(0xffffcc00);
+        if (c.contains("drive") || c.contains("distort") || c.contains("fuzz")) return juce::Colour(0xffff3355);
+        if (c.contains("mod") || c.contains("chorus") || c.contains("phase")) return juce::Colour(0xffbf55ec);
+        if (c.contains("dyn") || c.contains("comp")) return juce::Colour(0xff00ff88);
+        if (c.contains("synth") || c.contains("bass")) return juce::Colour(0xffa0e000);
+        return juce::Colour(0xff00d4ff);
+    }
+
+    juce::String name_{ "Select Preset..." };
+    juce::String category_{ "FACTORY" };
+    bool isDown_{ false };
+    std::function<void()> onClick_;
+};
+
+/**
  * @brief Barra superior de control de Presets, Captura de Escenas, Morphing y Undo/Redo (Reglas 21, 22, 25).
- * Soporta navegación por 20 categorías temáticas con encabezados de sección ('addSectionHeading').
+ * Estilo de consola profesional de produccion (Arturia / FLEX).
  */
 class PresetBarComponent : public juce::Component {
 public:
@@ -19,39 +112,41 @@ public:
     };
 
     PresetBarComponent() {
-        // 1. Selector de Presets con categorías y encabezados de sección
-        presetCombo_.setTextWhenNothingSelected("Select Preset...");
-        presetCombo_.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff181824));
-        presetCombo_.setColour(juce::ComboBox::textColourId, juce::Colours::white);
-        presetCombo_.onChange = [this]() {
-            if (onPresetSelected_) {
-                const int id = presetCombo_.getSelectedId();
-                if (id > 0) {
-                    onPresetSelected_(id - 1);
-                }
+        // 1. Selector de Presets Arturia / FLEX
+        capsule_.setOnClick([this]() {
+            if (onBrowseRequested_) {
+                onBrowseRequested_();
             }
-        };
-        addAndMakeVisible(presetCombo_);
+        });
+        addAndMakeVisible(capsule_);
 
-        prevBtn_.setButtonText("<");
+        // Boton Stepper Izquierdo ◀
+        prevBtn_.setButtonText(juce::CharPointer_UTF8("\xE2\x97\x80"));
+        prevBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff121622));
+        prevBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff8c96a5));
         prevBtn_.onClick = [this]() {
-            const int id = presetCombo_.getSelectedId();
-            if (id > 1) {
-                presetCombo_.setSelectedId(id - 1, juce::sendNotificationSync);
-            }
+            if (totalPresets_ <= 0) return;
+            currentPresetIndex_ = (currentPresetIndex_ - 1 + totalPresets_) % totalPresets_;
+            updateCapsuleDisplay();
+            if (onPresetSelected_) onPresetSelected_(currentPresetIndex_);
         };
         addAndMakeVisible(prevBtn_);
 
-        nextBtn_.setButtonText(">");
+        // Boton Stepper Derecho ▶
+        nextBtn_.setButtonText(juce::CharPointer_UTF8("\xE2\x96\xB6"));
+        nextBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff121622));
+        nextBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff8c96a5));
         nextBtn_.onClick = [this]() {
-            const int id = presetCombo_.getSelectedId();
-            if (id >= 1 && id < totalPresets_) {
-                presetCombo_.setSelectedId(id + 1, juce::sendNotificationSync);
-            }
+            if (totalPresets_ <= 0) return;
+            currentPresetIndex_ = (currentPresetIndex_ + 1) % totalPresets_;
+            updateCapsuleDisplay();
+            if (onPresetSelected_) onPresetSelected_(currentPresetIndex_);
         };
         addAndMakeVisible(nextBtn_);
 
         saveBtn_.setButtonText("Save");
+        saveBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff121622));
+        saveBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff8c96a5));
         saveBtn_.onClick = [this]() {
             if (onSavePresetRequested_) {
                 onSavePresetRequested_();
@@ -59,7 +154,9 @@ public:
         };
         addAndMakeVisible(saveBtn_);
 
-        randomBtn_.setButtonText(juce::String::fromUTF8("🎲 Random"));
+        randomBtn_.setButtonText(juce::String::fromUTF8("🎲 Rand"));
+        randomBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff161a26));
+        randomBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffffaa00));
         randomBtn_.onClick = [this]() {
             if (onRandomizeRequested_) {
                 onRandomizeRequested_(1);
@@ -69,12 +166,16 @@ public:
 
         // 2. Botones de Escena y Slider de Morphing
         captureABtn_.setButtonText("Cap A");
+        captureABtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff121622));
+        captureABtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff8c96a5));
         captureABtn_.onClick = [this]() {
             if (onCaptureSceneARequested_) onCaptureSceneARequested_();
         };
         addAndMakeVisible(captureABtn_);
 
         captureBBtn_.setButtonText("Cap B");
+        captureBBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff121622));
+        captureBBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff8c96a5));
         captureBBtn_.onClick = [this]() {
             if (onCaptureSceneBRequested_) onCaptureSceneBRequested_();
         };
@@ -83,7 +184,7 @@ public:
         morphSlider_.setSliderStyle(juce::Slider::LinearBar);
         morphSlider_.setRange(0.0, 1.0, 0.01);
         morphSlider_.setValue(0.0);
-        morphSlider_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 40, 18);
+        morphSlider_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 36, 16);
         morphSlider_.onValueChange = [this]() {
             if (onMorphChanged_) {
                 onMorphChanged_(static_cast<float>(morphSlider_.getValue()));
@@ -91,92 +192,118 @@ public:
         };
         addAndMakeVisible(morphSlider_);
 
-        morphLabel_.setText("MORPH A-B", juce::dontSendNotification);
-        morphLabel_.setFont(juce::FontOptions(10.0f, juce::Font::bold));
-        morphLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
+        morphLabel_.setText("MORPH", juce::dontSendNotification);
+        morphLabel_.setFont(juce::FontOptions(9.5f, juce::Font::bold));
+        morphLabel_.setColour(juce::Label::textColourId, juce::Colour(0xff8c96a5));
         addAndMakeVisible(morphLabel_);
 
         // 3. Botones Undo / Redo
         undoBtn_.setButtonText("Undo");
+        undoBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff121622));
+        undoBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff8c96a5));
         undoBtn_.onClick = [this]() { if (onUndoRequested_) onUndoRequested_(); };
         addAndMakeVisible(undoBtn_);
 
         redoBtn_.setButtonText("Redo");
+        redoBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff121622));
+        redoBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff8c96a5));
         redoBtn_.onClick = [this]() { if (onRedoRequested_) onRedoRequested_(); };
         addAndMakeVisible(redoBtn_);
 
         // 4. Importar / Exportar presets en disco (.n8preset)
-        importBtn_.setButtonText("Import");
+        importBtn_.setButtonText("Imp");
+        importBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff121622));
+        importBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff8c96a5));
         importBtn_.onClick = [this]() { if (onImportPresetFileRequested_) onImportPresetFileRequested_(); };
         addAndMakeVisible(importBtn_);
 
-        exportBtn_.setButtonText("Export");
+        exportBtn_.setButtonText("Exp");
+        exportBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff121622));
+        exportBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff8c96a5));
         exportBtn_.onClick = [this]() { if (onExportPresetFileRequested_) onExportPresetFileRequested_(); };
         addAndMakeVisible(exportBtn_);
 
-        // 5. Botón de Conmutación de Piano Visual
-        pianoToggleBtn_.setButtonText("Piano: ON");
+        // 5. Boton de Conmutacion de Piano Visual
+        pianoToggleBtn_.setButtonText("Piano");
+        pianoToggleBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff161a26));
+        pianoToggleBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff00d4ff));
         pianoToggleBtn_.onClick = [this]() {
             isPianoVisible_ = !isPianoVisible_;
-            pianoToggleBtn_.setButtonText(isPianoVisible_ ? "Piano: ON" : "Piano: OFF");
+            pianoToggleBtn_.setColour(juce::TextButton::textColourOffId, isPianoVisible_ ? juce::Colour(0xff00d4ff) : juce::Colour(0xff606c80));
             if (onTogglePianoRequested_) onTogglePianoRequested_(isPianoVisible_);
         };
         addAndMakeVisible(pianoToggleBtn_);
 
-        // 6. Botón de Conmutación del Carril de Secuenciador por Efecto
-        seqToggleBtn_.setButtonText("Seq: ON");
+        // 6. Boton de Conmutacion del Carril de Secuenciador por Efecto
+        seqToggleBtn_.setButtonText("Seq");
+        seqToggleBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff161a26));
+        seqToggleBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff00d4ff));
         seqToggleBtn_.onClick = [this]() {
             isSeqVisible_ = !isSeqVisible_;
-            seqToggleBtn_.setButtonText(isSeqVisible_ ? "Seq: ON" : "Seq: OFF");
+            seqToggleBtn_.setColour(juce::TextButton::textColourOffId, isSeqVisible_ ? juce::Colour(0xff00d4ff) : juce::Colour(0xff606c80));
             if (onToggleSeqRequested_) onToggleSeqRequested_(isSeqVisible_);
         };
         addAndMakeVisible(seqToggleBtn_);
 
-        // 7. Botones de Conmutación de Visualizador y Macros
-        visToggleBtn_.setButtonText("Vis: ON");
+        // 7. Botones de Conmutacion de Visualizador y Macros
+        visToggleBtn_.setButtonText("Vis");
+        visToggleBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff161a26));
+        visToggleBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff00d4ff));
         visToggleBtn_.onClick = [this]() {
             isVisVisible_ = !isVisVisible_;
-            visToggleBtn_.setButtonText(isVisVisible_ ? "Vis: ON" : "Vis: OFF");
+            visToggleBtn_.setColour(juce::TextButton::textColourOffId, isVisVisible_ ? juce::Colour(0xff00d4ff) : juce::Colour(0xff606c80));
             if (onToggleVisRequested_) onToggleVisRequested_(isVisVisible_);
         };
         addAndMakeVisible(visToggleBtn_);
 
-        macrosToggleBtn_.setButtonText("Macros: ON");
+        macrosToggleBtn_.setButtonText("Macros");
+        macrosToggleBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff161a26));
+        macrosToggleBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff00d4ff));
         macrosToggleBtn_.onClick = [this]() {
             isMacrosVisible_ = !isMacrosVisible_;
-            macrosToggleBtn_.setButtonText(isMacrosVisible_ ? "Macros: ON" : "Macros: OFF");
+            macrosToggleBtn_.setColour(juce::TextButton::textColourOffId, isMacrosVisible_ ? juce::Colour(0xff00d4ff) : juce::Colour(0xff606c80));
             if (onToggleMacrosRequested_) onToggleMacrosRequested_(isMacrosVisible_);
         };
         addAndMakeVisible(macrosToggleBtn_);
     }
 
     void setPresetList(const std::vector<PresetItem>& presets) {
-        presetCombo_.clear(juce::dontSendNotification);
-        totalPresets_ = static_cast<int>(presets.size());
-        std::string currentCategory = "";
-
-        for (int i = 0; i < totalPresets_; ++i) {
-            if (!presets[i].category.empty() && presets[i].category != currentCategory) {
-                currentCategory = presets[i].category;
-                presetCombo_.addSectionHeading(currentCategory);
-            }
-            presetCombo_.addItem(presets[i].name, i + 1);
-        }
-
-        if (totalPresets_ > 0) {
-            presetCombo_.setSelectedId(1, juce::dontSendNotification);
-        }
+        presetItems_ = presets;
+        totalPresets_ = static_cast<int>(presetItems_.size());
+        currentPresetIndex_ = 0;
+        updateCapsuleDisplay();
     }
 
     void setPresetList(const std::vector<std::string>& presetNames) {
-        presetCombo_.clear(juce::dontSendNotification);
-        totalPresets_ = static_cast<int>(presetNames.size());
-        for (int i = 0; i < totalPresets_; ++i) {
-            presetCombo_.addItem(presetNames[i], i + 1);
+        presetItems_.clear();
+        presetItems_.reserve(presetNames.size());
+        for (const auto& name : presetNames) {
+            presetItems_.push_back({ name, "General" });
         }
-        if (totalPresets_ > 0) {
-            presetCombo_.setSelectedId(1, juce::dontSendNotification);
+        totalPresets_ = static_cast<int>(presetItems_.size());
+        currentPresetIndex_ = 0;
+        updateCapsuleDisplay();
+    }
+
+    void setCurrentPreset(int index) {
+        if (index >= 0 && index < totalPresets_) {
+            currentPresetIndex_ = index;
+            updateCapsuleDisplay();
         }
+    }
+
+    void setCurrentPreset(const juce::String& name, const juce::String& category) {
+        capsule_.setPreset(name, category);
+        for (size_t i = 0; i < presetItems_.size(); ++i) {
+            if (presetItems_[i].name == name.toStdString()) {
+                currentPresetIndex_ = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+
+    int getCurrentPresetIndex() const noexcept {
+        return currentPresetIndex_;
     }
 
     void setUndoRedoEnabled(bool canUndo, bool canRedo) {
@@ -186,16 +313,17 @@ public:
 
     void setPianoToggleState(bool isVisible) {
         isPianoVisible_ = isVisible;
-        pianoToggleBtn_.setButtonText(isPianoVisible_ ? "Piano: ON" : "Piano: OFF");
+        pianoToggleBtn_.setColour(juce::TextButton::textColourOffId, isPianoVisible_ ? juce::Colour(0xff00d4ff) : juce::Colour(0xff606c80));
     }
 
     void setSeqToggleState(bool isVisible) {
         isSeqVisible_ = isVisible;
-        seqToggleBtn_.setButtonText(isSeqVisible_ ? "Seq: ON" : "Seq: OFF");
+        seqToggleBtn_.setColour(juce::TextButton::textColourOffId, isSeqVisible_ ? juce::Colour(0xff00d4ff) : juce::Colour(0xff606c80));
     }
 
     void setOnPresetSelected(std::function<void(int)> cb) { onPresetSelected_ = std::move(cb); }
     void setOnSavePresetRequested(std::function<void()> cb) { onSavePresetRequested_ = std::move(cb); }
+    void setOnBrowseRequested(std::function<void()> cb) { onBrowseRequested_ = std::move(cb); }
     void setOnCaptureSceneA(std::function<void()> cb) { onCaptureSceneARequested_ = std::move(cb); }
     void setOnCaptureSceneB(std::function<void()> cb) { onCaptureSceneBRequested_ = std::move(cb); }
     void setOnMorphChanged(std::function<void(float)> cb) { onMorphChanged_ = std::move(cb); }
@@ -213,57 +341,64 @@ public:
         g.setColour(juce::Colour(0xff000000));
         g.fillRect(getLocalBounds());
 
-        // Línea divisoria inferior blanca nítida
-        g.setColour(juce::Colours::white);
+        // Linea divisoria inferior
+        g.setColour(juce::Colour(0xff1c2432));
         g.drawHorizontalLine(getHeight() - 1, 0.0f, static_cast<float>(getWidth()));
     }
 
     void resized() override {
         auto area = getLocalBounds().reduced(4, 2);
 
-        // Botón derecho: Macros, Vis, Seq, Piano y Export/Import
-        macrosToggleBtn_.setBounds(area.removeFromRight(76));
-        area.removeFromRight(4);
-        visToggleBtn_.setBounds(area.removeFromRight(66));
-        area.removeFromRight(4);
-        seqToggleBtn_.setBounds(area.removeFromRight(66));
-        area.removeFromRight(4);
-        pianoToggleBtn_.setBounds(area.removeFromRight(76));
+        // Grupo derecho: Toggles de vistas (Macros, Vis, Seq, Piano) + Imp/Exp
+        macrosToggleBtn_.setBounds(area.removeFromRight(56));
+        area.removeFromRight(3);
+        visToggleBtn_.setBounds(area.removeFromRight(36));
+        area.removeFromRight(3);
+        seqToggleBtn_.setBounds(area.removeFromRight(36));
+        area.removeFromRight(3);
+        pianoToggleBtn_.setBounds(area.removeFromRight(46));
         area.removeFromRight(6);
-        exportBtn_.setBounds(area.removeFromRight(46));
+        exportBtn_.setBounds(area.removeFromRight(34));
         area.removeFromRight(2);
-        importBtn_.setBounds(area.removeFromRight(46));
+        importBtn_.setBounds(area.removeFromRight(34));
         area.removeFromRight(8);
 
-        // Undo / Redo
-        undoBtn_.setBounds(area.removeFromLeft(44));
+        // Grupo izquierdo: Undo / Redo
+        undoBtn_.setBounds(area.removeFromLeft(38));
         area.removeFromLeft(2);
-        redoBtn_.setBounds(area.removeFromLeft(44));
+        redoBtn_.setBounds(area.removeFromLeft(38));
         area.removeFromLeft(8);
 
-        // Selector y botones de preset (ancho ampliado para categorías y títulos creativos)
-        prevBtn_.setBounds(area.removeFromLeft(22));
+        // Centro: Capsula Arturia / FLEX con Steppers
+        prevBtn_.setBounds(area.removeFromLeft(20));
         area.removeFromLeft(2);
-        presetCombo_.setBounds(area.removeFromLeft(180));
+        capsule_.setBounds(area.removeFromLeft(240));
         area.removeFromLeft(2);
-        nextBtn_.setBounds(area.removeFromLeft(22));
-        area.removeFromLeft(4);
-        saveBtn_.setBounds(area.removeFromLeft(42));
-        area.removeFromLeft(4);
-        randomBtn_.setBounds(area.removeFromLeft(70));
+        nextBtn_.setBounds(area.removeFromLeft(20));
+        area.removeFromLeft(6);
+
+        saveBtn_.setBounds(area.removeFromLeft(38));
+        area.removeFromLeft(3);
+        randomBtn_.setBounds(area.removeFromLeft(54));
         area.removeFromLeft(10);
 
         // Escenas y Morph
-        captureABtn_.setBounds(area.removeFromLeft(46));
+        captureABtn_.setBounds(area.removeFromLeft(42));
         area.removeFromLeft(4);
-        morphLabel_.setBounds(area.removeFromLeft(64));
-        morphSlider_.setBounds(area.removeFromLeft(95));
+        morphLabel_.setBounds(area.removeFromLeft(46));
+        morphSlider_.setBounds(area.removeFromLeft(80));
         area.removeFromLeft(4);
-        captureBBtn_.setBounds(area.removeFromLeft(46));
+        captureBBtn_.setBounds(area.removeFromLeft(42));
     }
 
 private:
-    juce::ComboBox presetCombo_;
+    void updateCapsuleDisplay() {
+        if (currentPresetIndex_ >= 0 && currentPresetIndex_ < static_cast<int>(presetItems_.size())) {
+            capsule_.setPreset(presetItems_[currentPresetIndex_].name, presetItems_[currentPresetIndex_].category);
+        }
+    }
+
+    ArturiaPresetCapsule capsule_;
     juce::TextButton prevBtn_;
     juce::TextButton nextBtn_;
     juce::TextButton saveBtn_;
@@ -276,9 +411,9 @@ private:
 
     juce::TextButton undoBtn_;
     juce::TextButton redoBtn_;
-
     juce::TextButton importBtn_;
     juce::TextButton exportBtn_;
+
     juce::TextButton pianoToggleBtn_;
     juce::TextButton seqToggleBtn_;
     juce::TextButton visToggleBtn_;
@@ -289,9 +424,12 @@ private:
     bool isVisVisible_{ true };
     bool isMacrosVisible_{ true };
     int totalPresets_{ 0 };
+    int currentPresetIndex_{ 0 };
+    std::vector<PresetItem> presetItems_;
 
     std::function<void(int)> onPresetSelected_;
     std::function<void()> onSavePresetRequested_;
+    std::function<void()> onBrowseRequested_;
     std::function<void()> onCaptureSceneARequested_;
     std::function<void()> onCaptureSceneBRequested_;
     std::function<void(float)> onMorphChanged_;
@@ -304,6 +442,8 @@ private:
     std::function<void(bool)> onToggleVisRequested_;
     std::function<void(bool)> onToggleMacrosRequested_;
     std::function<void(int)> onRandomizeRequested_;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PresetBarComponent)
 };
 
 } // namespace audio_graph

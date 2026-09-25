@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cassert>
 #include <unordered_set>
+#include <thread>
+#include <chrono>
 
 #include "../source/core/Types.h"
 #include "../source/core/RealtimePools.h"
@@ -82,6 +84,10 @@
 #include "../source/modulation/EuclideanModulator.h"
 #include "../source/modulation/ChaosModulator.h"
 #include "../source/preset/SmartRandomizer.h"
+#include "../source/midi/MpeManager.h"
+#include "../source/midi/MidiMappingManager.h"
+#include "../source/preset/PresetPackager.h"
+#include "../source/dsp/processors/AudioSlicerNode.h"
 
 using namespace audio_graph;
 
@@ -2641,12 +2647,12 @@ void testTestInputSynthesizerPolyphonyAndLifecycle() {
 }
 
 void testAll40FactoryPresetsCatalog() {
-    std::cout << "[TEST] 20 Thematic Categories & 40 Creative Presets (Reglas 4, 5, 9, 21, 22, 34, 38, 44, 46)... ";
+    std::cout << "[TEST] 20 Thematic Categories & 70 Creative Presets (Reglas 4, 5, 9, 21, 22, 34, 38, 44, 46)... ";
     ProcessSpec spec{ 48000.0, 256, 2, 2 };
 
     PresetManager pm;
     const auto& presets = pm.getFactoryPresets();
-    assert(presets.size() == 40);
+    assert(presets.size() == 70);
 
     const auto categories = pm.getCategories();
     assert(categories.size() == 20);
@@ -2737,16 +2743,16 @@ void testAll40FactoryPresetsCatalog() {
         }
     }
 
-    // Comprobar que todas las 20 categorías tienen exactamente 2 presets
+    // Comprobar que todas las 20 categorías están cubiertas (con al menos 2 presets cada una)
     assert(categoryCounts.size() == 20);
     for (const auto& [cat, count] : categoryCounts) {
-        assert(count == 2);
+        assert(count >= 2);
     }
 
-    // Verificar que se emplean al menos 23 tipos distintos de nodos en el catálogo de presets
-    assert(presentNodeTypes.size() >= 23);
+    // Verificar que se emplean al menos 28 tipos distintos de nodos en el catálogo de presets
+    assert(presentNodeTypes.size() >= 28);
 
-    std::cout << "PASSED (40 presets, 20 categorias, " << presentNodeTypes.size() << " tipos DSP verificados)\n";
+    std::cout << "PASSED (70 presets, 20 categorias, " << presentNodeTypes.size() << " tipos DSP verificados)\n";
 }
 
 void testTapeStopProcessingAndHermiteInterpolation() {
@@ -3987,6 +3993,1470 @@ void testSidechainModularRoutingAndVocoder() {
     std::cout << "PASSED\n";
 }
 
+void testEventTelemetryBufferLockFree() {
+    std::cout << "[TEST] EventTelemetryBuffer Lock-Free SPSC & Bounded Overflow (Reglas 9, 26, 47)... ";
+    EventTelemetryBuffer buffer;
+    assert(buffer.size() == 0);
+
+    // 1. Empujar y leer 100 elementos comprobando FIFO
+    for (uint32_t i = 0; i < 100; ++i) {
+        EventTelemetryItem item;
+        item.pan = static_cast<float>(i) / 100.0f;
+        item.pitchRatio = 1.0f + static_cast<float>(i) * 0.01f;
+        item.energy = 0.5f;
+        item.distance = 2.0f;
+        item.azimuth = 45.0f;
+        item.type = EventType::Grain;
+        item.generation = 1;
+        item.isAlive = true;
+        bool ok = buffer.push(item);
+        assert(ok);
+    }
+
+    assert(buffer.size() == 100);
+
+    for (uint32_t i = 0; i < 100; ++i) {
+        EventTelemetryItem outItem;
+        bool ok = buffer.pop(outItem);
+        assert(ok);
+        assert(std::abs(outItem.pan - (static_cast<float>(i) / 100.0f)) < 1e-4f);
+        assert(outItem.type == EventType::Grain);
+    }
+    assert(buffer.size() == 0);
+
+    // 2. Llenar hasta capacidad completa (1024) y verificar desbordamiento controlado
+    for (size_t i = 0; i < EventTelemetryBuffer::Capacity; ++i) {
+        EventTelemetryItem item;
+        item.pan = 0.0f;
+        item.energy = 1.0f;
+        bool ok = buffer.push(item);
+        assert(ok);
+    }
+    assert(buffer.size() == EventTelemetryBuffer::Capacity);
+
+    // Desbordamiento controlado: debe retornar false sin bloquear ni corromper
+    EventTelemetryItem overflowItem;
+    overflowItem.energy = 999.0f;
+    bool overflowOk = buffer.push(overflowItem);
+    assert(!overflowOk);
+
+    // Resetear
+    buffer.reset();
+    assert(buffer.size() == 0);
+
+    std::cout << "PASSED\n";
+}
+
+void testUserPresetBankStorageAndFiltering() {
+    std::cout << "[TEST] UserPresetBank Disk Persistence, Tag Indexing & Filtering (Reglas 21, 27)... ";
+    auto tempDir = (std::filesystem::temp_directory_path() / "n8_test_presets").string();
+
+    UserPresetBank bank;
+    bank.setDirectory(tempDir);
+
+    Graph graph;
+    auto node1 = NodeFactory::getInstance().create(NodeType::Delay);
+    auto node2 = NodeFactory::getInstance().create(NodeType::Compressor);
+    NodeId id1 = graph.addNode(std::move(node1), "Delay", 10.0f, 10.0f);
+    NodeId id2 = graph.addNode(std::move(node2), "Compressor", 100.0f, 10.0f);
+    graph.connect(id1, 0, id2, 0);
+
+    std::array<float, 8> macros{ 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f };
+
+    // Guardar Preset 1
+    PresetMetadata meta1;
+    meta1.name = "Ethereal Echoes";
+    meta1.category = "Delays";
+    meta1.author = "SoundDesigner";
+    meta1.description = "Ambient delay cloud with feedback compression";
+    meta1.tags = { "Ambient", "Space", "Tape" };
+    meta1.favorite = true;
+    bool saved1 = bank.savePreset(graph, meta1, macros);
+    assert(saved1);
+
+    // Guardar Preset 2
+    PresetMetadata meta2;
+    meta2.name = "Cyber Glitch";
+    meta2.category = "Glitch";
+    meta2.author = "Producer";
+    meta2.description = "Rapid buffer stutters and distortion";
+    meta2.tags = { "Glitch", "Fast", "Aggressive" };
+    meta2.favorite = false;
+    bool saved2 = bank.savePreset(graph, meta2, macros);
+    assert(saved2);
+
+    // Guardar Preset 3
+    PresetMetadata meta3;
+    meta3.name = "Analog Warmth";
+    meta3.category = "Warmth";
+    meta3.author = "SoundDesigner";
+    meta3.description = "Vintage compression and harmonics";
+    meta3.tags = { "Vintage", "Warmth", "Tape" };
+    meta3.favorite = true;
+    bool saved3 = bank.savePreset(graph, meta3, macros);
+    assert(saved3);
+
+    assert(bank.getPresetCount() == 3);
+
+    // Filtrar por texto de búsqueda "Echoes"
+    auto resSearch = bank.filter("Echoes", "All", {}, false);
+    assert(resSearch.size() == 1);
+    assert(bank.getPreset(resSearch[0])->metadata.name == "Ethereal Echoes");
+
+    // Filtrar por categoría "Glitch"
+    auto resCat = bank.filter("", "Glitch", {}, false);
+    assert(resCat.size() == 1);
+    assert(bank.getPreset(resCat[0])->metadata.name == "Cyber Glitch");
+
+    // Filtrar por tag "Tape"
+    auto resTag = bank.filter("", "All", { "Tape" }, false);
+    assert(resTag.size() == 2);
+
+    // Filtrar solo favoritos
+    auto resFav = bank.filter("", "All", {}, true);
+    assert(resFav.size() == 2);
+
+    // Conmutar favorito en Preset 2 (Cyber Glitch)
+    size_t glitchIdx = 0;
+    for (size_t i = 0; i < bank.getPresetCount(); ++i) {
+        if (bank.getPreset(i)->metadata.name == "Cyber Glitch") glitchIdx = i;
+    }
+    bank.toggleFavorite(glitchIdx);
+    assert(bank.getPreset(glitchIdx)->metadata.favorite == true);
+
+    auto resFav2 = bank.filter("", "All", {}, true);
+    assert(resFav2.size() == 3);
+
+    // Eliminar Preset 1
+    size_t echoIdx = 0;
+    for (size_t i = 0; i < bank.getPresetCount(); ++i) {
+        if (bank.getPreset(i)->metadata.name == "Ethereal Echoes") echoIdx = i;
+    }
+    bank.deletePreset(echoIdx);
+    assert(bank.getPresetCount() == 2);
+
+    // Limpieza de directorio temporal
+    std::error_code ec;
+    std::filesystem::remove_all(tempDir, ec);
+
+    std::cout << "PASSED\n";
+}
+
+void testInteractiveModulationRoutingAndPayload() {
+    std::cout << "[TEST] Interactive Modulation Matrix Routing & Bipolar Depth (Reglas 7, 25, 48)... ";
+    ModulationMatrix matrix;
+
+    // Ruta 1: MacroTexture -> Node 3, Param 1
+    int r1 = matrix.addRoute(ModSourceType::MacroTexture, 3, 1, 0.75f, true);
+    assert(r1 >= 0);
+    assert(matrix.getRoute(static_cast<size_t>(r1)).isActive);
+    assert(std::abs(matrix.getRoute(static_cast<size_t>(r1)).amount - 0.75f) < 1e-4f);
+
+    // Invertir profundidad de modulación
+    matrix.setRouteAmount(static_cast<size_t>(r1), -0.75f);
+    assert(std::abs(matrix.getRoute(static_cast<size_t>(r1)).amount - (-0.75f)) < 1e-4f);
+
+    // Ruta 2: LFO1 -> Node 3, Param 2
+    int r2 = matrix.addRoute(ModSourceType::LFO1, 3, 2, 0.5f, true);
+    assert(r2 >= 0);
+
+    // Ruta 3: ChaosX -> Node 4, Param 0
+    int r3 = matrix.addRoute(ModSourceType::ChaosX, 4, 0, 1.0f, false);
+    assert(r3 >= 0);
+
+    assert(matrix.getActiveRouteCount() == 3);
+
+    // Eliminar Ruta 2
+    matrix.removeRoute(static_cast<size_t>(r2));
+    assert(matrix.getActiveRouteCount() == 2);
+    assert(!matrix.getRoute(static_cast<size_t>(r2)).isActive);
+
+    std::cout << "PASSED\n";
+}
+
+void testAll44DSPNodesInstantiationAndProcessing() {
+    std::cout << "[TEST] 44 DSP Nodes Complete Functional Verification & NaN/Inf Safety (Reglas 5, 8, 14, 19, 34, 38)... ";
+    ProcessSpec spec{
+        .sampleRate = 48000.0,
+        .maximumBlockSize = 256,
+        .numInputChannels = 2,
+        .numOutputChannels = 2
+    };
+
+    const NodeType allTypes[] = {
+        NodeType::Passthrough,
+        NodeType::Filter,
+        NodeType::Delay,
+        NodeType::AdvancedDelay,
+        NodeType::Reverb,
+        NodeType::ReverseReverb,
+        NodeType::Compressor,
+        NodeType::Multiband,
+        NodeType::ParametricEQ,
+        NodeType::BrickwallLimiter,
+        NodeType::NoiseGate,
+        NodeType::DeEsser,
+        NodeType::TransientShaper,
+        NodeType::Distortion,
+        NodeType::Bitcrusher,
+        NodeType::HarmonicExciter,
+        NodeType::Tape,
+        NodeType::TapeStop,
+        NodeType::FormantFilter,
+        NodeType::NoiseTexture,
+        NodeType::Granular,
+        NodeType::Spectral,
+        NodeType::SpectralProcessor,
+        NodeType::Resonator,
+        NodeType::Glitch,
+        NodeType::Phaser,
+        NodeType::Chorus,
+        NodeType::Flanger,
+        NodeType::RingModulator,
+        NodeType::FrequencyShifter,
+        NodeType::PitchShifter,
+        NodeType::RotarySpeaker,
+        NodeType::Vocoder,
+        NodeType::KarplusStrong,
+        NodeType::MidSideEncoder,
+        NodeType::MidSideDecoder,
+        NodeType::SpatialPanner,
+        NodeType::ExternalSidechain,
+        NodeType::MidiArpeggiator,
+        NodeType::MidiChordEngine,
+        NodeType::MidiScaleQuantizer,
+        NodeType::Container,
+        NodeType::Feedback,
+        NodeType::EventContainer,
+        NodeType::Convolution,
+        NodeType::Oversampler,
+        NodeType::AudioSlicer
+    };
+
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+
+    for (size_t s = 0; s < 256; ++s) {
+        inL[s] = std::sin(2.0f * 3.14159f * 440.0f * static_cast<float>(s) / 48000.0f);
+        inR[s] = std::cos(2.0f * 3.14159f * 440.0f * static_cast<float>(s) / 48000.0f);
+    }
+    inL[0] = 1.0f; // Impulso
+
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    size_t verifiedCount = 0;
+
+    for (NodeType type : allTypes) {
+        auto node = NodeFactory::getInstance().create(type);
+        assert(node != nullptr && "Error: Fallo al instanciar NodeType desde NodeFactory");
+        assert(node->getType() == type);
+
+        node->prepare(spec);
+
+        // 1. Procesar bloque con audio e impulsos
+        std::fill(outL.begin(), outL.end(), 0.0f);
+        std::fill(outR.begin(), outR.end(), 0.0f);
+        node->process(ctx);
+
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && "Error: NaN detectado en salida L");
+            assert(!std::isinf(outL[s]) && "Error: Inf detectado en salida L");
+            assert(!std::isnan(outR[s]) && "Error: NaN detectado en salida R");
+            assert(!std::isinf(outR[s]) && "Error: Inf detectado en salida R");
+        }
+
+        // 2. Procesar bloque de silencio para probar estabilidad de tails
+        std::vector<float> silentInL(256, 0.0f);
+        std::vector<float> silentInR(256, 0.0f);
+        const float* silentIn[2] = { silentInL.data(), silentInR.data() };
+        ProcessContext silentCtx{
+            .inputChannels = silentIn,
+            .outputChannels = outChannels,
+            .numInputChannels = 2,
+            .numOutputChannels = 2,
+            .numSamples = 256
+        };
+        node->process(silentCtx);
+
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]));
+            assert(!std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]));
+            assert(!std::isinf(outR[s]));
+        }
+
+        // 3. Probar get/set en todos los parámetros registrados
+        const auto params = node->getParameters();
+        for (const auto& p : params) {
+            const float orig = node->getParameter(p.id);
+            node->setParameter(p.id, p.minValue);
+            assert(node->getParameter(p.id) >= p.minValue - 1e-4f);
+            node->setParameter(p.id, p.maxValue);
+            assert(node->getParameter(p.id) <= p.maxValue + 1e-4f);
+            node->setParameter(p.id, orig);
+        }
+
+        node->reset();
+        ++verifiedCount;
+    }
+
+    assert(verifiedCount == 47);
+    std::cout << "PASSED (47/47 procesadores verificados con éxito)\n";
+}
+
+void testRadar3DAcousticTelemetryEmission() {
+    std::cout << "[TEST] Radar 3D Reactive Acoustic Telemetry & Sweep Pipeline (Reglas 9, 23, 26)... ";
+    DualWorldEngine engine;
+    ProcessSpec spec{
+        .sampleRate = 48000.0,
+        .maximumBlockSize = 256,
+        .numInputChannels = 2,
+        .numOutputChannels = 2
+    };
+    engine.prepare(spec);
+
+    ExecutionPlan plan;
+
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+
+    // Audio estéreo con transient fuerte paneado a la derecha
+    for (size_t s = 0; s < 256; ++s) {
+        inL[s] = 0.2f * std::sin(2.0f * 3.14159f * 1000.0f * static_cast<float>(s) / 48000.0f);
+        inR[s] = 0.8f * std::sin(2.0f * 3.14159f * 1000.0f * static_cast<float>(s) / 48000.0f);
+    }
+    inR[0] = 1.0f; // Ataque/Onset fuerte
+
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+    float* finalOutputs[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    engine.process(plan, ctx, finalOutputs);
+
+    // Verificar que el buffer de telemetría de Radar 3D haya recibido el evento acústico
+    auto& telemetry = engine.getEventManager().getTelemetryBuffer();
+    EventTelemetryItem item;
+    bool found = telemetry.pop(item);
+    assert(found && "Error: El Radar 3D no recibió telemetría acústica durante la reproducción");
+    assert(item.isAlive);
+    assert(item.energy > 0.0f);
+    assert(item.pan > 0.1f && "Error: El paneo estéreo hacia la derecha no se calculó correctamente");
+    assert(item.pitchRatio > 0.0f);
+    assert(item.distance >= 0.5f && item.distance <= 10.0f);
+
+    std::cout << "PASSED\n";
+}
+
+void testPartitionedConvolutionZeroLatency() {
+    std::cout << "[TEST] Partitioned Convolution Zero-Latency & Synthetic IR Models (Reglas 5, 8, 9, 14, 34, 46, 47)... " << std::endl;
+    ProcessSpec spec{
+        .sampleRate = 48000.0,
+        .maximumBlockSize = 256,
+        .numInputChannels = 2,
+        .numOutputChannels = 2
+    };
+
+    ConvolutionNode conv;
+    conv.prepare(spec);
+
+    // 1. Verificar latencia cero: impulso unitario en muestra 0 debe producir salida inmediata en muestra 0
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+
+    inL[0] = 1.0f; // Impulso Dirac
+    inR[0] = 1.0f;
+
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    conv.setParameter(ConvolutionNode::Mix, 1.0f); // 100% wet
+    conv.process(ctx);
+
+    // El primer sample no debe ser cero (prueba de latencia 0 en la cabeza FIR)
+    assert(std::abs(outL[0]) > 0.01f && "Error: La convolución en cabeza debe tener latencia cero");
+    assert(std::abs(outR[0]) > 0.01f);
+
+    for (size_t s = 0; s < 256; ++s) {
+        assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+        assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+    }
+
+    // 2. Procesar varios bloques consecutivos para verificar transición fluida de la cabeza a las colas FFT
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    for (int b = 0; b < 10; ++b) {
+        conv.process(ctx);
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+        }
+    }
+
+    // 3. Probar todos los modelos sintéticos incluidos (Small Room, Large Hall, Dark Plate, Vintage Cab 4x12, Spring Tank)
+    for (int model = 0; model <= 4; ++model) {
+        conv.setParameter(ConvolutionNode::IRType, static_cast<float>(model));
+        conv.reset();
+        inL[0] = 0.8f;
+        conv.process(ctx);
+        inL[0] = 0.0f;
+        assert(!std::isnan(outL[0]) && !std::isinf(outL[0]));
+    }
+
+    // 4. Probar carga de IR personalizada (Custom IR)
+    std::vector<float> customIRL(512, 0.0f);
+    std::vector<float> customIRR(512, 0.0f);
+    customIRL[0] = 0.9f;
+    customIRL[64] = 0.5f;
+    customIRR[0] = 0.9f;
+    customIRR[64] = -0.5f;
+    conv.setCustomImpulseResponse(customIRL.data(), customIRR.data(), 512);
+
+    inL[0] = 1.0f;
+    conv.process(ctx);
+    assert(std::abs(outL[0]) > 0.1f);
+
+    std::cout << "PASSED\n" << std::flush;
+}
+
+void testConvolutionCustomIRDoubleBufferingAndThumbnail() {
+    std::cout << "[TEST] ConvolutionNode Custom IR Double-Buffering & Waveform Thumbnail (R1, Reglas 9, 30, 46, 47)... " << std::endl;
+    ProcessSpec spec{
+        .sampleRate = 48000.0,
+        .maximumBlockSize = 256,
+        .numInputChannels = 2,
+        .numOutputChannels = 2
+    };
+
+    ConvolutionNode conv;
+    conv.prepare(spec);
+
+    // 1. Verificar inicialización de la miniatura de 64 puntos de la IR sintética
+    const auto& initThumb = conv.getIRThumbnail();
+    assert(initThumb.size() == 64 && "Error: La miniatura de la IR debe contener 64 puntos");
+    float maxInit = 0.0f;
+    for (float v : initThumb) {
+        assert(!std::isnan(v) && !std::isinf(v) && v >= 0.0f && v <= 1.0f);
+        maxInit = std::max(maxInit, v);
+    }
+    assert(maxInit > 0.5f && "Error: La miniatura debe estar normalizada y no vacía");
+
+    // 2. Cargar respuesta al impulso personalizada con envolvente exponencial
+    const size_t customLen = 1024;
+    std::vector<float> irL(customLen, 0.0f);
+    std::vector<float> irR(customLen, 0.0f);
+    for (size_t i = 0; i < customLen; ++i) {
+        float env = std::exp(-static_cast<float>(i) * 0.008f);
+        irL[i] = std::sin(static_cast<float>(i) * 0.15f) * env;
+        irR[i] = std::cos(static_cast<float>(i) * 0.15f) * env;
+    }
+
+    conv.setCustomImpulseResponse(irL.data(), irR.data(), customLen);
+    assert(conv.getParameter(ConvolutionNode::IRType) == 5.0f && "Error: Tipo de IR debe ser Custom (5)");
+
+    // 3. Verificar que la miniatura de 64 puntos refleja la envolvente de la nueva IR
+    const auto& customThumb = conv.getIRThumbnail();
+    assert(customThumb.size() == 64);
+    assert(customThumb[0] > 0.6f && "Error: El pico inicial debe estar cerca de 1.0");
+    assert(customThumb[63] < customThumb[0] && "Error: La cola de la envolvente debe mostrar decaimiento");
+    for (float v : customThumb) {
+        assert(!std::isnan(v) && !std::isinf(v) && v >= 0.0f && v <= 1.0f);
+    }
+
+    // 4. Procesar bloques de audio y verificar correctitud numérica y cero latencia
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+
+    inL[0] = 1.0f; // Impulso Dirac
+    inR[0] = 1.0f;
+
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    conv.setParameter(ConvolutionNode::Mix, 1.0f); // 100% wet
+    conv.process(ctx);
+
+    // Muestra 0 no debe ser cero (latencia 0 FIR)
+    assert(std::abs(outL[0]) > 0.01f);
+    assert(std::abs(outR[0]) > 0.01f);
+
+    // 5. Procesar cola multietapa a través de particiones FFT en frecuencia
+    inL[0] = 0.0f;
+    inR[0] = 0.0f;
+    for (int b = 0; b < 10; ++b) {
+        conv.process(ctx);
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+        }
+    }
+
+    // 6. Prueba de resistencia de doble buffering: swaps continuos durante procesamiento de audio
+    for (int cycle = 0; cycle < 8; ++cycle) {
+        const size_t len = 256 + cycle * 128;
+        std::vector<float> dynamicIR(len, 0.4f);
+        conv.setCustomImpulseResponse(dynamicIR.data(), dynamicIR.data(), len);
+        conv.process(ctx);
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+        }
+    }
+
+    // 7. Casos extremos: paso de punteros nulos o longitud 0 no debe causar crash
+    conv.setCustomImpulseResponse(nullptr, nullptr, 0);
+    conv.process(ctx);
+
+    // Mono a estéreo (puntero R nulo duplica canal L)
+    conv.setCustomImpulseResponse(irL.data(), nullptr, customLen);
+    conv.process(ctx);
+    for (size_t s = 0; s < 256; ++s) {
+        assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+        assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+    }
+
+    std::cout << "PASSED\n" << std::flush;
+}
+
+void testConvolutionAdversarialChallenge() {
+    std::cout << "\n==================================================\n";
+    std::cout << "[CHALLENGER] Adversarial Stress Testing ConvolutionNode (Milestone 1)...\n";
+    std::cout << "==================================================\n" << std::flush;
+
+    ProcessSpec spec{
+        .sampleRate = 48000.0,
+        .maximumBlockSize = 256,
+        .numInputChannels = 2,
+        .numOutputChannels = 2
+    };
+
+    // --------------------------------------------------------------------------
+    // Test C1: Partition Boundary Timing Oracle
+    // --------------------------------------------------------------------------
+    std::cout << "[CHALLENGE 1] Partition 0 -> Partition 1 Boundary Latency & Continuity...\n" << std::flush;
+    {
+        ConvolutionNode conv;
+        conv.prepare(spec);
+        conv.setParameter(ConvolutionNode::Mix, 1.0f); // 100% wet
+        conv.setParameter(ConvolutionNode::PreDelayMs, 0.0f);
+        conv.setParameter(ConvolutionNode::StereoWidth, 1.0f);
+
+        // Create an IR of 512 samples with a marker impulse exactly at sample 128 (Partition 1 start)
+        // Partition 0 is samples 0..127 (head FIR)
+        // Partition 1 is samples 128..255 (first FFT tail partition)
+        std::vector<float> markerIR(512, 0.0f);
+        markerIR[128] = 1.0f; // Marker spike at sample 128
+
+        conv.setCustomImpulseResponse(markerIR.data(), markerIR.data(), 512);
+
+        // Feed a single Dirac impulse at sample 0
+        std::vector<float> inL(256, 0.0f);
+        std::vector<float> inR(256, 0.0f);
+        std::vector<float> outBlock0L(256, 0.0f);
+        std::vector<float> outBlock0R(256, 0.0f);
+        std::vector<float> outBlock1L(256, 0.0f);
+        std::vector<float> outBlock1R(256, 0.0f);
+
+        inL[0] = 1.0f;
+        inR[0] = 1.0f;
+
+        const float* inChs0[2] = { inL.data(), inR.data() };
+        float* outChs0[2] = { outBlock0L.data(), outBlock0R.data() };
+        ProcessContext ctx0{
+            .inputChannels = inChs0,
+            .outputChannels = outChs0,
+            .numInputChannels = 2,
+            .numOutputChannels = 2,
+            .numSamples = 256
+        };
+
+        // Process Block 0 (samples 0..255)
+        conv.process(ctx0);
+
+        // The impulse was at t=0.
+        // In the IR, markerIR has spike at sample 128.
+        // Therefore, in Block 0 (which contains samples 0..255), the spike should arrive at sample 128!
+        // Specifically, outBlock0L[128] must be non-zero, and samples 128..150 should contain the response!
+        std::cout << "  Block 0 Sample 0: " << outBlock0L[0] << "\n";
+        std::cout << "  Block 0 Sample 127: " << outBlock0L[127] << "\n";
+        std::cout << "  Block 0 Sample 128: " << outBlock0L[128] << "\n";
+        std::cout << "  Block 0 Sample 129: " << outBlock0L[129] << "\n";
+
+        // Process Block 1 (samples 256..511) with silence input
+        std::fill(inL.begin(), inL.end(), 0.0f);
+        std::fill(inR.begin(), inR.end(), 0.0f);
+        float* outChs1[2] = { outBlock1L.data(), outBlock1R.data() };
+        ProcessContext ctx1{
+            .inputChannels = inChs0,
+            .outputChannels = outChs1,
+            .numInputChannels = 2,
+            .numOutputChannels = 2,
+            .numSamples = 256
+        };
+        conv.process(ctx1);
+
+        std::cout << "  Block 1 Sample 0 (Global sample 256): " << outBlock1L[0] << "\n";
+        std::cout << "  Block 1 Sample 1 (Global sample 257): " << outBlock1L[1] << "\n";
+
+        float maxBlock0Tail = 0.0f;
+        for (size_t s = 128; s < 256; ++s) {
+            maxBlock0Tail = std::max(maxBlock0Tail, std::abs(outBlock0L[s]));
+        }
+        std::cout << "  Max energy in Block 0 [128..255]: " << maxBlock0Tail << "\n";
+
+        float maxBlock1Tail = 0.0f;
+        for (size_t s = 0; s < 256; ++s) {
+            maxBlock1Tail = std::max(maxBlock1Tail, std::abs(outBlock1L[s]));
+        }
+        std::cout << "  Max energy in Block 1 [256..511]: " << maxBlock1Tail << "\n";
+
+        // Verification of fix:
+        // Expected: spike arrives at sample 128 (maxBlock0Tail > 0.4f) with zero latency gap
+        assert(maxBlock0Tail > 0.2f && "Challenge 1 Failed: Partition 1 FFT response must start at sample 128 with non-zero energy");
+        assert(outBlock0L[128] > 0.2f && "Challenge 1 Failed: Sample 128 must contain the direct marker spike");
+        std::cout << "  [CHALLENGE 1 PASSED] Partition 0 -> Partition 1 boundary continuity verified! Energy at sample 128: "
+                  << outBlock0L[128] << ", maxBlock0Tail: " << maxBlock0Tail << "\n";
+    }
+
+    // --------------------------------------------------------------------------
+    // Test C2: Rapid Multi-Threaded Concurrent IR Swapping Stress Test
+    // --------------------------------------------------------------------------
+    std::cout << "[CHALLENGE 2] Concurrent Multi-Threaded IR Swapping Stress Test...\n" << std::flush;
+    {
+        ConvolutionNode conv;
+        conv.prepare(spec);
+
+        std::atomic<bool> keepRunning{ true };
+        std::atomic<uint64_t> totalProcessBlocks{ 0 };
+        std::atomic<uint64_t> totalIRSwaps{ 0 };
+        std::atomic<uint64_t> nanOrInfCount{ 0 };
+
+        // Thread 1: Real-time Audio Processing
+        auto audioThread = std::jthread([&](std::stop_token stopToken) {
+            std::vector<float> inL(256);
+            std::vector<float> inR(256);
+            std::vector<float> outL(256);
+            std::vector<float> outR(256);
+            const float* inChs[2] = { inL.data(), inR.data() };
+            float* outChs[2] = { outL.data(), outR.data() };
+            ProcessContext ctx{
+                .inputChannels = inChs,
+                .outputChannels = outChs,
+                .numInputChannels = 2,
+                .numOutputChannels = 2,
+                .numSamples = 256
+            };
+
+            for (size_t i = 0; i < 256; ++i) {
+                inL[i] = std::sin(static_cast<float>(i) * 0.05f);
+                inR[i] = std::cos(static_cast<float>(i) * 0.05f);
+            }
+
+            while (!stopToken.stop_requested()) {
+                conv.process(ctx);
+                totalProcessBlocks.fetch_add(1, std::memory_order_relaxed);
+                for (size_t i = 0; i < 256; ++i) {
+                    if (std::isnan(outL[i]) || std::isinf(outL[i]) ||
+                        std::isnan(outR[i]) || std::isinf(outR[i])) {
+                        nanOrInfCount.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            }
+        });
+
+        // Thread 2: Rapid Custom IR Loader (varying lengths)
+        auto irThread1 = std::jthread([&](std::stop_token stopToken) {
+            size_t iteration = 0;
+            while (!stopToken.stop_requested()) {
+                size_t len = 64 + (iteration % 20) * 128; // 64 to 2496 samples
+                std::vector<float> custom(len);
+                for (size_t i = 0; i < len; ++i) {
+                    custom[i] = std::sin(static_cast<float>(i + iteration) * 0.1f) * std::exp(-static_cast<float>(i) * 0.005f);
+                }
+                conv.setCustomImpulseResponse(custom.data(), custom.data(), len);
+                totalIRSwaps.fetch_add(1, std::memory_order_relaxed);
+                iteration++;
+            }
+        });
+
+        // Thread 3: Rapid Synthetic Model Switcher
+        auto irThread2 = std::jthread([&](std::stop_token stopToken) {
+            int model = 0;
+            while (!stopToken.stop_requested()) {
+                conv.setParameter(ConvolutionNode::IRType, static_cast<float>(model % 5));
+                model++;
+            }
+        });
+
+        // Thread 4: GUI Telemetry Reader
+        auto guiThread = std::jthread([&](std::stop_token stopToken) {
+            while (!stopToken.stop_requested()) {
+                const auto& thumb = conv.getIRThumbnail();
+                for (float v : thumb) {
+                    if (std::isnan(v) || std::isinf(v)) {
+                        nanOrInfCount.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            }
+        });
+
+        // Let threads race for 1.0 second
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        audioThread.request_stop();
+        irThread1.request_stop();
+        irThread2.request_stop();
+        guiThread.request_stop();
+
+        std::cout << "  Total Audio Blocks Processed: " << totalProcessBlocks.load() << "\n";
+        std::cout << "  Total Concurrent IR Swaps: " << totalIRSwaps.load() << "\n";
+        std::cout << "  NaN / Inf Anomalies Detected: " << nanOrInfCount.load() << "\n";
+        assert(nanOrInfCount.load() == 0 && "Error: Concurrent IR swapping produced NaN or Inf");
+        assert(totalProcessBlocks.load() > 500 && "Error: Audio thread starved");
+        assert(totalIRSwaps.load() > 100 && "Error: IR Swapping thread starved");
+    }
+
+    // --------------------------------------------------------------------------
+    // Test C3: Pathological IR Inputs (Zero, Extreme, Sub-Partition)
+    // --------------------------------------------------------------------------
+    std::cout << "[CHALLENGE 3] Pathological IR Numerical Stability...\n" << std::flush;
+    {
+        ConvolutionNode conv;
+        conv.prepare(spec);
+
+        std::vector<float> inL(256, 1.0f);
+        std::vector<float> inR(256, 1.0f);
+        std::vector<float> outL(256, 0.0f);
+        std::vector<float> outR(256, 0.0f);
+        const float* inChs[2] = { inL.data(), inR.data() };
+        float* outChs[2] = { outL.data(), outR.data() };
+        ProcessContext ctx{
+            .inputChannels = inChs,
+            .outputChannels = outChs,
+            .numInputChannels = 2,
+            .numOutputChannels = 2,
+            .numSamples = 256
+        };
+
+        // 1. All Zeros IR
+        std::vector<float> zeroIR(512, 0.0f);
+        conv.setCustomImpulseResponse(zeroIR.data(), zeroIR.data(), 512);
+        conv.process(ctx);
+        for (float v : outL) {
+            assert(!std::isnan(v) && !std::isinf(v));
+        }
+
+        // 2. 1-Sample IR
+        std::vector<float> oneSampleIR{ 0.75f };
+        conv.setCustomImpulseResponse(oneSampleIR.data(), oneSampleIR.data(), 1);
+        conv.process(ctx);
+        for (float v : outL) {
+            assert(!std::isnan(v) && !std::isinf(v));
+        }
+
+        // 3. Extreme Values IR (+/- 1e20)
+        std::vector<float> extremeIR(256, 1e20f);
+        extremeIR[128] = -1e20f;
+        conv.setCustomImpulseResponse(extremeIR.data(), extremeIR.data(), 256);
+        conv.process(ctx);
+        for (float v : outL) {
+            assert(!std::isnan(v) && !std::isinf(v));
+        }
+
+        // 4. Denormal IR
+        std::vector<float> denormalIR(256, 1e-39f);
+        conv.setCustomImpulseResponse(denormalIR.data(), denormalIR.data(), 256);
+        conv.process(ctx);
+        for (float v : outL) {
+            assert(!std::isnan(v) && !std::isinf(v));
+        }
+
+        // 5. Oversized IR (100,000 samples)
+        std::vector<float> oversizedIR(100000, 0.01f);
+        conv.setCustomImpulseResponse(oversizedIR.data(), oversizedIR.data(), 100000);
+        conv.process(ctx);
+        for (float v : outL) {
+            assert(!std::isnan(v) && !std::isinf(v));
+        }
+    }
+
+    std::cout << "[CHALLENGER] All adversarial tests executed successfully.\n";
+    std::cout << "==================================================\n\n" << std::flush;
+}
+
+
+void testPolyphaseOversamplingPDC() {
+    std::cout << "[TEST] Polyphase Oversampling HQ & Delay Compensation (PDC) (Reglas 8, 9, 14, 34, 46, 47)... " << std::endl;
+    PolyphaseOversampler oversampler;
+    oversampler.prepare(256, PolyphaseOversampler::Factor2x);
+
+    // 1. Comprobar latencias PDC reportadas
+    assert(oversampler.getLatencyInSamples() == 6);
+    oversampler.setFactor(PolyphaseOversampler::Factor4x);
+    assert(oversampler.getLatencyInSamples() == 9);
+    oversampler.setFactor(PolyphaseOversampler::Factor8x);
+    assert(oversampler.getLatencyInSamples() == 11);
+
+    // 2. Probar fidelidad de reconstrucción 2x con onda senoidal
+    oversampler.setFactor(PolyphaseOversampler::Factor2x);
+    std::vector<float> inL(256);
+    std::vector<float> inR(256);
+    for (size_t s = 0; s < 256; ++s) {
+        inL[s] = std::sin(2.0f * 3.14159f * 1000.0f * static_cast<float>(s) / 48000.0f);
+        inR[s] = std::cos(2.0f * 3.14159f * 1000.0f * static_cast<float>(s) / 48000.0f);
+    }
+
+    auto [overPointers, numOverSamples] = oversampler.processUpsample(inL.data(), inR.data(), 256);
+    assert(numOverSamples == 512);
+    assert(overPointers[0] != nullptr && overPointers[1] != nullptr);
+
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    oversampler.processDownsample(overPointers[0], overPointers[1], 512, outL.data(), outR.data(), 256);
+
+    for (size_t s = 0; s < 256; ++s) {
+        assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+        assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+    }
+
+    // 3. Probar OversamplerNode completo con saturación anti-aliasing
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+    OversamplerNode node;
+    node.prepare(spec);
+
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    node.setParameter(OversamplerNode::Factor, 2.0f); // 4x oversampling
+    node.setParameter(OversamplerNode::DriveDb, 12.0f); // 12 dB drive
+    node.setParameter(OversamplerNode::Saturation, 3.0f); // Tube Wavefold
+    node.process(ctx);
+
+    for (size_t s = 0; s < 256; ++s) {
+        assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+        assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+        assert(std::abs(outL[s]) <= 1.5f && "Error: Saturación debe contener la amplitud");
+    }
+
+    std::cout << "PASSED\n" << std::flush;
+}
+
+void testAudioRateCrossModulation() {
+    std::cout << "[TEST] Audio-Rate Cross-Modulation / FM Internodal DAG (Reglas 4, 6, 7, 9, 34)... " << std::endl;
+    ProcessSpec spec{
+        .sampleRate = 48000.0,
+        .maximumBlockSize = 256,
+        .numInputChannels = 2,
+        .numOutputChannels = 2
+    };
+
+    Graph graph;
+    // Nodo 1: Generador Passthrough o fuente moduladora
+    NodeId modSrc = graph.addNode(std::make_unique<PassthroughNode>(), "FM Carrier Source");
+    // Nodo 2: SimpleFilterNode (acepta FM en Pin 4)
+    NodeId filterNode = graph.addNode(std::make_unique<SimpleFilterNode>(), "FM Filter");
+
+    // Preparar procesadores del grafo con la especificación de audio
+    graph.getNodeProcessor(modSrc)->prepare(spec);
+    graph.getNodeProcessor(filterNode)->prepare(spec);
+
+    // Conexión de audio principal (Pin 2 -> Pin 1)
+    graph.connect(modSrc, 2, filterNode, 1);
+    // Conexión de modulación audio-rate hacia FM In (Pin 2 -> Pin 4)
+    ConnectionId fmConn = graph.connect(modSrc, 2, filterNode, AudioRateModPinId);
+    assert(fmConn != 0);
+
+    // Compilar ejecución topológica
+    std::vector<NodeId> sorted;
+    std::string err;
+    bool valid = graph.validateAndTopologicalSort(sorted, err);
+    assert(valid);
+
+    ExecutionPlan plan;
+    plan.compileFrom(graph, sorted);
+
+    const auto& steps = plan.getSteps();
+    assert(steps.size() == 2);
+    assert(steps[1].audioRateModStepIndex == 0 && "Error: audioRateModStepIndex debe vincularse al paso 0");
+
+    // Ejecutar con GraphExecutor
+    GraphExecutor executor;
+    executor.prepare(spec, 32);
+
+    std::vector<float> inL(256);
+    std::vector<float> inR(256);
+    for (size_t s = 0; s < 256; ++s) {
+        inL[s] = std::sin(2.0f * 3.14159f * 220.0f * static_cast<float>(s) / 48000.0f);
+        inR[s] = inL[s];
+    }
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    std::vector<float> dummyOutL(256, 0.0f);
+    std::vector<float> dummyOutR(256, 0.0f);
+    float* outChannels[2] = { dummyOutL.data(), dummyOutR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    PreallocatedBuffer finalOut;
+    finalOut.prepare(2, 256);
+
+    for (int b = 0; b < 10; ++b) {
+        executor.process(plan, ctx, finalOut);
+        const float* outL = finalOut.getReadPointer(0);
+        const float* outR = finalOut.getReadPointer(1);
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+        }
+    }
+
+    std::cout << "PASSED\n" << std::flush;
+}
+
+void testMpeVoiceAllocationAndDimensions() {
+    std::cout << "[TEST] MPE 5D Expression & Polyphonic Event Voicing (Reglas 2, 3, 5, 8, 9, 14, 34, 46)... " << std::endl;
+    MpeManager mpe;
+    mpe.prepare(48000.0);
+    mpe.setPerNotePitchBendRange(48.0f);
+    mpe.setMasterPitchBendRange(2.0f);
+
+    EventManager eventManager;
+    eventManager.prepare(48000.0, 256, 128);
+
+    // 1. Note On en canal 2 (Miembro MPE: Nota 60 C4, Vel 100)
+    std::cout << "mpe step 1" << std::endl;
+    mpe.processMidiMessage(0x91, 60, 100, &eventManager); // 0x91 = Note On canal 2 (0-indexed = 1)
+    assert(mpe.getActiveVoiceCount() == 1);
+    const auto* v1 = mpe.getVoice(1);
+    assert(v1 != nullptr && v1->isActive);
+    assert(v1->noteNumber == 60);
+    assert(std::abs(v1->strikeVelocity - (100.0f / 127.0f)) < 0.001f);
+    assert(std::abs(v1->baseFrequency - 261.6255f) < 0.1f);
+    assert(v1->associatedEventId != InvalidEventId);
+
+    // 2. Note On polifónica simultánea en canal 3 (Nota 64 E4, Vel 80)
+    std::cout << "mpe step 2" << std::endl;
+    mpe.processMidiMessage(0x92, 64, 80, &eventManager);
+    assert(mpe.getActiveVoiceCount() == 2);
+    const auto* v2 = mpe.getVoice(2);
+    assert(v2 != nullptr && v2->isActive);
+    assert(v2->noteNumber == 64);
+
+    // 3. Expresión Press: Channel Pressure en canal 2 (Aftertouch continuo = 90)
+    std::cout << "mpe step 3" << std::endl;
+    mpe.processMidiMessage(0xD1, 90, 0, &eventManager);
+    assert(std::abs(v1->press - (90.0f / 127.0f)) < 0.001f);
+    assert(v2->press == 0.0f); // La voz en canal 3 permanece aislada
+
+    // 4. Expresión Slide: CC 74 en canal 2 (Timbre = 110)
+    std::cout << "mpe step 4" << std::endl;
+    mpe.processMidiMessage(0xB1, 74, 110, &eventManager);
+    assert(std::abs(v1->slide - (110.0f / 127.0f)) < 0.001f);
+
+    // 5. Expresión Glide: Pitch Bend individual en canal 2 (+48 semitonos = raw 16383)
+    std::cout << "mpe step 5" << std::endl;
+    mpe.processMidiMessage(0xE1, 0x7F, 0x7F, &eventManager);
+    assert(std::abs(v1->perNoteGlideSemitones - 48.0f) < 0.1f);
+    assert(std::abs(v1->pitchRatio - 16.0f) < 0.1f); // 4 octavas arriba (2^4 = 16)
+    assert(v2->perNoteGlideSemitones == 0.0f); // Voz 2 no recibe bend
+
+    // 6. Master Pitch Bend en canal 1 (Maestro de la zona): Modulación común (+2 semitonos)
+    std::cout << "mpe step 6" << std::endl;
+    mpe.processMidiMessage(0xE0, 0x7F, 0x7F, &eventManager);
+    assert(std::abs(v1->masterGlideSemitones - 2.0f) < 0.05f);
+    assert(std::abs(v2->masterGlideSemitones - 2.0f) < 0.05f);
+
+    // 7. Note Off con Lift Velocity (Velocidad de liberación)
+    std::cout << "mpe step 7" << std::endl;
+    mpe.processMidiMessage(0x81, 60, 75, &eventManager);
+    assert(!v1->isActive);
+    assert(std::abs(v1->liftVelocity - (75.0f / 127.0f)) < 0.001f);
+    assert(mpe.getActiveVoiceCount() == 1);
+
+    mpe.processMidiMessage(0x82, 64, 40, &eventManager);
+    assert(!v2->isActive);
+    assert(mpe.getActiveVoiceCount() == 0);
+
+    std::cout << "PASSED\n" << std::flush;
+}
+
+void testMidiLearnMappingAndCurves() {
+    std::cout << "[TEST] MIDI Learn, Controller Profiles & Non-Linear CC Curves (Reglas 8, 9, 21, 46)... " << std::endl;
+    MidiMappingManager mgr;
+
+    // 1. Probar modo MIDI Learn interactivo
+    std::cout << "learn step 1" << std::endl;
+    mgr.startLearning(15 /* paramId */, 2 /* targetNodeId */, 100.0f, 5000.0f, MidiCurve::Exponential);
+    assert(mgr.isLearning());
+
+    // Llega un mensaje CC 22 en canal 1 con valor 64
+    mgr.processControlChange(1, 22, 64);
+    assert(!mgr.isLearning()); // Debe haber salido de learn
+
+    const auto& mappings = mgr.getMappings();
+    assert(mappings.size() == 1);
+    assert(mappings[0].ccNumber == 22);
+    assert(mappings[0].paramId == 15);
+    assert(mappings[0].targetNodeId == 2);
+    assert(mappings[0].curve == MidiCurve::Exponential);
+
+    // 2. Probar curvas de respuesta matemática: Linear, Exponential, Logarithmic, SShaped
+    std::cout << "learn step 2" << std::endl;
+    MidiMapping mLinear{ .ccNumber = 10, .minVal = 0.0f, .maxVal = 100.0f, .curve = MidiCurve::Linear };
+    float valLinMid = MidiMappingManager::calculateMappedValue(mLinear, 64); // ~0.504 * 100
+    assert(std::abs(valLinMid - 50.39f) < 0.5f);
+
+    MidiMapping mExp{ .ccNumber = 11, .minVal = 0.0f, .maxVal = 100.0f, .curve = MidiCurve::Exponential };
+    float valExpMid = MidiMappingManager::calculateMappedValue(mExp, 64); // (0.504)^2 * 100 ~= 25.4
+    assert(std::abs(valExpMid - 25.4f) < 1.0f);
+
+    MidiMapping mLog{ .ccNumber = 12, .minVal = 0.0f, .maxVal = 100.0f, .curve = MidiCurve::Logarithmic };
+    float valLogMid = MidiMappingManager::calculateMappedValue(mLog, 64); // sqrt(0.504) * 100 ~= 71.0
+    assert(std::abs(valLogMid - 71.0f) < 1.0f);
+
+    MidiMapping mInv{ .ccNumber = 13, .minVal = 0.0f, .maxVal = 100.0f, .inverted = true, .curve = MidiCurve::Linear };
+    float valInv = MidiMappingManager::calculateMappedValue(mInv, 127);
+    assert(valInv == 0.0f); // 127 invertido es 0.0f
+
+    // 3. Probar perfiles de controlador hardware prefabricados
+    std::cout << "learn step 3" << std::endl;
+    mgr.loadFactoryProfile("Akai MPK Mini MK3");
+    assert(mgr.getMappings().size() == 8);
+    assert(mgr.getMappings()[0].ccNumber == 70);
+    assert(mgr.getMappings()[7].ccNumber == 77);
+
+    mgr.loadFactoryProfile("Arturia KeyLab Essential");
+    assert(mgr.getMappings().size() == 8);
+    assert(mgr.getMappings()[0].ccNumber == 73);
+
+    // 4. Probar Serialización y Deserialización JSON de perfiles (.n8midi)
+    std::cout << "learn step 4" << std::endl;
+    std::string jsonProfile = mgr.exportToJson("My Studio Master Setup");
+    assert(!jsonProfile.empty());
+    assert(jsonProfile.find("My Studio Master Setup") != std::string::npos);
+
+    MidiMappingManager importedMgr;
+    bool importOk = importedMgr.importFromJson(jsonProfile);
+    assert(importOk);
+    assert(importedMgr.getMappings().size() == 8);
+    assert(importedMgr.getMappings()[0].ccNumber == 73);
+
+    std::cout << "PASSED\n" << std::flush;
+}
+
+void testGraphUndoTimelineAndTimeTravel() {
+    std::cout << "[TEST] Graph Undo Timeline & Direct Time-Travel (Reglas 21, 22, 47)... " << std::endl;
+    GraphUndoManager undoMgr(16);
+
+    Graph graph;
+    auto n1 = graph.addNode(NodeFactory::getInstance().create(NodeType::Filter), "F1", 50.0f, 50.0f);
+    undoMgr.pushAction("Add Filter Node", ActionCategory::NodeAdd, graph);
+
+    assert(!undoMgr.canUndo());
+    assert(undoMgr.getCurrentIndex() == 0);
+    assert(undoMgr.getHistorySize() == 1);
+    assert(undoMgr.getTimeline()[0].category == ActionCategory::NodeAdd);
+
+    // Acción 2: Agregar Delay
+    auto n2 = graph.addNode(NodeFactory::getInstance().create(NodeType::Delay), "D1", 150.0f, 50.0f);
+    undoMgr.pushAction("Add Delay Node", ActionCategory::NodeAdd, graph);
+    assert(undoMgr.canUndo());
+    assert(!undoMgr.canRedo());
+    assert(undoMgr.getCurrentIndex() == 1);
+    assert(undoMgr.getHistorySize() == 2);
+
+    // Acción 3: Conectar F1 -> D1
+    graph.connect(n1, 2, n2, 1);
+    undoMgr.pushAction("Connect Filter to Delay", ActionCategory::Connection, graph);
+    assert(undoMgr.getCurrentIndex() == 2);
+    assert(undoMgr.getHistorySize() == 3);
+
+    // Acción 4: Agregar Distortion
+    auto n3 = graph.addNode(NodeFactory::getInstance().create(NodeType::Distortion), "Dist1", 250.0f, 50.0f);
+    graph.connect(n2, 2, n3, 1);
+    undoMgr.pushAction("Add Distortion & Wire", ActionCategory::Connection, graph);
+    assert(undoMgr.getCurrentIndex() == 3);
+    assert(undoMgr.getHistorySize() == 4);
+
+    // 1. Time-Travel directo: Saltar del paso 3 al paso 0 (Direct Jump)
+    PresetMetadata meta;
+    std::array<float, 8> macros{};
+    bool jumpOk = undoMgr.jumpToStep(0, graph, meta, macros);
+    assert(jumpOk);
+    assert(undoMgr.getCurrentIndex() == 0);
+    assert(graph.getNodes().size() == 1);
+    assert(graph.getConnections().empty());
+    assert(undoMgr.canRedo());
+    assert(!undoMgr.canUndo());
+
+    // 2. Time-Travel directo hacia el futuro: Saltar del paso 0 al paso 3
+    jumpOk = undoMgr.jumpToStep(3, graph, meta, macros);
+    assert(jumpOk);
+    assert(undoMgr.getCurrentIndex() == 3);
+    assert(graph.getNodes().size() == 3);
+    assert(graph.getConnections().size() == 2);
+    assert(!undoMgr.canRedo());
+    assert(undoMgr.canUndo());
+
+    // 3. Probar bifurcación (Branching) en el pasado:
+    // Saltar a paso 1, y luego realizar una nueva acción (debe truncar pasos 2 y 3)
+    jumpOk = undoMgr.jumpToStep(1, graph, meta, macros);
+    assert(jumpOk);
+    assert(undoMgr.getCurrentIndex() == 1);
+
+    auto nNew = graph.addNode(NodeFactory::getInstance().create(NodeType::Reverb), "RevAlternative", 150.0f, 150.0f);
+    undoMgr.pushAction("Branch: Add Reverb", ActionCategory::NodeAdd, graph);
+    assert(undoMgr.getCurrentIndex() == 2);
+    assert(undoMgr.getHistorySize() == 3);
+    assert(!undoMgr.canRedo()); // Futuro truncado
+
+    // 4. Verificación de descripciones de Undo/Redo
+    assert(undoMgr.getNextUndoDescription() == "Branch: Add Reverb");
+    bool undoOk = undoMgr.undo(graph, meta, macros);
+    assert(undoOk);
+    assert(undoMgr.getNextRedoDescription() == "Branch: Add Reverb");
+
+    std::cout << "PASSED\n" << std::flush;
+}
+
+void testPresetPackagerExportAndImport() {
+    std::cout << "[TEST] PresetPackager .n8pack Bundling, Manifest & Duplicate Resolution (Reglas 21, 27)... " << std::endl;
+
+    // 1. Crear presets sintéticos de prueba
+    std::vector<UserPresetRecord> presets;
+    for (int i = 0; i < 3; ++i) {
+        Graph g;
+        g.addNode(NodeFactory::getInstance().create(NodeType::Filter), "Filt" + std::to_string(i), 50.0f, 50.0f);
+        PresetMetadata m;
+        m.name = "Pack Preset " + std::to_string(i + 1);
+        m.author = "Test Designer";
+        m.category = "Cinematic";
+        m.tags = { "cinematic", "filter", "cyberpunk" };
+        std::array<float, 8> mac{ 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f };
+
+        UserPresetRecord rec;
+        rec.filePath = "mock/path/" + m.name + ".n8preset";
+        rec.metadata = m;
+        rec.jsonContent = GraphSerializer::serialize(g, m, mac);
+        presets.push_back(std::move(rec));
+    }
+
+    // 2. Empaquetar y exportar a string JSON (.n8pack)
+    PresetPackManifest manifest{
+        .packVersion = 1,
+        .packName = "Cyber Odyssey Vol 1",
+        .author = "N8 Master Team",
+        .description = "Futuristic atmospheres and rhythmic textures",
+        .version = "1.2.0",
+        .createdAt = "2026-09-24",
+        .tags = { "cyberpunk", "hybrid", "cinematic" },
+        .presetCount = presets.size()
+    };
+
+    std::string packJson = PresetPackager::serializePack(presets, manifest);
+    assert(!packJson.empty());
+    assert(packJson.find("Cyber Odyssey Vol 1") != std::string::npos);
+
+    // 3. Inspección del manifiesto
+    PresetPackManifest parsedManifest;
+    std::string inspectErr;
+    bool inspectOk = PresetPackager::inspectPackManifest(packJson, parsedManifest, inspectErr);
+    assert(inspectOk);
+    assert(parsedManifest.packName == "Cyber Odyssey Vol 1");
+    assert(parsedManifest.author == "N8 Master Team");
+    assert(parsedManifest.version == "1.2.0");
+    assert(parsedManifest.presetCount == 3);
+
+    // 4. Importar paquete en directorio temporal de prueba
+    std::string tempPackDir = "build/temp_pack_test";
+    std::filesystem::remove_all(tempPackDir);
+
+    PackImportReport report1;
+    bool importOk1 = PresetPackager::importPackContent(packJson, tempPackDir, DuplicatePolicy::Overwrite, report1);
+    assert(importOk1);
+    assert(report1.totalFound == 3);
+    assert(report1.imported == 3);
+    assert(report1.errors.empty());
+
+    // 5. Probar política de duplicados: Skip
+    PackImportReport reportSkip;
+    bool importOkSkip = PresetPackager::importPackContent(packJson, tempPackDir, DuplicatePolicy::Skip, reportSkip);
+    assert(importOkSkip || reportSkip.skipped == 3);
+    assert(reportSkip.skipped == 3);
+    assert(reportSkip.imported == 0);
+
+    // 6. Probar política de duplicados: RenameWithSuffix
+    PackImportReport reportRename;
+    bool importOkRename = PresetPackager::importPackContent(packJson, tempPackDir, DuplicatePolicy::RenameWithSuffix, reportRename);
+    assert(importOkRename);
+    assert(reportRename.imported == 3);
+
+    // Limpiar directorio temporal
+    std::filesystem::remove_all(tempPackDir);
+
+    std::cout << "PASSED\n" << std::flush;
+}
+
+void testNodeGroupsAndMacroAutomation() {
+    std::cout << "[TEST] Node Groups Chassis & 3 Macro Automations with Bipolar Depth (R2, Reglas 4, 8, 21, 22)... ";
+    Graph graph;
+
+    // 1. Añadir 3 nodos al grafo: Filter, Delay, Distortion
+    auto filterId = graph.addNode(std::make_unique<SimpleFilterNode>(), "Filter");
+    auto delayId = graph.addNode(std::make_unique<SimpleDelayNode>(), "Delay");
+    auto distId = graph.addNode(std::make_unique<DistortionNode>(), "Distortion");
+
+    assert(filterId != InvalidNodeId);
+    assert(delayId != InvalidNodeId);
+    assert(distId != InvalidNodeId);
+
+    // 2. Crear un grupo que contenga los 3 nodos
+    auto groupId = graph.addGroup("TEST_GROUP", 0xff00ffcc, { filterId, delayId, distId });
+    assert(groupId != InvalidGroupId);
+
+    const auto* group = graph.getGroup(groupId);
+    assert(group != nullptr);
+    assert(group->name == "TEST_GROUP");
+    assert(group->memberNodeIds.size() == 3);
+    assert(!group->isBypassed);
+
+    // 3. Configurar macros: Mapear Macro 0 (CTRL 1) a Cutoff de Filter con profundidad positiva
+    // y Macro 1 (CTRL 2) a Feedback de Delay con profundidad negativa
+    auto* mutGroup = graph.getGroup(groupId);
+    GroupMacroMapping map1{
+        .targetNodeId = filterId,
+        .targetParamId = SimpleFilterNode::CutoffHz,
+        .depth = 0.5f, // bipolar depth
+        .baseValue = 1000.0f
+    };
+    mutGroup->macros[0].mappings.push_back(map1);
+
+    GroupMacroMapping map2{
+        .targetNodeId = delayId,
+        .targetParamId = SimpleDelayNode::Feedback,
+        .depth = -0.4f, // negative depth
+        .baseValue = 0.5f
+    };
+    mutGroup->macros[1].mappings.push_back(map2);
+
+    // 4. Probar modulación de Macro 0
+    // Macro al centro (0.5) -> valor base
+    graph.applyGroupMacroValue(groupId, 0, 0.5f);
+    auto* filterNode = graph.getNodeProcessor(filterId);
+    assert(filterNode != nullptr);
+    float valCenter = filterNode->getParameter(SimpleFilterNode::CutoffHz);
+    assert(std::abs(valCenter - 1000.0f) < 5.0f);
+
+    // Macro al máximo (1.0) -> baseValue + 0.5 * depth * range
+    graph.applyGroupMacroValue(groupId, 0, 1.0f);
+    float valMax = filterNode->getParameter(SimpleFilterNode::CutoffHz);
+    assert(valMax > valCenter);
+
+    // Macro al mínimo (0.0) -> baseValue - 0.5 * depth * range
+    graph.applyGroupMacroValue(groupId, 0, 0.0f);
+    float valMin = filterNode->getParameter(SimpleFilterNode::CutoffHz);
+    assert(valMin < valCenter);
+
+    // 5. Probar Macro 1 con profundidad negativa
+    graph.applyGroupMacroValue(groupId, 1, 0.5f);
+    auto* delayNode = graph.getNodeProcessor(delayId);
+    assert(delayNode != nullptr);
+    float dCenter = delayNode->getParameter(SimpleDelayNode::Feedback);
+
+    graph.applyGroupMacroValue(groupId, 1, 1.0f);
+    float dMax = delayNode->getParameter(SimpleDelayNode::Feedback);
+    assert(dMax < dCenter); // Con profundidad negativa, macro a 1.0 disminuye el parámetro
+
+    // 6. Probar Bypass colectivo del grupo
+    graph.setGroupBypassed(groupId, true);
+    assert(graph.getGroup(groupId)->isBypassed);
+    assert(filterNode->isBypassed());
+    assert(delayNode->isBypassed());
+    assert(graph.getNodeProcessor(distId)->isBypassed());
+
+    graph.setGroupBypassed(groupId, false);
+    assert(!graph.getGroup(groupId)->isBypassed);
+    assert(!filterNode->isBypassed());
+    assert(!delayNode->isBypassed());
+    assert(!graph.getNodeProcessor(distId)->isBypassed());
+
+    // 7. Probar serialización y deserialización de NodeGroups
+    std::string json = GraphSerializer::serialize(graph);
+    assert(!json.empty());
+    assert(json.find("\"groups\"") != std::string::npos);
+    assert(json.find("\"TEST_GROUP\"") != std::string::npos);
+
+    Graph loadedGraph;
+    PresetMetadata outMeta;
+    std::array<float, 8> outMacros;
+    std::string outErr;
+    bool loadOk = GraphSerializer::deserialize(json, loadedGraph, outMeta, outMacros, outErr);
+    assert(loadOk);
+    const auto& loadedGroups = loadedGraph.getGroups();
+    assert(loadedGroups.size() == 1);
+    const auto* loadedGrp = loadedGraph.getGroup(loadedGroups.begin()->first);
+    assert(loadedGrp != nullptr);
+    assert(loadedGrp->name == "TEST_GROUP");
+    assert(loadedGrp->memberNodeIds.size() == 3);
+    assert(loadedGrp->macros[0].mappings.size() == 1);
+    assert(loadedGrp->macros[1].mappings.size() == 1);
+
+    // 8. Probar eliminación del grupo
+    bool removeOk = graph.removeGroup(groupId);
+    assert(removeOk);
+    assert(graph.getGroup(groupId) == nullptr);
+
+    std::cout << "PASSED\n" << std::flush;
+}
+
+void testAudioSlicerNodeProcessingAndFreeze() {
+    std::cout << "[TEST] AudioSlicerNode (DSP #49) Rhythmic Slicing & Frozen Granular Playground (R3, Reglas 5, 8, 9, 34, 46, 47)... ";
+
+    auto node = NodeFactory::getInstance().create(NodeType::AudioSlicer);
+    assert(node != nullptr && "Error: No se pudo crear AudioSlicerNode desde NodeFactory");
+    assert(node->getType() == NodeType::AudioSlicer);
+    assert(node->getName() == "Audio Slicer");
+
+    ProcessSpec spec{
+        .sampleRate = 48000.0,
+        .maximumBlockSize = 256,
+        .numInputChannels = 2,
+        .numOutputChannels = 2
+    };
+    node->prepare(spec);
+
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+
+    // 1. Probar grabación en streaming continuo en ring buffer
+    for (size_t s = 0; s < 256; ++s) {
+        inL[s] = 0.5f * std::sin(2.0f * 3.14159f * 440.0f * static_cast<float>(s) / 48000.0f);
+        inR[s] = 0.5f * std::cos(2.0f * 3.14159f * 440.0f * static_cast<float>(s) / 48000.0f);
+    }
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    // Procesar varios bloques para llenar parte del ring buffer
+    for (int b = 0; b < 10; ++b) {
+        node->process(ctx);
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+        }
+    }
+
+    // 2. Probar activación de Modo Freeze (congelación de audio y micro-granos)
+    node->setParameter(AudioSlicerNode::Freeze, 1.0f);
+    assert(node->getParameter(AudioSlicerNode::Freeze) == 1.0f);
+
+    // Alimentar silencio mientras está en Freeze: la salida debe contener granos del buffer congelado
+    std::vector<float> silentL(256, 0.0f);
+    std::vector<float> silentR(256, 0.0f);
+    const float* silentIn[2] = { silentL.data(), silentR.data() };
+    ProcessContext freezeCtx{
+        .inputChannels = silentIn,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    float energyL = 0.0f;
+    float energyR = 0.0f;
+    for (int b = 0; b < 10; ++b) {
+        node->process(freezeCtx);
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+            energyL += outL[s] * outL[s];
+            energyR += outR[s] * outR[s];
+        }
+    }
+    assert(energyL > 0.0f && "Error: El modo Freeze no generó audio granular desde el buffer congelado");
+
+    // 3. Probar parámetros granulares: Scrub, PitchShift, Reverse Speed
+    node->setParameter(AudioSlicerNode::PositionScrub, 0.75f);
+    node->setParameter(AudioSlicerNode::PlaybackSpeed, -1.0f); // Reversa
+    node->setParameter(AudioSlicerNode::PitchShiftSemitones, 7.0f); // Quinta justa
+    node->setParameter(AudioSlicerNode::GrainSizeMs, 120.0f);
+    node->setParameter(AudioSlicerNode::Jitter, 0.3f);
+    node->setParameter(AudioSlicerNode::FilterCutoff, 2500.0f);
+
+    for (int b = 0; b < 10; ++b) {
+        node->process(freezeCtx);
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+        }
+    }
+
+    // 4. Salir de freeze y verificar reset
+    node->setParameter(AudioSlicerNode::Freeze, 0.0f);
+    node->reset();
+
+    std::cout << "PASSED\n" << std::flush;
+}
+
 int main() {
     std::cout << "==================================================\n";
     std::cout << "AUDIO EVENT GRAPH ENGINE - UNIT & INTEGRATION TESTS\n";
@@ -4117,8 +5587,36 @@ int main() {
     testMidiChordEngineVoicingsAndStrum();
     testSidechainModularRoutingAndVocoder();
 
+    // Advanced Features: Event Telemetry Radar, User Preset Bank, Drag & Drop Halo Modulation
+    testEventTelemetryBufferLockFree();
+    testUserPresetBankStorageAndFiltering();
+    testInteractiveModulationRoutingAndPayload();
+
+    // Radar 3D Reactive Pipeline & 46 DSP Effects Full Verification
+    testAll44DSPNodesInstantiationAndProcessing();
+    testRadar3DAcousticTelemetryEmission();
+
+    // Phase 1 Advanced Suite: Zero-Latency Partitioned Convolution, HQ Oversampling PDC, Audio-Rate FM
+    testPartitionedConvolutionZeroLatency();
+    testConvolutionCustomIRDoubleBufferingAndThumbnail();
+    testConvolutionAdversarialChallenge();
+    testPolyphaseOversamplingPDC();
+    testAudioRateCrossModulation();
+
+    // Phase 2 Advanced Suite: MPE 5D Expression & Universal MIDI Learn / Controller Profiles
+    testMpeVoiceAllocationAndDimensions();
+    testMidiLearnMappingAndCurves();
+
+    // Phase 4 Advanced Suite: Action Undo Timeline / Time-Travel & .n8pack Preset Bundler
+    testGraphUndoTimelineAndTimeTravel();
+    testPresetPackagerExportAndImport();
+
+    // Visual Node Groups with 3 Automation Macros & Audio Slicer Frozen Playground
+    testNodeGroupsAndMacroAutomation();
+    testAudioSlicerNodeProcessingAndFreeze();
+
     std::cout << "==================================================\n";
-    std::cout << "TODOS LOS TESTS DE FASES 1 A 13 + VISUALIZER, MACROS, MIDI FX & SIDECHAIN (81 PRUEBAS) HAN PASADO CON EXITO\n";
+    std::cout << "TODOS LOS TESTS (96 PRUEBAS UNITARIAS) HAN PASADO CON EXITO\n";
     std::cout << "==================================================\n";
 
     return 0;

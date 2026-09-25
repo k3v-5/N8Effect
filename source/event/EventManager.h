@@ -6,6 +6,7 @@
 #include "EventTypes.h"
 #include "EventCaptureBuffer.h"
 #include "EventPool.h"
+#include "EventTelemetryBuffer.h"
 
 namespace audio_graph {
 
@@ -38,6 +39,7 @@ public:
         captureBuffer_.reset();
         eventPool_.reset();
         activeEvents_.clear();
+        telemetryBuffer_.reset();
     }
 
     // Registra audio entrante en el buffer de captura (Regla 9)
@@ -127,6 +129,20 @@ public:
 
             if (event != nullptr && event->isActive()) {
                 event->render(captureBuffer_, scratchL_.data(), scratchR_.data(), numSamples, sourceLevel);
+
+                // Telemetría lock-free hacia la GUI (Reglas 9, 23, 26)
+                const auto& attrs = event->getAttributes();
+                EventTelemetryItem tItem;
+                tItem.pan = attrs.pan;
+                tItem.pitchRatio = attrs.pitchRatio;
+                tItem.energy = attrs.energy * attrs.gain;
+                tItem.distance = attrs.distance;
+                tItem.azimuth = attrs.azimuth;
+                tItem.type = attrs.type;
+                tItem.generation = static_cast<uint8_t>(attrs.generation);
+                tItem.isAlive = true;
+                telemetryBuffer_.push(tItem);
+
                 ++i;
             } else {
                 // El evento ha muerto o terminado su ciclo de vida: devolver al pool (Regla 10)
@@ -148,6 +164,8 @@ public:
     size_t getActiveEventCount() const noexcept { return activeEvents_.size(); }
     size_t getPoolCapacity() const noexcept { return eventPool_.getCapacity(); }
     const EventCaptureBuffer& getCaptureBuffer() const noexcept { return captureBuffer_; }
+    EventTelemetryBuffer& getTelemetryBuffer() noexcept { return telemetryBuffer_; }
+    const EventTelemetryBuffer& getTelemetryBuffer() const noexcept { return telemetryBuffer_; }
 
 private:
     double sampleRate_{ 44100.0 };
@@ -157,6 +175,7 @@ private:
     EventCaptureBuffer captureBuffer_;
     EventPool eventPool_;
     std::vector<Event*> activeEvents_;
+    EventTelemetryBuffer telemetryBuffer_;
 
     std::vector<float> scratchL_;
     std::vector<float> scratchR_;

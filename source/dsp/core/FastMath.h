@@ -13,6 +13,13 @@ namespace audio_graph {
 class FastMath {
 public:
     /**
+     * @brief Limpieza instantánea de números denormales o subnormales (FTZ/DAZ manual)
+     */
+    static inline float flushDenormal(float x) noexcept {
+        return (std::abs(x) < 1.0e-15f) ? 0.0f : x;
+    }
+
+    /**
      * @brief Aproximación racional Padé [5/4] para tanh(x).
      * Error relativo máximo < 0.04% para |x| < 3.0f.
      * Garantiza continuidad, monotonía estricta y asíntotas exactas en +/- 1.0.

@@ -24,8 +24,10 @@ struct ExecutionStep {
     std::vector<NodeId> successorNodes;
     std::vector<size_t> predecessorStepIndices;
     int sidechainStepIndex{ -1 };
+    int audioRateModStepIndex{ -1 };
     bool isRoot{ true };
     bool isLeaf{ true };
+    bool isBypassed{ false };
 };
 
 /**
@@ -53,10 +55,11 @@ public:
             ExecutionStep step;
             step.processor = proc;
             step.nodeId = id;
+            step.isBypassed = graph.isNodeBypassed(id);
             steps_.push_back(std::move(step));
         }
 
-        // Resolver dependencias de predecesores, sucesores y sidechain (Reglas 4 y 6)
+        // Resolver dependencias de predecesores, sucesores, sidechain y audio-rate mod (Reglas 4, 6 y 7)
         for (const auto& conn : graph.getConnections()) {
             auto srcIt = nodeToStepIdx.find(conn.sourceNodeId);
             auto destIt = nodeToStepIdx.find(conn.destNodeId);
@@ -71,6 +74,9 @@ public:
                 if (conn.destPinId == SidechainPinId) {
                     // Es una conexión de Sidechain modular: no se mezcla con el audio principal
                     steps_[destIdx].sidechainStepIndex = static_cast<int>(srcIdx);
+                } else if (conn.destPinId == AudioRateModPinId) {
+                    // Es una conexión de Modulación Audio-Rate: no se mezcla con el audio principal
+                    steps_[destIdx].audioRateModStepIndex = static_cast<int>(srcIdx);
                 } else {
                     steps_[destIdx].predecessorNodes.push_back(conn.sourceNodeId);
                     steps_[destIdx].predecessorStepIndices.push_back(srcIdx);
@@ -83,7 +89,8 @@ public:
         // permanecen inactivos en el audio stream (ni reciben señal maestra ni se mezclan al master)
         if (hasExplicitConnections_) {
             for (auto& step : steps_) {
-                if (step.predecessorNodes.empty() && step.successorNodes.empty() && step.sidechainStepIndex < 0) {
+                if (step.predecessorNodes.empty() && step.successorNodes.empty() &&
+                    step.sidechainStepIndex < 0 && step.audioRateModStepIndex < 0) {
                     step.isRoot = false;
                     step.isLeaf = false;
                 }
@@ -164,13 +171,17 @@ public:
             PreallocatedBuffer* currentOutput = bufB;
 
             for (const auto& step : steps) {
-                ProcessContext stepContext = mainContext;
-                stepContext.inputChannels = currentInput->getArrayOfReadPointers();
-                stepContext.outputChannels = currentOutput->getArrayOfWritePointers();
-                stepContext.numInputChannels = currentInput->getNumChannels();
-                stepContext.numOutputChannels = currentOutput->getNumChannels();
+                if (step.isBypassed) {
+                    currentOutput->copyFrom(currentInput->getArrayOfReadPointers(), currentInput->getNumChannels(), numSamples);
+                } else {
+                    ProcessContext stepContext = mainContext;
+                    stepContext.inputChannels = currentInput->getArrayOfReadPointers();
+                    stepContext.outputChannels = currentOutput->getArrayOfWritePointers();
+                    stepContext.numInputChannels = currentInput->getNumChannels();
+                    stepContext.numOutputChannels = currentOutput->getNumChannels();
 
-                step.processor->process(stepContext);
+                    step.processor->process(stepContext);
+                }
                 std::swap(currentInput, currentOutput);
             }
 
@@ -249,6 +260,16 @@ public:
             }
             const float* scPointers[2] = { scL, scR };
 
+            // Resolver canales de Audio-Rate Modulation (Módulo 3)
+            const float* armL = nullptr;
+            const float* armR = nullptr;
+            if (step.audioRateModStepIndex >= 0 && static_cast<size_t>(step.audioRateModStepIndex) < MaxSteps && stepOutputBuffers[step.audioRateModStepIndex] != nullptr) {
+                const auto* armBuf = stepOutputBuffers[step.audioRateModStepIndex];
+                armL = armBuf->getReadPointer(0);
+                armR = (armBuf->getNumChannels() > 1) ? armBuf->getReadPointer(1) : armL;
+            }
+            const float* armPointers[2] = { armL, armR };
+
             // Preparar contexto del paso
             const float* inPointers[2] = { inL, inR };
             float* outPointers[2] = { outBuf->getWritePointer(0), (outBuf->getNumChannels() > 1) ? outBuf->getWritePointer(1) : nullptr };
@@ -257,11 +278,27 @@ public:
             stepContext.inputChannels = inPointers;
             stepContext.outputChannels = outPointers;
             stepContext.sidechainChannels = scPointers;
+            stepContext.audioRateModChannels = (armL != nullptr) ? armPointers : nullptr;
             stepContext.numInputChannels = (inL != nullptr) ? (inR != nullptr ? 2 : 1) : 0;
             stepContext.numOutputChannels = numChannels;
             stepContext.numSidechainChannels = (scL != nullptr) ? (scR != nullptr ? 2 : 1) : 0;
+            stepContext.numAudioRateModChannels = (armL != nullptr) ? (armR != nullptr ? 2 : 1) : 0;
 
-            step.processor->process(stepContext);
+            if (step.isBypassed) {
+                // Modo Bypass (Regla 5 y 9): traspasar la señal entrante sin procesamiento
+                if (inL != nullptr && outPointers[0] != nullptr) {
+                    std::memcpy(outPointers[0], inL, numSamples * sizeof(float));
+                } else if (outPointers[0] != nullptr) {
+                    std::memset(outPointers[0], 0, numSamples * sizeof(float));
+                }
+                if (outPointers[1] != nullptr) {
+                    if (inR != nullptr) std::memcpy(outPointers[1], inR, numSamples * sizeof(float));
+                    else if (inL != nullptr) std::memcpy(outPointers[1], inL, numSamples * sizeof(float));
+                    else std::memset(outPointers[1], 0, numSamples * sizeof(float));
+                }
+            } else {
+                step.processor->process(stepContext);
+            }
 
             // Telemetría de nodo probado (Node Probing para el Visualizador, Regla 23 y 26)
             if (probeVisualizer_ != nullptr && step.nodeId == probeNodeId_.load(std::memory_order_relaxed)) {

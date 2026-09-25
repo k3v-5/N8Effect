@@ -372,3 +372,20 @@ Todo componente de la interfaz de usuario (como botones de paletas, conectores o
 
 3. **Invariante de Clic Simple Limpio**:
    - Si el usuario simplemente hace clic y suelta sin exceder el umbral de movimiento, la cadena de ejecución estándar de JUCE debe conservarse intacta para permitir interacciones rápidas por un solo clic.
+
+---
+
+## 49. Invariante de Animación y Telemetría Continua en Visualizadores GUI (Continuous Sweep & Live Telemetry Invariant)
+
+Todo componente de visualización gráfica en tiempo real (Radar 3D, Osciloscopio, Espectrograma FFT, Waterfall Sonogram, Editor de Granos):
+
+1. **Independencia del Estado de Silencio (Zero Audio Gating):**
+   - El hilo de dibujo de la GUI (`paint()`, `timerCallback()`) y la máquina de estados de barrido (rotación de agujas, decaimiento de fósforo CRT, fade out de partículas) **NUNCA deben retornar tempranamente** ante bloques de audio nulos o silenciosos (`readSamples == 0`).
+   - El vaciado (`pop()`) de buffers de telemetría SPSC lock-free debe ejecutarse de forma continua en cada frame visual para garantizar que los eventos encolados se procesen y expiren fluidamente.
+
+2. **Alimentación Reactiva desde el Análisis en Vivo:**
+   - La telemetría hacia la GUI debe alimentarse de forma unificada desde el `AnalysisEngine` (transientes, energía RMS, fundamental YIN, centroide espectral y paneo estéreo), evitando dependencias con la lógica interna de plugins de terceros o fuentes estáticas.
+
+3. **Alineación de Coordenadas de Barrido:**
+   - Todo renderizado polar en JUCE debe respetar el desplazamiento de fase angular del sistema de coordenadas ($\theta_{\text{JUCE}} = \theta_{\text{Radar}} - \pi/2$) para asegurar que las estelas de fósforo y los marcadores de transientes coincidan milimétricamente con el haz de barrido.
+

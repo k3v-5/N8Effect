@@ -11,6 +11,8 @@
 #include "../preset/PresetManager.h"
 #include "../preset/GraphUndoManager.h"
 #include "../preset/SmartRandomizer.h"
+#include "../midi/MpeManager.h"
+#include "../midi/MidiMappingManager.h"
 
 #include "../dsp/core/TestInputSynthesizer.h"
 
@@ -58,6 +60,9 @@ public:
     PerformanceMetrics getPerformanceMetrics() const noexcept { return dualWorldEngine_.getPerformanceMetrics(); }
     void resetCpuOverload() noexcept { dualWorldEngine_.getCpuProfiler().resetOverload(); }
 
+    MpeManager& getMpeManager() noexcept { return mpeManager_; }
+    MidiMappingManager& getMidiMappingManager() noexcept { return midiMappingManager_; }
+
     AudioVisualizerBuffer& getVisualizerBuffer() noexcept { return visualizerBuffer_; }
     AudioVisualizerBuffer& getProbeVisualizerBuffer() noexcept { return probeVisualizerBuffer_; }
     void setProbeNodeId(NodeId id) noexcept { dualWorldEngine_.getExecutor().setProbeNodeId(id); }
@@ -75,6 +80,15 @@ public:
     bool redo(PresetMetadata& outMeta, std::array<float, 8>& outMacros);
     bool randomizeGraph(SmartRandomizer::RandomMode mode = SmartRandomizer::RandomMode::ModerateMutation);
     const ProcessSpec& getCurrentSpec() const noexcept { return currentSpec_; }
+
+    void setNodeBypassed(NodeId id, bool bypassed);
+    bool isNodeBypassed(NodeId id) const;
+
+    // Métodos para la Tira Secuencial / Cola de Efectos (Estilo Arturia Efx MOTIONS)
+    std::vector<NodeId> getLinearNodeChain();
+    void moveNodeInLinearChain(int fromIdx, int toIdx);
+    void removeNodeFromLinearChain(NodeId id);
+    void insertNodeInLinearChain(NodeType type, int insertIndex);
 
 private:
     std::atomic<bool> isAudioThreadRunning_{ false };
@@ -104,6 +118,8 @@ private:
     SceneManager sceneManager_;
     GraphUndoManager undoManager_;
     TestInputSynthesizer testSynth_;
+    MpeManager mpeManager_;
+    MidiMappingManager midiMappingManager_;
 
     // Telemetría visual lock-free para analizador de espectro, osciloscopio y goniometro (Reglas 9, 23, 26)
     AudioVisualizerBuffer visualizerBuffer_;
@@ -113,6 +129,9 @@ private:
     std::atomic<float>* dryParam_{ nullptr };
     std::atomic<float>* wetParam_{ nullptr };
     std::array<std::atomic<float>*, 8> macroParams_{ nullptr };
+
+    // Orden lineal de efectos para SequentialStripComponent
+    std::vector<NodeId> linearNodeOrder_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(N8AudioProcessor)
 };

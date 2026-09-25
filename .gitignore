@@ -33,3 +33,7 @@ _deps/
 # OS specific files
 .DS_Store
 Thumbs.db
+
+# Agent teamwork metadata
+.agents/
+.agent/

@@ -12,13 +12,13 @@ struct FactoryPresetEntry {
 };
 
 /**
- * @brief Catálogo Maestro de 20 Categorías Temáticas y 40 Presets Modulares (Reglas 21, 22, 44 y 46).
+ * @brief Catálogo Maestro de 20 Categorías Temáticas y 70 Presets Modulares (Reglas 21, 22, 44 y 46).
  * Incluye todos los tipos de efectos DSP y contenedores del motor en diversas configuraciones
  * (serie, paralelo, fan-out, fan-in, lazos de feedback y racks de eventos).
  */
 inline std::vector<FactoryPresetEntry> createFactoryPresetCatalog() {
     std::vector<FactoryPresetEntry> catalog;
-    catalog.reserve(40);
+    catalog.reserve(70);
 
     // =========================================================================
     // CATEGORÍA 1: Modulación Psicoacústica
@@ -1058,6 +1058,2900 @@ inline std::vector<FactoryPresetEntry> createFactoryPresetCatalog() {
   "connections": [
     { "id": 1, "srcNode": 1, "srcPin": 2, "destNode": 2, "destPin": 1 },
     { "id": 2, "srcNode": 2, "srcPin": 2, "destNode": 3, "destPin": 1 }
+  ]
+})json"
+    });
+
+
+
+    // =========================================================================
+    // NUEVOS PRESETS MODULARES AVANZADOS Y EXPERIMENTALES (30 PRESETS ADICIONALES)
+    // =========================================================================
+    catalog.push_back({
+        "Sub-Quantum Wormhole",
+        "Experimental & Avant-Garde",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Sub-Quantum Wormhole",
+  "author": "N8Audio",
+  "category": "Experimental & Avant-Garde",
+  "description": "Translocacion temporal inversa con corrimiento continuo, cuerda Karplus y diezmador cuantico",
+  "dryLevel": 0.4,
+  "wetLevel": 0.95,
+  "macros": [
+    0.8,
+    0.7,
+    0.6,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Reverse Swell",
+      "type": 38,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.8,
+        "2": 0.85,
+        "3": 7500.0,
+        "4": 0.4,
+        "5": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Bode Frequency Shift",
+      "type": 20,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": -65.0,
+        "2": 0.3,
+        "3": 0.85
+      }
+    },
+    {
+      "id": 3,
+      "name": "Karplus Resonator",
+      "type": 37,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 164.8,
+        "2": 0.4,
+        "3": 2.2,
+        "4": 0.35,
+        "5": 1.0,
+        "6": 0.8
+      }
+    },
+    {
+      "id": 4,
+      "name": "Quantum Decimator",
+      "type": 40,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 10.0,
+        "2": 3.0,
+        "3": 0.1,
+        "4": 0.2,
+        "5": 3.0,
+        "6": 0.85
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Bioluminescent Dark Drone",
+        "Experimental & Avant-Garde",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Bioluminescent Dark Drone",
+  "author": "N8Audio",
+  "category": "Experimental & Avant-Garde",
+  "description": "Textura de ruido de lluvia con modelado vocal de formantes, congelacion espectral y FDN Reverb",
+  "dryLevel": 0.3,
+  "wetLevel": 0.9,
+  "macros": [
+    0.6,
+    0.8,
+    0.5,
+    0.7,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Rain Texture Gen",
+      "type": 32,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 4.0,
+        "2": 0.7,
+        "3": 6500.0,
+        "4": 0.3,
+        "5": 0.6,
+        "6": 0.85
+      }
+    },
+    {
+      "id": 2,
+      "name": "Vocal Formant O-U",
+      "type": 31,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 3.5,
+        "2": 12.0,
+        "3": 0.85,
+        "4": 0.6,
+        "5": 0.9
+      }
+    },
+    {
+      "id": 3,
+      "name": "Spectral Freeze Cloud",
+      "type": 12,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.85,
+        "2": 0.45,
+        "3": 0.2,
+        "4": 0.8
+      }
+    },
+    {
+      "id": 4,
+      "name": "Cosmic Reverb",
+      "type": 6,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.92,
+        "2": 5.0,
+        "3": 6000.0,
+        "4": 25.0,
+        "5": 0.7
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Alien Throat Resonator",
+        "Experimental & Avant-Garde",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Alien Throat Resonator",
+  "author": "N8Audio",
+  "category": "Experimental & Avant-Garde",
+  "description": "Vocoder robotico de 16 bandas modulado por filtro de formantes, multiplicador AM y reverb temporal inverso",
+  "dryLevel": 0.4,
+  "wetLevel": 0.9,
+  "macros": [
+    0.75,
+    0.6,
+    0.8,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "16-Band Vocoder",
+      "type": 36,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.0,
+        "2": 120.0,
+        "3": 1.25,
+        "4": 8.0,
+        "5": 0.04,
+        "6": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Formant Vowel A-I",
+      "type": 31,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 1.8,
+        "2": 10.0,
+        "3": 1.1,
+        "4": 0.5,
+        "5": 0.85
+      }
+    },
+    {
+      "id": 3,
+      "name": "Metallic Ring Mod",
+      "type": 19,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 280.0,
+        "2": 0.0,
+        "3": 0.2,
+        "4": 0.65
+      }
+    },
+    {
+      "id": 4,
+      "name": "Reverse Swell Bloom",
+      "type": 38,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.6,
+        "2": 0.75,
+        "3": 9000.0,
+        "4": 0.35,
+        "5": 0.8
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Hilbert Phase Deconstruction",
+        "Experimental & Avant-Garde",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Hilbert Phase Deconstruction",
+  "author": "N8Audio",
+  "category": "Experimental & Avant-Garde",
+  "description": "Separacion analitica de Hilbert con dispersion en peine de flanger y decodificacion Mid/Side estereo ultra-ancha",
+  "dryLevel": 0.5,
+  "wetLevel": 0.85,
+  "macros": [
+    0.7,
+    0.5,
+    0.6,
+    0.4,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Hilbert Shift +12Hz",
+      "type": 20,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 12.0,
+        "2": 0.4,
+        "3": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Dual Comb Flanger",
+      "type": 18,
+      "x": 260.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.3,
+        "2": 0.85,
+        "3": 3.5,
+        "4": -0.75,
+        "5": 0.8
+      }
+    },
+    {
+      "id": 3,
+      "name": "M/S Spatial Widener",
+      "type": 25,
+      "x": 480.0,
+      "y": 60.0,
+      "params": {
+        "1": 1.75,
+        "2": 130.0,
+        "3": 1.0,
+        "4": 1.0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Supercritical Reactor Core",
+        "Experimental & Avant-Garde",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Supercritical Reactor Core",
+  "author": "N8Audio",
+  "category": "Experimental & Avant-Garde",
+  "description": "Lazo de feedback no lineal en saturacion simetrica, contencion por limitador brickwall y filtro analogico",
+  "dryLevel": 0.4,
+  "wetLevel": 0.9,
+  "macros": [
+    0.85,
+    0.6,
+    0.7,
+    0.9,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Feedback Container",
+      "type": 22,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.82,
+        "2": 45.0,
+        "3": 6500.0,
+        "4": 0.95,
+        "5": 0.8
+      }
+    },
+    {
+      "id": 2,
+      "name": "Tube Overdrive",
+      "type": 8,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 8.5,
+        "2": 3.0,
+        "3": 7000.0,
+        "4": 0.9
+      }
+    },
+    {
+      "id": 3,
+      "name": "Brickwall Limiter",
+      "type": 39,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": -4.0,
+        "2": -0.3,
+        "3": 25.0,
+        "4": 1.5,
+        "5": 1.0
+      }
+    },
+    {
+      "id": 4,
+      "name": "Post Cutoff Filter",
+      "type": 4,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 3500.0,
+        "2": 1.2,
+        "3": 0.0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Ghostly AM Radio Static",
+        "Experimental & Avant-Garde",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Ghostly AM Radio Static",
+  "author": "N8Audio",
+  "category": "Experimental & Avant-Garde",
+  "description": "Inyeccion de hissing analogico de cinta, modulador AM con batimiento y saturacion magnetica de cabezal",
+  "dryLevel": 0.35,
+  "wetLevel": 0.9,
+  "macros": [
+    0.65,
+    0.5,
+    0.7,
+    0.4,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Tape Hiss Noise",
+      "type": 32,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 2.0,
+        "2": 0.5,
+        "3": 5500.0,
+        "4": 0.45,
+        "5": 0.55,
+        "6": 0.8
+      }
+    },
+    {
+      "id": 2,
+      "name": "AM Heterodyne",
+      "type": 19,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 650.0,
+        "2": 0.0,
+        "3": 0.35,
+        "4": 0.7
+      }
+    },
+    {
+      "id": 3,
+      "name": "Bandpass Radio",
+      "type": 4,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 1800.0,
+        "2": 3.5,
+        "3": 2.0
+      }
+    },
+    {
+      "id": 4,
+      "name": "Tape Saturation 7.5ips",
+      "type": 21,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 4.5,
+        "2": 0.0,
+        "3": 0.65,
+        "4": 0.7,
+        "5": 0.9
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Cybernetic Cyborg Chants",
+        "Experimental & Avant-Garde",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Cybernetic Cyborg Chants",
+  "author": "N8Audio",
+  "category": "Experimental & Avant-Garde",
+  "description": "Confluencia de formantes morfologicos, generador de portadora vocoder con octavacion y chorus multi-voz",
+  "dryLevel": 0.45,
+  "wetLevel": 0.85,
+  "macros": [
+    0.7,
+    0.8,
+    0.5,
+    0.6,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Vowel Synthesizer",
+      "type": 31,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 2.2,
+        "2": 9.0,
+        "3": 0.9,
+        "4": 0.45,
+        "5": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "16-Band Speech Vocoder",
+      "type": 36,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 1.0,
+        "2": 95.0,
+        "3": 1.15,
+        "4": 7.0,
+        "5": 0.06,
+        "6": 0.85
+      }
+    },
+    {
+      "id": 3,
+      "name": "Pitch Octaver +12",
+      "type": 11,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 12.0,
+        "2": 0.0,
+        "3": 35.0,
+        "4": 0.7
+      }
+    },
+    {
+      "id": 4,
+      "name": "Stereo Spread Chorus",
+      "type": 17,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.8,
+        "2": 0.65,
+        "3": 0.35,
+        "4": 4.0,
+        "5": 0.75
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Alien Formant Morphosphere",
+        "Experimental & Avant-Garde",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Alien Formant Morphosphere",
+  "author": "N8Audio",
+  "category": "Experimental & Avant-Garde",
+  "description": "Mapeo vocal multidimensional acoplado a resonador modal con decaimiento extendido y swell inverso",
+  "dryLevel": 0.4,
+  "wetLevel": 0.9,
+  "macros": [
+    0.65,
+    0.75,
+    0.7,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Formant Morph A-E-I",
+      "type": 31,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 1.2,
+        "2": 14.0,
+        "3": 1.3,
+        "4": 0.5,
+        "5": 0.95
+      }
+    },
+    {
+      "id": 2,
+      "name": "Modal Bell Resonator",
+      "type": 13,
+      "x": 260.0,
+      "y": 60.0,
+      "params": {
+        "1": 330.0,
+        "2": 3.0,
+        "3": 0.6,
+        "4": 0.3,
+        "5": 0.85
+      }
+    },
+    {
+      "id": 3,
+      "name": "Reverse Reverb Swell",
+      "type": 38,
+      "x": 480.0,
+      "y": 60.0,
+      "params": {
+        "1": 1.1,
+        "2": 0.8,
+        "3": 6500.0,
+        "4": 0.4,
+        "5": 0.8
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Radioactive Vinyl Decay",
+        "Experimental & Avant-Garde",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Radioactive Vinyl Decay",
+  "author": "N8Audio",
+  "category": "Experimental & Avant-Garde",
+  "description": "Friccion de surco de vinilo ruidoso, wow-flutter de cinta en 7.5 ips, trituracion de 6 bits y ecualizacion",
+  "dryLevel": 0.3,
+  "wetLevel": 0.95,
+  "macros": [
+    0.8,
+    0.65,
+    0.55,
+    0.7,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Vinyl Crackle Generator",
+      "type": 32,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 3.0,
+        "2": 0.65,
+        "3": 7500.0,
+        "4": 0.5,
+        "5": 0.5,
+        "6": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Vintage Reel Wow",
+      "type": 21,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 5.0,
+        "2": 0.0,
+        "3": 0.85,
+        "4": 0.8,
+        "5": 0.9
+      }
+    },
+    {
+      "id": 3,
+      "name": "6-Bit Lo-Fi Crusher",
+      "type": 40,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 6.0,
+        "2": 5.0,
+        "3": 0.15,
+        "4": 0.35,
+        "5": 4.0,
+        "6": 0.85
+      }
+    },
+    {
+      "id": 4,
+      "name": "Vintage Tone Sculpt",
+      "type": 27,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 150.0,
+        "2": 4.0,
+        "3": 3200.0,
+        "4": 1.5,
+        "5": -6.0,
+        "6": 6000.0,
+        "7": -8.0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Broken Tube Satellite",
+        "Experimental & Avant-Garde",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Broken Tube Satellite",
+  "author": "N8Audio",
+  "category": "Experimental & Avant-Garde",
+  "description": "Excitador de aire extremo acoplado a distorsion tipo valvula con de-esser de aspereza y limitador brickwall",
+  "dryLevel": 0.5,
+  "wetLevel": 0.8,
+  "macros": [
+    0.8,
+    0.7,
+    0.6,
+    0.75,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Air & Sub Exciter",
+      "type": 35,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 8000.0,
+        "2": 4.0,
+        "3": 0.8,
+        "4": 65.0,
+        "5": 2.5,
+        "6": 0.5,
+        "7": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Tube Overdrive",
+      "type": 8,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 6.0,
+        "2": 3.0,
+        "3": 9000.0,
+        "4": 0.85
+      }
+    },
+    {
+      "id": 3,
+      "name": "De-Esser Harshness",
+      "type": 42,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 5500.0,
+        "2": 2.0,
+        "3": -18.0,
+        "4": 16.0,
+        "5": 0.0,
+        "6": 0.0
+      }
+    },
+    {
+      "id": 4,
+      "name": "Peak Brickwall Limiter",
+      "type": 39,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": -2.0,
+        "2": -0.2,
+        "3": 15.0,
+        "4": 1.2,
+        "5": 1.0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Rotary Android Vowel Box",
+        "Experimental & Avant-Garde",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Rotary Android Vowel Box",
+  "author": "N8Audio",
+  "category": "Experimental & Avant-Garde",
+  "description": "Altavoz giratorio Leslie acoplado a filtros formantes morfologicos y compresion de cinta vintage",
+  "dryLevel": 0.45,
+  "wetLevel": 0.85,
+  "macros": [
+    0.6,
+    0.7,
+    0.5,
+    0.6,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Formant Vowel E",
+      "type": 31,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 1.0,
+        "2": 8.0,
+        "3": 1.05,
+        "4": 0.4,
+        "5": 0.95
+      }
+    },
+    {
+      "id": 2,
+      "name": "Leslie Rotary Speaker",
+      "type": 34,
+      "x": 260.0,
+      "y": 60.0,
+      "params": {
+        "1": 1.0,
+        "2": 1.2,
+        "3": 0.9,
+        "4": 2.5,
+        "5": 0.9,
+        "6": 0.9
+      }
+    },
+    {
+      "id": 3,
+      "name": "Tape Saturation Drive",
+      "type": 21,
+      "x": 480.0,
+      "y": 60.0,
+      "params": {
+        "1": 3.0,
+        "2": 1.0,
+        "3": 0.4,
+        "4": 0.6,
+        "5": 0.85
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Self-Oscillating Tape Spiral",
+        "Experimental & Avant-Garde",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Self-Oscillating Tape Spiral",
+  "author": "N8Audio",
+  "category": "Experimental & Avant-Garde",
+  "description": "Calidez de cinta magnetica realimentada continuamente en bucle no lineal con modelado vocal",
+  "dryLevel": 0.4,
+  "wetLevel": 0.9,
+  "macros": [
+    0.8,
+    0.6,
+    0.7,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Tape Drive 15ips",
+      "type": 21,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 4.0,
+        "2": 1.0,
+        "3": 0.5,
+        "4": 0.7,
+        "5": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Feedback Container",
+      "type": 22,
+      "x": 260.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.78,
+        "2": 65.0,
+        "3": 5500.0,
+        "4": 0.9,
+        "5": 0.85
+      }
+    },
+    {
+      "id": 3,
+      "name": "Formant Vowel U",
+      "type": 31,
+      "x": 480.0,
+      "y": 60.0,
+      "params": {
+        "1": 4.0,
+        "2": 10.0,
+        "3": 0.85,
+        "4": 0.5,
+        "5": 0.8
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Glitch Polyphony Slicer",
+        "Glitch & Deconstrucción Rítmica",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Glitch Polyphony Slicer",
+  "author": "N8Audio",
+  "category": "Glitch & Deconstrucci\u00f3n R\u00edtmica",
+  "description": "Fragmentacion ritmica estocastica con transpocision cromatica de quinta, modulador de anillo y paneo 3D",
+  "dryLevel": 0.35,
+  "wetLevel": 0.9,
+  "macros": [
+    0.85,
+    0.75,
+    0.6,
+    0.7,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Glitch Slicer 1/8",
+      "type": 14,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 1.0,
+        "2": 0.7,
+        "3": 0.35,
+        "4": 0.4,
+        "5": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Pitch Shift +7st",
+      "type": 11,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 7.0,
+        "2": 0.0,
+        "3": 35.0,
+        "4": 0.8
+      }
+    },
+    {
+      "id": 3,
+      "name": "Metallic Ring Mod",
+      "type": 19,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 220.0,
+        "2": 0.0,
+        "3": 0.2,
+        "4": 0.7
+      }
+    },
+    {
+      "id": 4,
+      "name": "Spatial Orbit Panner",
+      "type": 26,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 65.0,
+        "2": 20.0,
+        "3": 2.0,
+        "4": 0.95
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Neural Stutter Machine",
+        "Glitch & Deconstrucción Rítmica",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Neural Stutter Machine",
+  "author": "N8Audio",
+  "category": "Glitch & Deconstrucci\u00f3n R\u00edtmica",
+  "description": "Frenado de cinta de inercia acoplado a delay en rebote ping-pong, diezmado y modelador transiente agresivo",
+  "dryLevel": 0.4,
+  "wetLevel": 0.9,
+  "macros": [
+    0.8,
+    0.7,
+    0.65,
+    0.6,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Tape Stop Brake",
+      "type": 30,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.0,
+        "2": 0.5,
+        "3": 0.25,
+        "4": 1.0,
+        "5": 0.4,
+        "6": 0.85
+      }
+    },
+    {
+      "id": 2,
+      "name": "Ping-Pong Echo",
+      "type": 28,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 150.0,
+        "2": 225.0,
+        "3": 0.5,
+        "4": 6500.0,
+        "5": 1.0,
+        "6": 0.7
+      }
+    },
+    {
+      "id": 3,
+      "name": "Bitcrusher 8-Bit",
+      "type": 40,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 8.0,
+        "2": 2.0,
+        "3": 0.1,
+        "4": 0.1,
+        "5": 2.0,
+        "6": 0.8
+      }
+    },
+    {
+      "id": 4,
+      "name": "Transient Punch",
+      "type": 33,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.5,
+        "2": -0.3,
+        "3": 1.2,
+        "4": 1.0,
+        "5": 2.0,
+        "6": 0.9
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Cybernetic Buffer Fracture",
+        "Glitch & Deconstrucción Rítmica",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Cybernetic Buffer Fracture",
+  "author": "N8Audio",
+  "category": "Glitch & Deconstrucci\u00f3n R\u00edtmica",
+  "description": "Repeticion de buffer con compuerta de tartamudeo, triturador agresivo, compresor multibanda y delay",
+  "dryLevel": 0.35,
+  "wetLevel": 0.9,
+  "macros": [
+    0.9,
+    0.7,
+    0.6,
+    0.8,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Stutter Glitch Slicer",
+      "type": 14,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 2.0,
+        "2": 0.8,
+        "3": 0.4,
+        "4": 0.5,
+        "5": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Crusher Decimator",
+      "type": 40,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 7.0,
+        "2": 4.0,
+        "3": 0.08,
+        "4": 0.3,
+        "5": 4.0,
+        "6": 0.85
+      }
+    },
+    {
+      "id": 3,
+      "name": "Multiband Slam",
+      "type": 15,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 280.0,
+        "2": 2800.0,
+        "3": 1.4,
+        "4": 1.2,
+        "5": 1.5,
+        "6": 0.9
+      }
+    },
+    {
+      "id": 4,
+      "name": "Space Delay Rebound",
+      "type": 28,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 180.0,
+        "2": 360.0,
+        "3": 0.45,
+        "4": 5500.0,
+        "5": 1.0,
+        "6": 0.65
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Spectral Crystal Shards",
+        "Espectral & Drones Congelados",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Spectral Crystal Shards",
+  "author": "N8Audio",
+  "category": "Espectral & Drones Congelados",
+  "description": "Filtrado espectral FFT con compuerta armonica, nube granular, resonadores y espacializacion 3D",
+  "dryLevel": 0.4,
+  "wetLevel": 0.9,
+  "macros": [
+    0.75,
+    0.7,
+    0.6,
+    0.65,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Spectral Tilt & Gate",
+      "type": 29,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": -45.0,
+        "2": 3.0,
+        "3": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Granular Cloud Mist",
+      "type": 7,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 60.0,
+        "2": 25.0,
+        "3": 35.0,
+        "4": 12.0,
+        "5": 2.0,
+        "6": 0.8,
+        "7": 0.8
+      }
+    },
+    {
+      "id": 3,
+      "name": "Crystalline Resonator",
+      "type": 13,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 523.25,
+        "2": 2.5,
+        "3": 0.5,
+        "4": 0.4,
+        "5": 0.75
+      }
+    },
+    {
+      "id": 4,
+      "name": "Spatial Panner",
+      "type": 26,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": -50.0,
+        "2": 25.0,
+        "3": 2.2,
+        "4": 0.95
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Infinite Frozen Aurora",
+        "Espectral & Drones Congelados",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Infinite Frozen Aurora",
+  "author": "N8Audio",
+  "category": "Espectral & Drones Congelados",
+  "description": "Congelacion espectral con borrado temporal (smear), chorus estereo, swell inverso y paneo orbital",
+  "dryLevel": 0.35,
+  "wetLevel": 0.95,
+  "macros": [
+    0.8,
+    0.85,
+    0.6,
+    0.7,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Spectral Freeze Hold",
+      "type": 12,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.9,
+        "2": 0.75,
+        "3": 0.25,
+        "4": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "4-Voice Chorus",
+      "type": 17,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 1.2,
+        "2": 0.75,
+        "3": 0.3,
+        "4": 4.0,
+        "5": 0.8
+      }
+    },
+    {
+      "id": 3,
+      "name": "Reverse Bloom Reverb",
+      "type": 38,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.9,
+        "2": 0.85,
+        "3": 8500.0,
+        "4": 0.45,
+        "5": 0.85
+      }
+    },
+    {
+      "id": 4,
+      "name": "Azimuth 3D Panner",
+      "type": 26,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 80.0,
+        "2": 15.0,
+        "3": 2.5,
+        "4": 1.0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Spectral Smear Horizon",
+        "Espectral & Drones Congelados",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Spectral Smear Horizon",
+  "author": "N8Audio",
+  "category": "Espectral & Drones Congelados",
+  "description": "Borroneado espectral FFT con corrimiento microtonal de frecuencia y cola de reverberacion infinita",
+  "dryLevel": 0.4,
+  "wetLevel": 0.85,
+  "macros": [
+    0.7,
+    0.6,
+    0.8,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Spectral Smear FFT",
+      "type": 12,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.4,
+        "2": 0.9,
+        "3": 0.1,
+        "4": 0.85
+      }
+    },
+    {
+      "id": 2,
+      "name": "Micro Freq Shift +7Hz",
+      "type": 20,
+      "x": 260.0,
+      "y": 60.0,
+      "params": {
+        "1": 7.5,
+        "2": 0.25,
+        "3": 0.8
+      }
+    },
+    {
+      "id": 3,
+      "name": "Ambient FDN Reverb",
+      "type": 6,
+      "x": 480.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.88,
+        "2": 4.5,
+        "3": 7500.0,
+        "4": 30.0,
+        "5": 0.75
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Micro-Grain Granular Shatter",
+        "Micro-Muestreo Granular",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Micro-Grain Granular Shatter",
+  "author": "N8Audio",
+  "category": "Micro-Muestreo Granular",
+  "description": "Nube de granos microscopicos de 25ms de alta densidad con perfilado transiente y techo de limiter brickwall",
+  "dryLevel": 0.45,
+  "wetLevel": 0.9,
+  "macros": [
+    0.85,
+    0.7,
+    0.5,
+    0.6,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Micro Granular Cloud",
+      "type": 7,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 25.0,
+        "2": 45.0,
+        "3": 50.0,
+        "4": 0.0,
+        "5": 5.0,
+        "6": 0.9,
+        "7": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Transient Sculptor",
+      "type": 33,
+      "x": 260.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.6,
+        "2": -0.4,
+        "3": 1.4,
+        "4": 1.0,
+        "5": 3.0,
+        "6": 0.9
+      }
+    },
+    {
+      "id": 3,
+      "name": "Brickwall Peak Limiter",
+      "type": 39,
+      "x": 480.0,
+      "y": 60.0,
+      "params": {
+        "1": -3.0,
+        "2": -0.1,
+        "3": 20.0,
+        "4": 1.5,
+        "5": 1.0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Granular Shimmer Mirage",
+        "Micro-Muestreo Granular",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Granular Shimmer Mirage",
+  "author": "N8Audio",
+  "category": "Micro-Muestreo Granular",
+  "description": "Enjambre granular con spray tonal transpuesto a la octava superior acoplado a reverberacion inversa con diffusion",
+  "dryLevel": 0.4,
+  "wetLevel": 0.9,
+  "macros": [
+    0.75,
+    0.8,
+    0.65,
+    0.7,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Granular Particle Cloud",
+      "type": 7,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 90.0,
+        "2": 28.0,
+        "3": 40.0,
+        "4": 0.0,
+        "5": 3.0,
+        "6": 0.85,
+        "7": 0.85
+      }
+    },
+    {
+      "id": 2,
+      "name": "Pitch Octaver +12st",
+      "type": 11,
+      "x": 260.0,
+      "y": 60.0,
+      "params": {
+        "1": 12.0,
+        "2": 0.0,
+        "3": 40.0,
+        "4": 0.85
+      }
+    },
+    {
+      "id": 3,
+      "name": "Reverse Reverb Swell",
+      "type": 38,
+      "x": 480.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.7,
+        "2": 0.85,
+        "3": 8000.0,
+        "4": 0.35,
+        "5": 0.8
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Stochastic Cloud Swarm",
+        "Micro-Muestreo Granular",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Stochastic Cloud Swarm",
+  "author": "N8Audio",
+  "category": "Micro-Muestreo Granular",
+  "description": "Dispersion granular estocastica sincronizada alimentando resonadores modales y orbita 3D",
+  "dryLevel": 0.45,
+  "wetLevel": 0.85,
+  "macros": [
+    0.8,
+    0.7,
+    0.6,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Granular Swarm",
+      "type": 7,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 70.0,
+        "2": 32.0,
+        "3": 60.0,
+        "4": -5.0,
+        "5": 4.0,
+        "6": 0.95,
+        "7": 0.85
+      }
+    },
+    {
+      "id": 2,
+      "name": "Modal Bell Bank",
+      "type": 13,
+      "x": 260.0,
+      "y": 60.0,
+      "params": {
+        "1": 440.0,
+        "2": 2.0,
+        "3": 0.4,
+        "4": 0.2,
+        "5": 0.8
+      }
+    },
+    {
+      "id": 3,
+      "name": "3D Dynamic Panner",
+      "type": 26,
+      "x": 480.0,
+      "y": 60.0,
+      "params": {
+        "1": -60.0,
+        "2": 30.0,
+        "3": 1.8,
+        "4": 0.95
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Strummed Obsidian Harp",
+        "Resonadores Modales & Afinación",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Strummed Obsidian Harp",
+  "author": "N8Audio",
+  "category": "Resonadores Modales & Afinaci\u00f3n",
+  "description": "Simulacion de cuerda punteada Karplus-Strong acoplada a linea de retardo estereo ping-pong y reverb calida",
+  "dryLevel": 0.5,
+  "wetLevel": 0.85,
+  "macros": [
+    0.7,
+    0.6,
+    0.75,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Karplus Plucked String",
+      "type": 37,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 130.8,
+        "2": 0.35,
+        "3": 3.0,
+        "4": 0.2,
+        "5": 1.0,
+        "6": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Stereo Delay Ping-Pong",
+      "type": 28,
+      "x": 260.0,
+      "y": 60.0,
+      "params": {
+        "1": 240.0,
+        "2": 360.0,
+        "3": 0.45,
+        "4": 7000.0,
+        "5": 1.0,
+        "6": 0.6
+      }
+    },
+    {
+      "id": 3,
+      "name": "Natural Room Reverb",
+      "type": 6,
+      "x": 480.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.75,
+        "2": 2.8,
+        "3": 6500.0,
+        "4": 15.0,
+        "5": 0.6
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Excited Resonant Monochord",
+        "Resonadores Modales & Afinación",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Excited Resonant Monochord",
+  "author": "N8Audio",
+  "category": "Resonadores Modales & Afinaci\u00f3n",
+  "description": "Generacion armonica subgraves y aire impulsando un modelo fisico Karplus con moldeador transiente",
+  "dryLevel": 0.4,
+  "wetLevel": 0.9,
+  "macros": [
+    0.8,
+    0.65,
+    0.7,
+    0.6,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Harmonic Exciter",
+      "type": 35,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 7000.0,
+        "2": 3.0,
+        "3": 0.7,
+        "4": 75.0,
+        "5": 3.0,
+        "6": 0.6,
+        "7": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Karplus Monochord",
+      "type": 37,
+      "x": 260.0,
+      "y": 60.0,
+      "params": {
+        "1": 98.0,
+        "2": 0.45,
+        "3": 2.8,
+        "4": 0.3,
+        "5": 1.0,
+        "6": 0.85
+      }
+    },
+    {
+      "id": 3,
+      "name": "Transient Snap",
+      "type": 33,
+      "x": 480.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.7,
+        "2": 0.2,
+        "3": 1.3,
+        "4": 1.0,
+        "5": 1.5,
+        "6": 0.85
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Quantum Plucked Tapestry",
+        "Resonadores Modales & Afinación",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Quantum Plucked Tapestry",
+  "author": "N8Audio",
+  "category": "Resonadores Modales & Afinaci\u00f3n",
+  "description": "Cuerda punteada fisica acoplada a congelacion espectral continua con paneo dimensional 3D",
+  "dryLevel": 0.45,
+  "wetLevel": 0.85,
+  "macros": [
+    0.75,
+    0.7,
+    0.65,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Karplus Acoustic Harp",
+      "type": 37,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 261.63,
+        "2": 0.25,
+        "3": 3.5,
+        "4": 0.15,
+        "5": 1.0,
+        "6": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Spectral Sustainer",
+      "type": 12,
+      "x": 260.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.7,
+        "2": 0.5,
+        "3": 0.2,
+        "4": 0.75
+      }
+    },
+    {
+      "id": 3,
+      "name": "3D Spatial Panner",
+      "type": 26,
+      "x": 480.0,
+      "y": 60.0,
+      "params": {
+        "1": 45.0,
+        "2": -10.0,
+        "3": 2.0,
+        "4": 0.9
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Tape Braking Stutter",
+        "Cintas Analógicas & Lo-Fi",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Tape Braking Stutter",
+  "author": "N8Audio",
+  "category": "Cintas Anal\u00f3gicas & Lo-Fi",
+  "description": "Mecanica de motor de frenado tape-stop en serie con saturador de distorsion, rebanador glitch y reverb",
+  "dryLevel": 0.4,
+  "wetLevel": 0.9,
+  "macros": [
+    0.85,
+    0.7,
+    0.65,
+    0.6,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Tape Stop Machine",
+      "type": 30,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.0,
+        "2": 0.7,
+        "3": 0.35,
+        "4": 2.0,
+        "5": 0.5,
+        "6": 0.85
+      }
+    },
+    {
+      "id": 2,
+      "name": "Analog Saturation",
+      "type": 8,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 4.0,
+        "2": 0.0,
+        "3": 6500.0,
+        "4": 0.8
+      }
+    },
+    {
+      "id": 3,
+      "name": "Glitch Stutter Gate",
+      "type": 14,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 1.0,
+        "2": 0.6,
+        "3": 0.25,
+        "4": 0.5,
+        "5": 0.85
+      }
+    },
+    {
+      "id": 4,
+      "name": "Diffuse Reverb",
+      "type": 6,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.8,
+        "2": 3.0,
+        "3": 5000.0,
+        "4": 20.0,
+        "5": 0.65
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Cassette Wow Melt",
+        "Cintas Analógicas & Lo-Fi",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Cassette Wow Melt",
+  "author": "N8Audio",
+  "category": "Cintas Anal\u00f3gicas & Lo-Fi",
+  "description": "Degradacion magnetica con flutter pronunciado, frenado mecanico, chorus estereo y modelado de ecualizacion",
+  "dryLevel": 0.45,
+  "wetLevel": 0.85,
+  "macros": [
+    0.75,
+    0.6,
+    0.7,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Tape Wow Flutter",
+      "type": 21,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 4.5,
+        "2": 0.0,
+        "3": 0.75,
+        "4": 0.7,
+        "5": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Tape Stop Drag",
+      "type": 30,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.0,
+        "2": 0.8,
+        "3": 0.4,
+        "4": 1.0,
+        "5": 0.6,
+        "6": 0.8
+      }
+    },
+    {
+      "id": 3,
+      "name": "Warm Chorus",
+      "type": 17,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.6,
+        "2": 0.7,
+        "3": 0.25,
+        "4": 3.0,
+        "5": 0.7
+      }
+    },
+    {
+      "id": 4,
+      "name": "Lo-Fi EQ Curve",
+      "type": 27,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 180.0,
+        "2": 3.0,
+        "3": 2500.0,
+        "4": 1.2,
+        "5": -4.0,
+        "6": 5500.0,
+        "7": -10.0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Sub-Zero Drone Machine",
+        "Cintas Analógicas & Lo-Fi",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Sub-Zero Drone Machine",
+  "author": "N8Audio",
+  "category": "Cintas Anal\u00f3gicas & Lo-Fi",
+  "description": "Textura de ruido rosa con compresion de umbral profundo, inclinacion espectral y filtro paso-bajos calido",
+  "dryLevel": 0.35,
+  "wetLevel": 0.9,
+  "macros": [
+    0.65,
+    0.7,
+    0.55,
+    0.6,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Pink Noise Atmosphere",
+      "type": 32,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 1.0,
+        "2": 0.6,
+        "3": 4500.0,
+        "4": 0.4,
+        "5": 0.5,
+        "6": 0.85
+      }
+    },
+    {
+      "id": 2,
+      "name": "Spectral Tilt Dark",
+      "type": 29,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": -55.0,
+        "2": -4.0,
+        "3": 0.85
+      }
+    },
+    {
+      "id": 3,
+      "name": "Lowpass Resonance",
+      "type": 4,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 1200.0,
+        "2": 1.8,
+        "3": 0.0
+      }
+    },
+    {
+      "id": 4,
+      "name": "VCA Glue Compressor",
+      "type": 9,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": -22.0,
+        "2": 4.5,
+        "3": 10.0,
+        "4": 120.0,
+        "5": 4.0,
+        "6": 1.0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Karplus Physical Feedback",
+        "Lazos de Realimentación Inestable",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Karplus Physical Feedback",
+  "author": "N8Audio",
+  "category": "Lazos de Realimentaci\u00f3n Inestable",
+  "description": "Cuerda afinada con inyeccion de lazo de feedback con amortiguamiento, pitch shifter y perfilado de ataque",
+  "dryLevel": 0.45,
+  "wetLevel": 0.9,
+  "macros": [
+    0.8,
+    0.75,
+    0.6,
+    0.65,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Karplus Core",
+      "type": 37,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 110.0,
+        "2": 0.4,
+        "3": 2.5,
+        "4": 0.25,
+        "5": 1.0,
+        "6": 0.85
+      }
+    },
+    {
+      "id": 2,
+      "name": "Feedback Container",
+      "type": 22,
+      "x": 250.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.75,
+        "2": 55.0,
+        "3": 6000.0,
+        "4": 0.9,
+        "5": 0.8
+      }
+    },
+    {
+      "id": 3,
+      "name": "Pitch Shifter +5st",
+      "type": 11,
+      "x": 460.0,
+      "y": 60.0,
+      "params": {
+        "1": 5.0,
+        "2": 0.0,
+        "3": 35.0,
+        "4": 0.7
+      }
+    },
+    {
+      "id": 4,
+      "name": "Transient Shaper",
+      "type": 33,
+      "x": 670.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.4,
+        "2": 0.3,
+        "3": 1.1,
+        "4": 1.0,
+        "5": 1.0,
+        "6": 0.85
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    },
+    {
+      "id": 3,
+      "srcNode": 3,
+      "srcPin": 2,
+      "destNode": 4,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Reverse Grain Vortex",
+        "Lazos de Realimentación Inestable",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Reverse Grain Vortex",
+  "author": "N8Audio",
+  "category": "Lazos de Realimentaci\u00f3n Inestable",
+  "description": "Nube granular densa alimentando reverberacion inversa temporal con feedback y saturacion de cuantizacion",
+  "dryLevel": 0.4,
+  "wetLevel": 0.9,
+  "macros": [
+    0.85,
+    0.7,
+    0.65,
+    0.7,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Granular Cloud",
+      "type": 7,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 85.0,
+        "2": 30.0,
+        "3": 30.0,
+        "4": -12.0,
+        "5": 2.0,
+        "6": 0.8,
+        "7": 0.85
+      }
+    },
+    {
+      "id": 2,
+      "name": "Reverse Swell Feedback",
+      "type": 38,
+      "x": 260.0,
+      "y": 60.0,
+      "params": {
+        "1": 0.8,
+        "2": 0.8,
+        "3": 7000.0,
+        "4": 0.5,
+        "5": 0.85
+      }
+    },
+    {
+      "id": 3,
+      "name": "Bitcrusher Drive",
+      "type": 40,
+      "x": 480.0,
+      "y": 60.0,
+      "params": {
+        "1": 9.0,
+        "2": 2.5,
+        "3": 0.05,
+        "4": 0.2,
+        "5": 3.0,
+        "6": 0.8
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    }
+  ]
+})json"
+    });
+
+    catalog.push_back({
+        "Vocoded Spectral Mist",
+        "Lazos de Realimentación Inestable",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Vocoded Spectral Mist",
+  "author": "N8Audio",
+  "category": "Lazos de Realimentaci\u00f3n Inestable",
+  "description": "Vocoder de ruido de 16 bandas procesado por ecualizacion espectral FFT y eco estereo cruzado",
+  "dryLevel": 0.45,
+  "wetLevel": 0.85,
+  "macros": [
+    0.75,
+    0.65,
+    0.7,
+    0.55,
+    0.5,
+    0.5,
+    0.5,
+    0.0
+  ],
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Noise Carrier Vocoder",
+      "type": 36,
+      "x": 40.0,
+      "y": 60.0,
+      "params": {
+        "1": 2.0,
+        "2": 150.0,
+        "3": 1.1,
+        "4": 9.0,
+        "5": 0.05,
+        "6": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "name": "Spectral Tilt Gate",
+      "type": 29,
+      "x": 260.0,
+      "y": 60.0,
+      "params": {
+        "1": -40.0,
+        "2": 2.0,
+        "3": 0.85
+      }
+    },
+    {
+      "id": 3,
+      "name": "Dual Space Delay",
+      "type": 28,
+      "x": 480.0,
+      "y": 60.0,
+      "params": {
+        "1": 250.0,
+        "2": 375.0,
+        "3": 0.45,
+        "4": 6000.0,
+        "5": 1.0,
+        "6": 0.7
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": 1,
+      "srcNode": 1,
+      "srcPin": 2,
+      "destNode": 2,
+      "destPin": 1
+    },
+    {
+      "id": 2,
+      "srcNode": 2,
+      "srcPin": 2,
+      "destNode": 3,
+      "destPin": 1
+    }
   ]
 })json"
     });

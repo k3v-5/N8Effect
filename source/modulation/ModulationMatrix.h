@@ -50,6 +50,20 @@ public:
         }
     }
 
+    void setRouteAmount(size_t index, float amount) noexcept {
+        if (index < MaxRoutes && routes_[index].isActive) {
+            routes_[index].amount = std::clamp(amount, -1.0f, 1.0f);
+        }
+    }
+
+    size_t getActiveRouteCount() const noexcept {
+        size_t count = 0;
+        for (const auto& r : routes_) {
+            if (r.isActive) ++count;
+        }
+        return count;
+    }
+
     const ModulationRoute& getRoute(size_t index) const noexcept {
         return routes_[index < MaxRoutes ? index : 0];
     }

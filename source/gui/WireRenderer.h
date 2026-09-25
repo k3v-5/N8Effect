@@ -3,24 +3,27 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "../core/Types.h"
 
+#include "ThemeManager.h"
+
 namespace audio_graph {
 
 /**
- * @brief Renderizador minimalista de curvas de Bézier monocromáticas con contornos blancos nítidos (Reglas 4, 24, 25).
+ * @brief Renderizador de curvas de Bézier monocromáticas y adaptativas al tema del chasis (Reglas 4, 24, 25).
  */
 class WireRenderer {
 public:
     static juce::Colour getPinColour(PinDataType dataType) noexcept {
+        const auto& theme = ThemeManager::getInstance().getColors();
         switch (dataType) {
             case PinDataType::AudioStereo:
             case PinDataType::AudioMono:
-                return juce::Colours::white;
+                return theme.textPrimary;
             case PinDataType::EventMessage:
-                return juce::Colours::white.withAlpha(0.9f);
+                return theme.accentSecondary;
             case PinDataType::ModulationScalar:
-                return juce::Colours::white.withAlpha(0.75f);
+                return theme.accentPrimary;
             default:
-                return juce::Colours::white;
+                return theme.textPrimary;
         }
     }
 
@@ -39,14 +42,14 @@ public:
 
         path.cubicTo(c1, c2, end);
 
-        // Halo / resplandor exterior blanco sutil cuando se pasa el ratón por encima
+        // Halo / resplandor exterior según tema cuando se pasa el ratón por encima
         if (isHovered) {
-            g.setColour(juce::Colours::white.withAlpha(0.25f));
+            g.setColour(ThemeManager::getInstance().getColors().wireGlowColor);
             g.strokePath(path, juce::PathStrokeType(5.0f));
         }
 
-        // Trazado de línea minimalista nítido
-        g.setColour(isHovered ? juce::Colours::white : getPinColour(dataType));
+        // Trazado de línea según tema
+        g.setColour(isHovered ? ThemeManager::getInstance().getColors().accentPrimary : getPinColour(dataType));
 
         const bool shouldDash = isDashed || (dataType == PinDataType::EventMessage);
         const bool shouldDot = (dataType == PinDataType::ModulationScalar);

@@ -64,10 +64,14 @@ enum class NodeType : uint32_t {
     MidiChordEngine = 44,
     MidiScaleQuantizer = 45,
     ExternalSidechain = 46,
+    Convolution = 47,
+    Oversampler = 48,
+    AudioSlicer = 49,
     Custom = 100
 };
 
 constexpr PinId SidechainPinId = 3;
+constexpr PinId AudioRateModPinId = 4;
 
 enum class PinType : uint8_t {
     AudioInput,
@@ -75,14 +79,17 @@ enum class PinType : uint8_t {
     EventInput,
     EventOutput,
     ModulationInput,
-    ModulationOutput
+    ModulationOutput,
+    AudioRateModulationInput,
+    AudioRateModulationOutput
 };
 
 enum class PinDataType : uint8_t {
     AudioStereo,
     AudioMono,
     EventMessage,
-    ModulationScalar
+    ModulationScalar,
+    AudioRateSignal
 };
 
 // Ciclo de vida explícito de eventos (Regla 2)
@@ -125,6 +132,10 @@ struct ProcessContext {
     // Sidechain modular e inter-nodal (Regla 6)
     const float* const* sidechainChannels{ nullptr };
     uint32_t numSidechainChannels{ 0 };
+
+    // Modulación Audio-Rate internodal / FM
+    const float* const* audioRateModChannels{ nullptr };
+    uint32_t numAudioRateModChannels{ 0 };
     
     // Información de sincronización del host (Regla 37)
     double bpm{ 120.0 };
