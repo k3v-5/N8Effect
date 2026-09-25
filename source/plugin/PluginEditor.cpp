@@ -5,32 +5,60 @@ namespace audio_graph {
 N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
     : AudioProcessorEditor(&p),
       processorRef(p),
-      stripView_(p),
-      canvas_(p),
       palette_(),
-      virtualKeyboard_(p.getKeyboardState(), p)
+      canvas_(p),
+      visualizer_(p),
+      macroDashboard_(p)
 {
-    setResizable(true, true);
-    setResizeLimits(850, 550, 1920, 1200);
-    setSize(980, 680);
+    // Asegurar que el modo Standalone tenga siempre la entrada desmuteada (Regla 1 y 17)
+    {
+        juce::PropertiesFile::Options opts;
+        opts.applicationName = "Audio Event Graph Engine";
+        opts.filenameSuffix = ".settings";
+        opts.osxLibrarySubFolder = "Application Support";
+        opts.folderName = "";
 
-    // 1. Título y estado
-    titleLabel_.setText("AUDIO EVENT GRAPH ENGINE", juce::dontSendNotification);
+        juce::ApplicationProperties appProps;
+        appProps.setStorageParameters(opts);
+        if (auto* userSettings = appProps.getUserSettings()) {
+            userSettings->setValue("shouldMuteInput", false);
+            userSettings->saveIfNeeded();
+        }
+    }
+
+    setResizable(true, true);
+    setResizeLimits(900, 560, 1920, 1200);
+    setSize(1200, 840);
+
+    setLookAndFeel(&lookAndFeel_);
+
+    // 1. Título Minimalista y Botón de Configuración
+    titleLabel_.setText("N8 EFFECT", juce::dontSendNotification);
     titleLabel_.setFont(juce::FontOptions(18.0f, juce::Font::bold));
     titleLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(titleLabel_);
 
-    statusLabel_.setText("Graph: Compiled & Active | EventPool: 0 active / 1024 slots", juce::dontSendNotification);
-    statusLabel_.setFont(juce::FontOptions(11.0f, juce::Font::plain));
-    statusLabel_.setColour(juce::Label::textColourId, juce::Colour(0xff00d2ff));
-    addAndMakeVisible(statusLabel_);
+    configBtn_.setButtonText("CONFIG");
+    configBtn_.onClick = [this]() {
+        isConfigModalVisible_ = !isConfigModalVisible_;
+        configModal_.setVisible(isConfigModalVisible_);
+        if (isConfigModalVisible_) {
+            configModal_.toFront(true);
+            const auto metrics = processorRef.getPerformanceMetrics();
+            configModal_.setMetrics(metrics,
+                                    static_cast<int>(processorRef.getGraph().getNodes().size()),
+                                    processorRef.getSampleRate(),
+                                    processorRef.getBlockSize());
+        }
+    };
+    addAndMakeVisible(configBtn_);
 
     // 2. Controles Maestros Dry / Wet
     drySlider_.setSliderStyle(juce::Slider::LinearBar);
     drySlider_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 45, 18);
     dryLabel_.setText("DRY", juce::dontSendNotification);
     dryLabel_.setFont(juce::FontOptions(11.0f, juce::Font::bold));
-    dryLabel_.setColour(juce::Label::textColourId, juce::Colour(0xff8c96a5));
+    dryLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(drySlider_);
     addAndMakeVisible(dryLabel_);
 
@@ -41,7 +69,7 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
     wetSlider_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 45, 18);
     wetLabel_.setText("WET", juce::dontSendNotification);
     wetLabel_.setFont(juce::FontOptions(11.0f, juce::Font::bold));
-    wetLabel_.setColour(juce::Label::textColourId, juce::Colour(0xff00d2ff));
+    wetLabel_.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(wetSlider_);
     addAndMakeVisible(wetLabel_);
 
@@ -49,16 +77,17 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
         processorRef.getAPVTS(), "wet_level", wetSlider_);
 
     // 3. Preset Bar & Escenas
-    presetBar_.setPresetList(processorRef.getPresetManager().getFactoryPresetNames());
+    std::vector<PresetBarComponent::PresetItem> presetItems;
+    const auto& factoryPresets = processorRef.getPresetManager().getFactoryPresets();
+    presetItems.reserve(factoryPresets.size());
+    for (const auto& entry : factoryPresets) {
+        presetItems.push_back({ entry.name, entry.category });
+    }
+    presetBar_.setPresetList(presetItems);
 
     presetBar_.setOnPresetSelected([this](int index) {
-        PresetMetadata meta;
-        std::array<float, 8> macros;
-        if (processorRef.getPresetManager().loadFactoryPreset(static_cast<size_t>(index), processorRef.getGraph(), meta, macros)) {
-            processorRef.recompilePlan();
-            processorRef.getUndoManager().pushState(processorRef.getGraph(), meta, macros);
+        if (processorRef.loadFactoryPreset(static_cast<size_t>(index))) {
             canvas_.rebuildFromGraph();
-            stripView_.rebuild();
         }
     });
 
@@ -77,139 +106,250 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
         std::array<float, 8> macros{ 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
         processorRef.getSceneManager().updateAndApply(processorRef.getGraph(), macros, 1.0f);
         canvas_.repaint();
-        stripView_.repaint();
     });
 
     presetBar_.setOnUndoRequested([this]() {
         PresetMetadata meta;
         std::array<float, 8> macros;
-        if (processorRef.getUndoManager().undo(processorRef.getGraph(), meta, macros)) {
-            processorRef.recompilePlan();
+        if (processorRef.undo(meta, macros)) {
             canvas_.rebuildFromGraph();
-            stripView_.rebuild();
         }
     });
 
     presetBar_.setOnRedoRequested([this]() {
         PresetMetadata meta;
         std::array<float, 8> macros;
-        if (processorRef.getUndoManager().redo(processorRef.getGraph(), meta, macros)) {
-            processorRef.recompilePlan();
+        if (processorRef.redo(meta, macros)) {
             canvas_.rebuildFromGraph();
-            stripView_.rebuild();
         }
+    });
+
+    presetBar_.setOnTogglePianoRequested([this](bool vis) {
+        isPianoVisible_ = vis;
+        piano_.setVisible(vis);
+        resized();
+    });
+
+    presetBar_.setOnRandomizeRequested([this](int modeIdx) {
+        auto mode = static_cast<SmartRandomizer::RandomMode>(std::clamp(modeIdx, 0, 2));
+        if (processorRef.randomizeGraph(mode)) {
+            canvas_.rebuildFromGraph();
+        }
+    });
+
+    presetBar_.setOnExportPresetFileRequested([this]() {
+        fileChooser_ = std::make_unique<juce::FileChooser>(
+            "Export N8 Preset File",
+            juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+            "*.n8preset");
+
+        const auto flags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting;
+        fileChooser_->launchAsync(flags, [this](const juce::FileChooser& fc) {
+            const auto file = fc.getResult();
+            if (file != juce::File{}) {
+                PresetMetadata meta{
+                    .schemaVersion = GraphSerializer::CurrentSchemaVersion,
+                    .name = file.getFileNameWithoutExtension().toStdString(),
+                    .author = "User",
+                    .category = "User",
+                    .description = "Exported N8Effect Preset",
+                    .dryLevel = processorRef.getDualWorldEngine().getDryLevel(),
+                    .wetLevel = processorRef.getDualWorldEngine().getWetLevel()
+                };
+                std::array<float, 8> macros{ 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+                std::string json = GraphSerializer::serialize(processorRef.getGraph(), meta, macros);
+                file.replaceWithText(json);
+            }
+        });
+    });
+
+    presetBar_.setOnImportPresetFileRequested([this]() {
+        fileChooser_ = std::make_unique<juce::FileChooser>(
+            "Import N8 Preset File",
+            juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+            "*.n8preset");
+
+        const auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+        fileChooser_->launchAsync(flags, [this](const juce::FileChooser& fc) {
+            const auto file = fc.getResult();
+            if (file.existsAsFile()) {
+                std::string json = file.loadFileAsString().toStdString();
+                if (processorRef.loadPresetFromJson(json)) {
+                    canvas_.rebuildFromGraph();
+                }
+            }
+        });
     });
 
     addAndMakeVisible(presetBar_);
 
-    // 4. Selector de Modo de Vista (Estilo Arturia Efx) y Teclado
-    viewModeStripBtn_.setButtonText(juce::CharPointer_UTF8("\xE2\x89\xA1 COLA SECUENCIAL")); // ≡ COLA SECUENCIAL
-    viewModeStripBtn_.onClick = [this]() { setViewMode(ViewMode::SequentialSlots); };
-    addAndMakeVisible(viewModeStripBtn_);
-
-    viewModeGraphBtn_.setButtonText(juce::CharPointer_UTF8("\xE2\x9A\x8D GRAFO MODULAR")); // ⚍ GRAFO MODULAR
-    viewModeGraphBtn_.onClick = [this]() { setViewMode(ViewMode::ModularGraph); };
-    addAndMakeVisible(viewModeGraphBtn_);
-
-    toggleKeyboardBtn_.setButtonText(juce::CharPointer_UTF8("\xF0\x9F\x8E\xB9 TECLADO")); // 🎹 TECLADO
-    toggleKeyboardBtn_.setClickingTogglesState(true);
-    toggleKeyboardBtn_.setToggleState(isKeyboardVisible_, juce::dontSendNotification);
-    toggleKeyboardBtn_.onClick = [this]() {
-        setKeyboardVisible(toggleKeyboardBtn_.getToggleState());
-    };
-    addAndMakeVisible(toggleKeyboardBtn_);
-
-    // 5. Paleta lateral y Vistas
+    // 4. Conexión de la paleta con el canvas
     palette_.setOnAddNodeRequested([this](NodeType type) {
         static int spawnCount = 0;
         const float x = 80.0f + static_cast<float>((spawnCount % 5) * 40);
         const float y = 60.0f + static_cast<float>((spawnCount % 5) * 30);
         spawnCount++;
         canvas_.addNodeAtPosition(type, x, y);
-        stripView_.rebuild();
     });
 
-    addChildComponent(palette_);
-    addChildComponent(canvas_);
-    addAndMakeVisible(stripView_);
+    addAndMakeVisible(palette_);
+    addAndMakeVisible(canvas_);
 
-    // 6. Teclado Virtual de Audición (Reglas 1, 9, 23, 24)
-    virtualKeyboard_.onCloseRequested = [this]() {
-        setKeyboardVisible(false);
-    };
-    addAndMakeVisible(virtualKeyboard_);
+    // Conectar selección de nodo en el canvas con el secuenciador contextual, telemetría probe y dashboard de macros
+    canvas_.setOnNodeSelected([this](NodeId id) {
+        sequencerLane_.setTargetNode(id, processorRef.getGraph().getNode(id));
+        processorRef.setProbeNodeId(id);
+        macroDashboard_.setSelectedNodeId(id);
+    });
+
+    // 5. Teclado de Piano Visual de Prueba para Efectos
+    piano_.setOnNoteOn([this](int note, float vel) {
+        processorRef.getTestSynthesizer().noteOn(note, vel);
+    });
+    piano_.setOnNoteOff([this](int note) {
+        processorRef.getTestSynthesizer().noteOff(note);
+    });
+    piano_.setOnTimbreChanged([this](TestTimbreMode mode) {
+        processorRef.getTestSynthesizer().setTimbreMode(mode);
+    });
+    piano_.setOnCloseRequested([this]() {
+        isPianoVisible_ = false;
+        presetBar_.setPianoToggleState(false);
+        piano_.setVisible(false);
+        resized();
+    });
+    addAndMakeVisible(piano_);
+
+    // 6. Carril de Secuenciación de Automatización por Efecto
+    sequencerLane_.setOnCloseRequested([this]() {
+        isSeqVisible_ = false;
+        presetBar_.setSeqToggleState(false);
+        sequencerLane_.setVisible(false);
+        resized();
+    });
+    presetBar_.setOnToggleSeqRequested([this](bool vis) {
+        isSeqVisible_ = vis;
+        sequencerLane_.setVisible(vis);
+        resized();
+    });
+    addAndMakeVisible(sequencerLane_);
+
+    // 7. Visualizador de Audio y Espectrograma en Tiempo Real
+    presetBar_.setOnToggleVisualizerRequested([this](bool vis) {
+        isVisVisible_ = vis;
+        visualizer_.setVisible(vis);
+        resized();
+    });
+    addAndMakeVisible(visualizer_);
+
+    // 8. Dashboard de 8 Performance Macros Globales
+    presetBar_.setOnToggleMacrosRequested([this](bool vis) {
+        isMacrosVisible_ = vis;
+        macroDashboard_.setVisible(vis);
+        resized();
+    });
+    addAndMakeVisible(macroDashboard_);
 
     hud_.setOnResetOverload([this]() {
         processorRef.resetCpuOverload();
     });
     addAndMakeVisible(hud_);
 
-    setViewMode(ViewMode::SequentialSlots);
-    setKeyboardVisible(true);
+    configModal_.setOnCloseRequested([this]() {
+        isConfigModalVisible_ = false;
+        configModal_.setVisible(false);
+    });
+    configModal_.setOnToggleHud([this](bool vis) {
+        isHudVisible_ = vis;
+        hud_.setVisible(vis);
+        resized();
+    });
+    configModal_.setOnAudioSettingsRequested([this]() {
+        // En Standalone, disparar el diálogo nativo de configuración de audio de JUCE
+        if (auto* top = getTopLevelComponent()) {
+            std::function<bool(juce::Component*)> findAndClick = [&](juce::Component* comp) -> bool {
+                if (comp == nullptr) return false;
+                if (auto* btn = dynamic_cast<juce::Button*>(comp)) {
+                    if (btn != &configBtn_ && btn->findParentComponentOfClass<juce::AudioProcessorEditor>() == nullptr) {
+                        btn->triggerClick();
+                        return true;
+                    }
+                }
+                for (int i = 0; i < comp->getNumChildComponents(); ++i) {
+                    if (findAndClick(comp->getChildComponent(i))) return true;
+                }
+                return false;
+            };
+            findAndClick(top);
+        }
+    });
+    configModal_.setVisible(false);
+    addChildComponent(configModal_);
+
     startTimerHz(30); // 30 fps para actualizaciones de telemetría sin locks
-}
-
-void N8AudioProcessorEditor::setKeyboardVisible(bool visible) {
-    isKeyboardVisible_ = visible;
-    toggleKeyboardBtn_.setToggleState(visible, juce::dontSendNotification);
-    virtualKeyboard_.setVisible(visible);
-    if (visible) {
-        toggleKeyboardBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff00d2ff));
-        toggleKeyboardBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff090910));
-    } else {
-        toggleKeyboardBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff181824));
-        toggleKeyboardBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff8c96a5));
-    }
-    resized();
-}
-
-void N8AudioProcessorEditor::setViewMode(ViewMode mode) {
-    currentViewMode_ = mode;
-    const bool isStrip = (mode == ViewMode::SequentialSlots);
-
-    stripView_.setVisible(isStrip);
-    canvas_.setVisible(!isStrip);
-    palette_.setVisible(!isStrip);
-
-    if (isStrip) {
-        viewModeStripBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff00d2ff));
-        viewModeStripBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff090910));
-        viewModeGraphBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff181824));
-        viewModeGraphBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff8c96a5));
-        stripView_.rebuild();
-    } else {
-        viewModeStripBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff181824));
-        viewModeStripBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff8c96a5));
-        viewModeGraphBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff00d2ff));
-        viewModeGraphBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff090910));
-        canvas_.rebuildFromGraph();
-    }
-    resized();
 }
 
 N8AudioProcessorEditor::~N8AudioProcessorEditor() {
     stopTimer();
+    setLookAndFeel(nullptr);
+}
+
+void N8AudioProcessorEditor::parentHierarchyChanged() {
+    juce::AudioProcessorEditor::parentHierarchyChanged();
+
+    // En Standalone, ocultar y colapsar cualquier barra de notificación del contenedor padre
+    if (auto* parent = getParentComponent()) {
+        for (int i = 0; i < parent->getNumChildComponents(); ++i) {
+            auto* child = parent->getChildComponent(i);
+            if (child != this) {
+                child->setVisible(false);
+                child->setBounds(0, 0, 0, 0);
+            }
+        }
+    }
 }
 
 void N8AudioProcessorEditor::timerCallback() {
+    // Si algún banner o notificación del wrapper intentara aparecer, asegurar que se mantenga invisible
+    if (auto* parent = getParentComponent()) {
+        for (int i = 0; i < parent->getNumChildComponents(); ++i) {
+            auto* child = parent->getChildComponent(i);
+            if (child != this && child->isVisible()) {
+                child->setVisible(false);
+                child->setBounds(0, 0, 0, 0);
+            }
+        }
+    }
+
     const auto metrics = processorRef.getPerformanceMetrics();
     hud_.updateMetrics(metrics);
+    sequencerLane_.updatePlayhead();
 
-    juce::String status = "Graph: " + juce::String(static_cast<int>(metrics.totalNodes)) + " Nodes | " +
-                          "EventPool: " + juce::String(static_cast<int>(metrics.activeEvents)) + " active / 1024 slots | 0 mallocs (Lock-Free)";
-    statusLabel_.setText(status, juce::dontSendNotification);
+    if (isVisVisible_) {
+        visualizer_.updateTelemetry();
+    }
+    if (isMacrosVisible_) {
+        macroDashboard_.updateKnobValues();
+    }
+
+    if (isConfigModalVisible_) {
+        configModal_.setMetrics(metrics,
+                                static_cast<int>(processorRef.getGraph().getNodes().size()),
+                                processorRef.getSampleRate(),
+                                processorRef.getBlockSize());
+    }
 
     presetBar_.setUndoRedoEnabled(processorRef.getUndoManager().canUndo(),
                                   processorRef.getUndoManager().canRedo());
 }
 
 void N8AudioProcessorEditor::paint(juce::Graphics& g) {
-    // Fondo de barra superior
-    g.setColour(juce::Colour(0xff12121c));
+    // Fondo negro absoluto de la barra superior
+    g.setColour(juce::Colour(0xff000000));
     g.fillRect(0, 0, getWidth(), 84);
 
-    // Divisor de barra superior
-    g.setColour(juce::Colour(0xff222236));
+    // Divisor de barra superior en blanco nítido
+    g.setColour(juce::Colours::white);
     g.drawHorizontalLine(83, 0.0f, static_cast<float>(getWidth()));
 }
 
@@ -230,34 +370,48 @@ void N8AudioProcessorEditor::resized() {
     wetSlider_.setBounds(wetRow);
 
     header.removeFromRight(12);
-    auto hudArea = header.removeFromRight(230);
-    hud_.setBounds(hudArea);
-
-    header.removeFromRight(12);
-    titleLabel_.setBounds(header.removeFromTop(24));
-    statusLabel_.setBounds(header.removeFromTop(18));
-
-    // 2. Barra de Presets, Escenas, Selector de Vistas y Botón Teclado
-    auto barArea = area.removeFromTop(28);
-    auto modeSwitcherArea = barArea.removeFromRight(375);
-    toggleKeyboardBtn_.setBounds(modeSwitcherArea.removeFromRight(100).reduced(2, 2));
-    modeSwitcherArea.removeFromRight(6);
-    viewModeStripBtn_.setBounds(modeSwitcherArea.removeFromLeft(132).reduced(2, 2));
-    viewModeGraphBtn_.setBounds(modeSwitcherArea.reduced(2, 2));
-    presetBar_.setBounds(barArea);
-
-    // 3. Teclado Virtual en el borde inferior si está visible (alto: ~104px)
-    if (isKeyboardVisible_) {
-        virtualKeyboard_.setBounds(area.removeFromBottom(104).reduced(8, 2));
+    if (isHudVisible_) {
+        auto hudArea = header.removeFromRight(230);
+        hud_.setBounds(hudArea);
+        header.removeFromRight(12);
     }
 
-    // 4. Área de Trabajo Principal (Dual View Arturia Efx)
-    if (currentViewMode_ == ViewMode::SequentialSlots) {
-        stripView_.setBounds(area);
-    } else {
-        palette_.setBounds(area.removeFromLeft(150));
-        canvas_.setBounds(area);
+    configBtn_.setBounds(header.removeFromRight(70).withSizeKeepingCentre(66, 24));
+    header.removeFromRight(10);
+
+    titleLabel_.setBounds(header.removeFromTop(32));
+
+    // 2. Barra de Presets y Escenas
+    presetBar_.setBounds(area.removeFromTop(28));
+
+    // 2.1 Dashboard de 8 Macros de Rendimiento si está activo
+    if (isMacrosVisible_) {
+        macroDashboard_.setBounds(area.removeFromTop(62));
     }
+
+    // 3. Piano visual en la parte inferior si está activo
+    if (isPianoVisible_) {
+        piano_.setBounds(area.removeFromBottom(84));
+    }
+
+    // 4. Carril de Secuenciación por Efecto si está activo
+    if (isSeqVisible_) {
+        sequencerLane_.setBounds(area.removeFromBottom(115));
+    }
+
+    // 4.1 Visualizador de Audio y Espectrograma si está activo
+    if (isVisVisible_) {
+        visualizer_.setBounds(area.removeFromBottom(125));
+    }
+
+    // 5. Barra lateral de paleta de módulos
+    palette_.setBounds(area.removeFromLeft(150));
+
+    // 6. Canvas del grafo DAG
+    canvas_.setBounds(area);
+
+    // 7. Modal de configuración cubre toda la ventana cuando está activo
+    configModal_.setBounds(getLocalBounds());
 }
 
 } // namespace audio_graph

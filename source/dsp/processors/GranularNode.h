@@ -51,18 +51,20 @@ public:
         ringBufferR_.assign(bufferCapacity_, 0.0f);
         writePos_ = 0;
         samplesUntilNextGrain_ = 0.0f;
+        totalSamplesRecorded_ = 0;
     }
 
     void reset() override {
         grainPool_.reset();
         writePos_ = 0;
         samplesUntilNextGrain_ = 0.0f;
+        totalSamplesRecorded_ = 0;
         std::fill(ringBufferL_.begin(), ringBufferL_.end(), 0.0f);
         std::fill(ringBufferR_.begin(), ringBufferR_.end(), 0.0f);
     }
 
     void process(ProcessContext& context) override {
-        if (context.numSamples == 0 || context.numInputChannels == 0 || context.numOutputChannels == 0) return;
+        if (ringBufferL_.empty() || bufferCapacity_ == 0 || context.numSamples == 0 || context.numInputChannels == 0 || context.numOutputChannels == 0) return;
 
         const float grainSizeMs = targetGrainSizeMs_;
         const float density = std::clamp(targetDensity_, 1.0f, 60.0f);
@@ -89,6 +91,7 @@ public:
             ringBufferR_[writePos_] = drySampleR;
             const size_t currentWrite = writePos_;
             writePos_ = (writePos_ + 1 < bufferCapacity_) ? (writePos_ + 1) : 0;
+            totalSamplesRecorded_++;
 
             samplesUntilNextGrain_ -= 1.0f;
             if (samplesUntilNextGrain_ <= 0.0f) {
@@ -101,8 +104,15 @@ public:
                     const float rPan = nextRandomFloat() * 2.0f - 1.0f;
 
                     const float offsetSamples = posSprayMs * 0.001f * static_cast<float>(spec_.sampleRate) * rPos;
-                    float startPos = static_cast<float>(currentWrite) - offsetSamples - static_cast<float>(baseGrainDuration);
-                    while (startPos < 0.0f) startPos += static_cast<float>(bufferCapacity_);
+                    float startPos = 0.0f;
+                    if (totalSamplesRecorded_ < bufferCapacity_) {
+                        // Al inicio, no leer más allá de lo grabado
+                        const float maxBack = static_cast<float>(currentWrite);
+                        startPos = std::max(0.0f, maxBack - offsetSamples - static_cast<float>(baseGrainDuration) * 0.5f);
+                    } else {
+                        startPos = static_cast<float>(currentWrite) - offsetSamples - static_cast<float>(baseGrainDuration);
+                        while (startPos < 0.0f) startPos += static_cast<float>(bufferCapacity_);
+                    }
 
                     const float finalPitchSemitones = pitchSemi + (pitchSpray * rPitch);
                     const float rate = std::pow(2.0f, finalPitchSemitones / 12.0f);
@@ -212,6 +222,7 @@ private:
     std::vector<float> ringBufferR_;
     size_t bufferCapacity_{ 88200 };
     size_t writePos_{ 0 };
+    size_t totalSamplesRecorded_{ 0 };
     float samplesUntilNextGrain_{ 0.0f };
     uint32_t rngState_{ 123456789 };
 

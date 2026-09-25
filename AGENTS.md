@@ -356,5 +356,19 @@ Antes de implementar una nueva funcionalidad:
 - **Aproximaciones Rápidas en Bucles Internos**: Evitar funciones matemáticas trascendentes costosas (`std::tanh`, `std::pow`, `std::exp`) dentro de bucles por muestra cuando existan aproximaciones analíticas o de Padé de alta precisión con costo computacional significativamente menor.
 - **Reutilización de Buffers de Interconexión**: En el plan de ejecución del grafo (`ExecutionPlan`), minimizar la cantidad de buffers intermediarios reutilizando slots de memoria entre nodos que no procesen en paralelo.
 
+---
 
+## 48. Desambiguación Estricta de Drag & Drop vs Clic en la Interfaz (GUI Interaction Guard)
 
+Todo componente de la interfaz de usuario (como botones de paletas, conectores o tarjetas modulares) que soporte simultáneamente interacción por **clic** y por **arrastre (Drag & Drop)** debe implementar una máquina de estados de arrastre explícita para evitar acciones fantasma o duplicadas:
+
+1. **Rastreo de Arrastre (`hasDragged_` / `isDragging_`)**:
+   - En `mouseDrag()`, si la distancia euclidiana respecto al punto de pulsación inicial excede el umbral de arrastre de JUCE (`isDragAndDropActive()` o distancia $> 4\text{ px}$), se debe marcar inmediatamente el estado de arrastre (`hasDragged_ = true`).
+   - Durante el arrastre, debe omitirse la propagación a la implementación por defecto de la clase base `Button::mouseDrag(e)` para evitar que el botón registre internamente una interacción de clic válida.
+
+2. **Supresión Absoluta de Clic en `mouseUp()` y `clicked()`**:
+   - En el método `mouseUp()`, si `hasDragged_` está activo, se debe restaurar el estado visual a normal (`setState(buttonNormal)`), limpiar el flag y ejecutar un `return;` inmediato **sin llamar a `Button::mouseUp(e)`**.
+   - Se deben sobreescribir explícitamente los métodos virtuales `clicked()` y `clicked(const juce::ModifierKeys&)` verificando si existió arrastre previo, abortando la ejecución de cualquier callback `onClick`.
+
+3. **Invariante de Clic Simple Limpio**:
+   - Si el usuario simplemente hace clic y suelta sin exceder el umbral de movimiento, la cadena de ejecución estándar de JUCE debe conservarse intacta para permitir interacciones rápidas por un solo clic.

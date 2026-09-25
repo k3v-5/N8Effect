@@ -38,9 +38,9 @@ public:
             return false;
         }
 
-        // Posición dentro del fragmento
+        // Posición dentro del fragmento respecto al inicio de la captura en el pasado
         double playOffset = reverse_ ? (static_cast<double>(durationSamples_) - currentPhase_) : currentPhase_;
-        double sampleOffset = captureOffsetSamples_ + playOffset;
+        double sampleOffset = captureOffsetSamples_ - playOffset;
 
         outL = capture.readSample(0, sampleOffset) * envelopeGain;
         outR = capture.readSample(1, sampleOffset) * envelopeGain;

@@ -10,7 +10,9 @@
 #include "../preset/SceneManager.h"
 #include "../preset/PresetManager.h"
 #include "../preset/GraphUndoManager.h"
-#include "../dsp/core/TestSynthEngine.h"
+#include "../preset/SmartRandomizer.h"
+
+#include "../dsp/core/TestInputSynthesizer.h"
 
 namespace audio_graph {
 
@@ -52,44 +54,65 @@ public:
     PresetManager& getPresetManager() noexcept { return presetManager_; }
     SceneManager& getSceneManager() noexcept { return sceneManager_; }
     GraphUndoManager& getUndoManager() noexcept { return undoManager_; }
+    TestInputSynthesizer& getTestSynthesizer() noexcept { return testSynth_; }
     PerformanceMetrics getPerformanceMetrics() const noexcept { return dualWorldEngine_.getPerformanceMetrics(); }
     void resetCpuOverload() noexcept { dualWorldEngine_.getCpuProfiler().resetOverload(); }
 
-    juce::MidiKeyboardState& getKeyboardState() noexcept { return keyboardState_; }
-    TestSynthEngine& getTestSynth() noexcept { return testSynth_; }
+    AudioVisualizerBuffer& getVisualizerBuffer() noexcept { return visualizerBuffer_; }
+    AudioVisualizerBuffer& getProbeVisualizerBuffer() noexcept { return probeVisualizerBuffer_; }
+    void setProbeNodeId(NodeId id) noexcept { dualWorldEngine_.getExecutor().setProbeNodeId(id); }
+    NodeId getProbeNodeId() const noexcept { return dualWorldEngine_.getExecutor().getProbeNodeId(); }
 
     bool recompilePlan();
     NodeId addNodeToGraph(NodeType type, float x = 100.0f, float y = 100.0f);
     bool removeNodeFromGraph(NodeId id);
     ConnectionId connectNodes(NodeId srcNode, PinId srcPin, NodeId destNode, PinId destPin);
-
-    // Operaciones sobre la Cola Secuencial (Reglas 4, 6, 28, 30)
-    std::vector<NodeId> getLinearNodeChain() const;
-    bool setLinearNodeChain(const std::vector<NodeId>& newOrder);
-    NodeId insertNodeInLinearChain(NodeType type, int index = -1);
-    bool removeNodeFromLinearChain(NodeId id);
-    bool moveNodeInLinearChain(int fromIndex, int toIndex);
-
+    bool disconnectConnection(ConnectionId cid);
+    bool disconnectPin(NodeId nodeId, PinId pinId);
+    bool loadFactoryPreset(size_t index);
+    bool loadPresetFromJson(const std::string& json);
+    bool undo(PresetMetadata& outMeta, std::array<float, 8>& outMacros);
+    bool redo(PresetMetadata& outMeta, std::array<float, 8>& outMacros);
+    bool randomizeGraph(SmartRandomizer::RandomMode mode = SmartRandomizer::RandomMode::ModerateMutation);
     const ProcessSpec& getCurrentSpec() const noexcept { return currentSpec_; }
 
 private:
+    std::atomic<bool> isAudioThreadRunning_{ false };
+
+    template <typename Func>
+    auto executeSafeGraphMutation(Func&& func) {
+        suspendProcessing(true);
+        while (isAudioThreadRunning_.load(std::memory_order_acquire)) {
+            juce::Thread::sleep(1);
+        }
+        const juce::ScopedLock sl(getCallbackLock());
+        auto result = func();
+        suspendProcessing(false);
+        return result;
+    }
+
     ProcessSpec currentSpec_{ 44100.0, 512, 2, 2 };
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
     juce::AudioProcessorValueTreeState apvts_;
     DualWorldEngine dualWorldEngine_;
     Graph graph_;
-    ExecutionPlan currentPlan_;
+    ExecutionPlan planA_;
+    ExecutionPlan planB_;
+    std::atomic<const ExecutionPlan*> activePlan_{ nullptr };
     PresetManager presetManager_;
     SceneManager sceneManager_;
     GraphUndoManager undoManager_;
+    TestInputSynthesizer testSynth_;
 
-    juce::MidiKeyboardState keyboardState_;
-    TestSynthEngine testSynth_;
+    // Telemetría visual lock-free para analizador de espectro, osciloscopio y goniometro (Reglas 9, 23, 26)
+    AudioVisualizerBuffer visualizerBuffer_;
+    AudioVisualizerBuffer probeVisualizerBuffer_;
 
     // Punteros atómicos a parámetros para lectura ultra rápida en el hilo de audio
     std::atomic<float>* dryParam_{ nullptr };
     std::atomic<float>* wetParam_{ nullptr };
+    std::array<std::atomic<float>*, 8> macroParams_{ nullptr };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(N8AudioProcessor)
 };

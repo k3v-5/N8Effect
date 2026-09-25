@@ -32,7 +32,7 @@ public:
     void setPulseWidth(float pw) noexcept { pulseWidth_ = std::clamp(pw, 0.05f, 0.95f); }
 
     // Avanza el LFO un paso de muestra y retorna el valor en rango [-1.0, +1.0]
-    float processSample(double bpm, double ppqPosition, bool isHostPlaying) noexcept {
+    float processSample(double /*bpm*/, double ppqPosition, bool isHostPlaying) noexcept {
         // 1. Determinar el incremento de fase por muestra
         double phaseInc = 0.0;
         if (syncDiv_ == SyncDivision::FreeHz || !isHostPlaying) {

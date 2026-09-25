@@ -95,7 +95,7 @@ public:
         }
     }
 
-    NodeType getType() const override { return NodeType::Filter; }
+    NodeType getType() const override { return NodeType::ParametricEQ; }
     const char* getName() const override { return "Parametric EQ"; }
 
     std::span<const PinDescriptor> getPins() const override { return pins_; }
@@ -128,6 +128,6 @@ private:
     std::array<ParameterInfo, 7> params_;
 };
 
-inline AutoRegisterNode<ParametricEQNode> registerParametricEQ(NodeType::Filter, "parametric_eq", "Filters");
+inline AutoRegisterNode<ParametricEQNode> registerParametricEQ(NodeType::ParametricEQ, "parametric_eq", "Filters");
 
 } // namespace audio_graph

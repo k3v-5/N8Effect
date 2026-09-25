@@ -57,7 +57,7 @@ public:
     }
 
     void process(ProcessContext& context) override {
-        if (context.numSamples == 0 || context.numInputChannels == 0 || context.numOutputChannels == 0) return;
+        if (bufferL_.empty() || bufferCapacity_ == 0 || context.numSamples == 0 || context.numInputChannels == 0 || context.numOutputChannels == 0) return;
 
         const float divVal = targetDivision_;
         const float repeatProb = std::clamp(targetRepeatProb_, 0.0f, 1.0f);

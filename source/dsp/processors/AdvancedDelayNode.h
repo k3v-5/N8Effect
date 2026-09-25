@@ -113,7 +113,7 @@ public:
         }
     }
 
-    NodeType getType() const override { return NodeType::Delay; }
+    NodeType getType() const override { return NodeType::AdvancedDelay; }
     const char* getName() const override { return "Advanced Delay"; }
     bool supportsTail() const override { return true; } // Soporte explícito de tails (Regla 18)
     uint32_t getTailSamples() const override {
@@ -145,6 +145,6 @@ private:
     std::array<ParameterInfo, 6> params_;
 };
 
-inline AutoRegisterNode<AdvancedDelayNode> registerAdvancedDelay(NodeType::Delay, "advanced_delay", "Time");
+inline AutoRegisterNode<AdvancedDelayNode> registerAdvancedDelay(NodeType::AdvancedDelay, "advanced_delay", "Time");
 
 } // namespace audio_graph

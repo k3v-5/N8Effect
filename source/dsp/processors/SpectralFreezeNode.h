@@ -85,10 +85,11 @@ public:
         std::fill(phaseAccumR_.begin(), phaseAccumR_.end(), 0.0f);
         bufferPos_ = 0;
         wasFrozen_ = false;
+        hasFrozenAudio_ = false;
     }
 
     void process(ProcessContext& context) override {
-        if (context.numSamples == 0 || context.numInputChannels == 0 || context.numOutputChannels == 0) return;
+        if (timeInL_.empty() || context.numSamples == 0 || context.numInputChannels == 0 || context.numOutputChannels == 0) return;
 
         const bool isFrozen = (targetFreeze_ >= 0.5f);
         const float smear = std::clamp(targetSmear_, 0.0f, 0.98f);
@@ -96,6 +97,7 @@ public:
         const float dryWet = std::clamp(targetMix_, 0.0f, 1.0f);
 
         const size_t fftSize = fftEngineL_.getFFTSize();
+        if (fftSize == 0) return;
         const size_t numBins = fftSize / 2;
 
         const float* inL = context.inputChannels[0];
@@ -118,21 +120,37 @@ public:
             if (bufferPos_ >= fftSize) {
                 bufferPos_ = 0;
 
-                fftEngineL_.forward(timeInL_.data());
-                fftEngineR_.forward(timeInR_.data());
+                fftEngineL_.forward(timeInL_.data(), false);
+                fftEngineR_.forward(timeInR_.data(), false);
 
                 auto& freqL = fftEngineL_.getFrequencyBuffer();
                 auto& freqR = fftEngineR_.getFrequencyBuffer();
+
+                // Calcular energía espectral entrante para no congelar silencio si se carga con Freeze activo
+                float totalEnergy = 0.0f;
+                for (size_t k = 0; k < numBins; ++k) {
+                    totalEnergy += std::abs(freqL[k]) + std::abs(freqR[k]);
+                }
+
+                if (isFrozen) {
+                    if (!wasFrozen_ || (!hasFrozenAudio_ && totalEnergy > 1e-3f)) {
+                        for (size_t k = 0; k < numBins; ++k) {
+                            frozenMagsL_[k] = std::abs(freqL[k]);
+                            frozenMagsR_[k] = std::abs(freqR[k]);
+                        }
+                        if (totalEnergy > 1e-3f) {
+                            hasFrozenAudio_ = true;
+                        }
+                    }
+                } else {
+                    hasFrozenAudio_ = false;
+                }
 
                 for (size_t k = 0; k < numBins; ++k) {
                     float magL = std::abs(freqL[k]);
                     float magR = std::abs(freqR[k]);
 
-                    if (isFrozen) {
-                        if (!wasFrozen_) {
-                            frozenMagsL_[k] = magL;
-                            frozenMagsR_[k] = magR;
-                        }
+                    if (isFrozen && hasFrozenAudio_) {
                         magL = frozenMagsL_[k];
                         magR = frozenMagsR_[k];
 
@@ -231,6 +249,7 @@ private:
 
     size_t bufferPos_{ 0 };
     bool wasFrozen_{ false };
+    bool hasFrozenAudio_{ false };
 
     float targetFreeze_{ 0.0f };
     float targetSmear_{ 0.0f };

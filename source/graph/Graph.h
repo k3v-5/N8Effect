@@ -7,6 +7,7 @@
 #include <string>
 #include <queue>
 #include "AudioProcessorNode.h"
+#include "../modulation/NodeAutomationSequencer.h"
 
 namespace audio_graph {
 
@@ -31,6 +32,7 @@ struct NodeInstance {
     std::unique_ptr<AudioProcessorNode> processor;
     float posX{ 0.0f };
     float posY{ 0.0f };
+    NodeAutomationBank sequencer; // Secuenciador personal de automatización rítmica por efecto
 };
 
 /**

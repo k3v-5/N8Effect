@@ -89,18 +89,30 @@ public:
     }
 
     // Ejecuta análisis hacia el dominio de frecuencia
-    void forward(const float* timeInput) noexcept {
-        for (size_t i = 0; i < fftSize_; ++i) {
-            fftBuffer_[i] = { timeInput[i] * window_[i], 0.0f };
+    void forward(const float* timeInput, bool applyWindow = true) noexcept {
+        if (applyWindow) {
+            for (size_t i = 0; i < fftSize_; ++i) {
+                fftBuffer_[i] = { timeInput[i] * window_[i], 0.0f };
+            }
+        } else {
+            for (size_t i = 0; i < fftSize_; ++i) {
+                fftBuffer_[i] = { timeInput[i], 0.0f };
+            }
         }
         computeRadix2FFT(fftBuffer_, false);
     }
 
     // Ejecuta síntesis inversa hacia el dominio de tiempo
-    void inverse(float* timeOutput) noexcept {
+    void inverse(float* timeOutput, bool applyWindow = false) noexcept {
         computeRadix2FFT(fftBuffer_, true);
-        for (size_t i = 0; i < fftSize_; ++i) {
-            timeOutput[i] = fftBuffer_[i].real() * window_[i];
+        if (applyWindow) {
+            for (size_t i = 0; i < fftSize_; ++i) {
+                timeOutput[i] = fftBuffer_[i].real() * window_[i];
+            }
+        } else {
+            for (size_t i = 0; i < fftSize_; ++i) {
+                timeOutput[i] = fftBuffer_[i].real();
+            }
         }
     }
 

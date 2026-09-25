@@ -22,9 +22,9 @@ public:
         setRepaintsOnMouseActivity(true);
 
         if (processor_ != nullptr) {
-            // Generar mini-sliders para los parámetros
+            // Generar mini-sliders para todos los parámetros del procesador
             const auto params = processor_->getParameters();
-            const size_t numSliders = std::min(size_t{ 4 }, params.size()); // Hasta 4 parámetros destacados
+            const size_t numSliders = params.size();
             for (size_t i = 0; i < numSliders; ++i) {
                 const auto& p = params[i];
                 auto slider = std::make_unique<ModulationSlider>(p.name, p.minValue, p.maxValue, p.defaultValue);
@@ -57,27 +57,46 @@ public:
 
     bool isSelected() const noexcept { return isSelected_; }
 
+    void setOnNodeSelected(std::function<void(NodeId)> cb) { onNodeSelected_ = std::move(cb); }
     void setOnNodeMoved(std::function<void(NodeId, float, float)> cb) { onNodeMoved_ = std::move(cb); }
     void setOnNodeDeleted(std::function<void(NodeId)> cb) { onNodeDeleted_ = std::move(cb); }
     void setOnPinDragStarted(std::function<void(NodeId, PinId, PinDataType, juce::Point<float>)> cb) { onPinDragStarted_ = std::move(cb); }
-    void setOnPinConnected(std::function<void(NodeId, PinId, PinDataType)> cb) { onPinConnected_ = std::move(cb); }
+    void setOnPinDragging(std::function<void(juce::Point<float>)> cb) { onPinDragging_ = std::move(cb); }
+    void setOnPinDragEnded(std::function<void(NodeId, PinId, PinType, PinDataType, juce::Point<float>)> cb) { onPinDragEnded_ = std::move(cb); }
+    void setOnPinRightClicked(std::function<void(NodeId, PinId)> cb) { onPinRightClicked_ = std::move(cb); }
+    void setOnNodeDraggingOverCanvas(std::function<void(NodeId, juce::Rectangle<int>)> cb) { onNodeDraggingOverCanvas_ = std::move(cb); }
+    void setOnNodeDropped(std::function<void(NodeId, juce::Rectangle<int>)> cb) { onNodeDropped_ = std::move(cb); }
     void setOnParameterChanged(std::function<void(NodeId, ParameterId, float)> cb) { onParameterChanged_ = std::move(cb); }
 
-    static juce::Colour getCategoryColor(NodeType t) noexcept {
-        switch (t) {
-            case NodeType::Filter: return juce::Colour(0xfff39c12);     // Ámbar
-            case NodeType::Delay: return juce::Colour(0xff00d2ff);      // Cian
-            case NodeType::Reverb: return juce::Colour(0xff9b59b6);     // Púrpura
-            case NodeType::Distortion: return juce::Colour(0xffe74c3c); // Rojo
-            case NodeType::Compressor:
-            case NodeType::Multiband: return juce::Colour(0xffe67e22);  // Naranja
-            case NodeType::Granular: return juce::Colour(0xff2ecc71);   // Verde
-            case NodeType::Spectral: return juce::Colour(0xff1abc9c);   // Turquesa
-            case NodeType::Glitch: return juce::Colour(0xffe84393);     // Rosa chicle
-            case NodeType::PitchShifter:
-            case NodeType::Resonator: return juce::Colour(0xff6c5ce7);  // Azul índigo
-            default: return juce::Colour(0xff34495e);
+    void setDropCandidate(bool cand) {
+        if (isDropCandidate_ != cand) {
+            isDropCandidate_ = cand;
+            repaint();
         }
+    }
+
+    void setHighlightedPin(PinId pinId) {
+        if (highlightedPinId_ != pinId) {
+            highlightedPinId_ = pinId;
+            repaint();
+        }
+    }
+
+    bool hitTestPin(juce::Point<float> canvasPos, PinId& outPinId, PinType& outPinType, PinDataType& outDataType, juce::Point<float>& outCenter, float tolerance = 16.0f) const {
+        if (processor_ == nullptr) return false;
+        const auto localPos = canvasPos - getPosition().toFloat();
+        const auto pins = processor_->getPins();
+        for (size_t i = 0; i < pins.size(); ++i) {
+            auto pinRect = getPinLocalRect(i);
+            if (pinRect.expanded(tolerance).contains(localPos)) {
+                outPinId = pins[i].id;
+                outPinType = pins[i].type;
+                outDataType = pins[i].dataType;
+                outCenter = getPosition().toFloat() + pinRect.getCentre();
+                return true;
+            }
+        }
+        return false;
     }
 
     juce::Point<float> getPinCenterInCanvas(PinId pinId) const {
@@ -86,7 +105,7 @@ public:
         const auto pins = processor_->getPins();
         for (size_t i = 0; i < pins.size(); ++i) {
             if (pins[i].id == pinId) {
-                const auto r = getPinLocalRect(static_cast<int>(i), pins[i].type == PinType::AudioInput || pins[i].type == PinType::EventInput);
+                const auto r = getPinLocalRect(i);
                 const auto localPt = r.getCentre();
                 return getPosition().toFloat() + localPt;
             }
@@ -97,49 +116,48 @@ public:
     void paint(juce::Graphics& g) override {
         auto bounds = getLocalBounds().toFloat();
 
-        // 1. Fondo de la tarjeta del nodo
-        g.setColour(juce::Colour(0xff12121a));
-        g.fillRoundedRectangle(bounds, 8.0f);
+        // 1. Fondo de la tarjeta del nodo (Negro absoluto)
+        g.setColour(juce::Colour(0xff000000));
+        g.fillRoundedRectangle(bounds, 4.0f);
 
-        // 2. Cabecera del nodo con color según categoría
+        // 2. Cabecera del nodo (Línea divisoria horizontal blanca nítida)
         auto headerRect = bounds.removeFromTop(28.0f);
-        const juce::Colour catColor = getCategoryColor(type_);
-
-        juce::ColourGradient grad(catColor.withAlpha(0.6f), headerRect.getX(), headerRect.getY(),
-                                  catColor.withAlpha(0.15f), headerRect.getX(), headerRect.getBottom(), false);
-        g.setGradientFill(grad);
-        g.fillRoundedRectangle(headerRect, 8.0f);
-
-        // Rectángulo inferior de cabecera recto para ensamblar con el cuerpo
-        g.fillRect(headerRect.removeFromBottom(6.0f));
-
-        // Título del nodo
         g.setColour(juce::Colours::white);
-        g.setFont(juce::FontOptions(13.0f, juce::Font::bold));
-        g.drawText(name_, headerRect.reduced(8.0f, 0.0f), juce::Justification::centredLeft, true);
+        g.drawHorizontalLine(28, 0.0f, bounds.getWidth());
 
-        // Botón de eliminar (X)
-        auto closeBtnRect = headerRect.removeFromRight(20.0f).reduced(2.0f);
-        g.setColour(juce::Colour(0xff888899));
+        // Título del nodo (Blanco nítido en mayúsculas elegante)
+        g.setFont(juce::FontOptions(11.5f, juce::Font::bold));
+        g.drawText(name_.toUpperCase(), headerRect.reduced(10.0f, 0.0f), juce::Justification::centredLeft, true);
+
+        // Botón de eliminar (X) en contorno minimalista
+        auto closeBtnRect = headerRect.removeFromRight(22.0f).reduced(4.0f);
+        g.setColour(juce::Colours::white.withAlpha(0.7f));
         g.drawText("×", closeBtnRect, juce::Justification::centred, false);
 
-        // 3. Renderizado de Pines
+        // 3. Renderizado de Pines minimalistas (anillo blanco con núcleo negro y centro blanco)
         if (processor_ != nullptr) {
             const auto pins = processor_->getPins();
             for (size_t i = 0; i < pins.size(); ++i) {
                 const bool isInput = (pins[i].type == PinType::AudioInput || pins[i].type == PinType::EventInput);
-                auto pinRect = getPinLocalRect(static_cast<int>(i), isInput);
+                auto pinRect = getPinLocalRect(i);
+                const bool isHighlighted = (pins[i].id == highlightedPinId_);
 
-                const juce::Colour pinColor = WireRenderer::getPinColour(pins[i].dataType);
-                g.setColour(pinColor);
+                if (isHighlighted) {
+                    // Resplandor blanco concéntrico para pin objetivo en snapping
+                    g.setColour(juce::Colours::white.withAlpha(0.35f));
+                    g.fillEllipse(pinRect.expanded(4.0f));
+                }
+
+                g.setColour(juce::Colour(0xff000000));
                 g.fillEllipse(pinRect);
 
                 g.setColour(juce::Colours::white);
-                g.drawEllipse(pinRect, 1.2f);
+                g.drawEllipse(pinRect, isHighlighted ? 2.0f : 1.2f);
+                g.fillEllipse(pinRect.getCentreX() - 1.5f, pinRect.getCentreY() - 1.5f, 3.0f, 3.0f);
 
-                // Etiqueta del pin
-                g.setFont(10.0f);
-                g.setColour(juce::Colour(0xffb0b8d0));
+                // Etiqueta del pin (blanco limpio)
+                g.setFont(juce::FontOptions(9.5f, juce::Font::plain));
+                g.setColour(juce::Colours::white.withAlpha(0.85f));
                 if (isInput) {
                     g.drawText(pins[i].name, static_cast<int>(pinRect.getRight() + 4.0f), static_cast<int>(pinRect.getY() - 2.0f), 60, 16, juce::Justification::centredLeft, true);
                 } else {
@@ -148,9 +166,23 @@ public:
             }
         }
 
-        // 4. Borde del nodo (resaltado si está seleccionado)
-        g.setColour(isSelected_ ? juce::Colour(0xff00d2ff) : juce::Colour(0xff252538));
-        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 8.0f, isSelected_ ? 2.0f : 1.0f);
+        // 4. Borde del nodo: Contorno blanco nítido
+        if (isDropCandidate_) {
+            // Halo de encadenamiento automático drag-and-drop
+            g.setColour(juce::Colours::white.withAlpha(0.3f));
+            g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(1.0f), 4.0f);
+            g.setColour(juce::Colours::white);
+            const float dashPattern[] = { 4.0f, 3.0f };
+            g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 4.0f, 2.0f);
+        } else if (isSelected_) {
+            g.setColour(juce::Colours::white.withAlpha(0.2f));
+            g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 4.0f, 4.0f);
+            g.setColour(juce::Colours::white);
+            g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 4.0f, 2.0f);
+        } else {
+            g.setColour(juce::Colours::white);
+            g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 4.0f, 1.2f);
+        }
     }
 
     void resized() override {
@@ -174,52 +206,89 @@ public:
             return;
         }
 
-        // Comprobar clic en pin
+        // Comprobar clic en pin (Izquierdo para cablear, Derecho para desconectar)
         if (processor_ != nullptr) {
             const auto pins = processor_->getPins();
             for (size_t i = 0; i < pins.size(); ++i) {
-                const bool isInput = (pins[i].type == PinType::AudioInput || pins[i].type == PinType::EventInput);
-                auto pinRect = getPinLocalRect(static_cast<int>(i), isInput);
-                if (pinRect.expanded(4.0f).contains(e.position)) {
-                    if (!isInput && onPinDragStarted_) {
-                        onPinDragStarted_(id_, pins[i].id, pins[i].dataType, getPosition().toFloat() + pinRect.getCentre());
+                auto pinRect = getPinLocalRect(i);
+                if (pinRect.expanded(6.0f).contains(e.position)) {
+                    if (e.mods.isRightButtonDown()) {
+                        if (onPinRightClicked_) {
+                            onPinRightClicked_(id_, pins[i].id);
+                        }
                         return;
                     }
+                    isDraggingPin_ = true;
+                    draggedPinId_ = pins[i].id;
+                    draggedPinType_ = pins[i].type;
+                    draggedPinDataType_ = pins[i].dataType;
+                    if (onPinDragStarted_) {
+                        const auto canvasPt = getPosition().toFloat() + pinRect.getCentre();
+                        onPinDragStarted_(id_, pins[i].id, pins[i].dataType, canvasPt);
+                    }
+                    return;
                 }
             }
         }
 
+        isDraggingPin_ = false;
+        if (onNodeSelected_) {
+            onNodeSelected_(id_);
+        }
         dragger_.startDraggingComponent(this, e);
     }
 
     void mouseDrag(const juce::MouseEvent& e) override {
+        if (isDraggingPin_) {
+            auto canvasPos = (getParentComponent() != nullptr)
+                ? getParentComponent()->getLocalPoint(this, e.position).toFloat()
+                : (getPosition().toFloat() + e.position);
+            if (onPinDragging_) {
+                onPinDragging_(canvasPos);
+            }
+            return;
+        }
+
         dragger_.dragComponent(this, e, nullptr);
         if (onNodeMoved_) {
             onNodeMoved_(id_, static_cast<float>(getX()), static_cast<float>(getY()));
         }
+        if (onNodeDraggingOverCanvas_) {
+            onNodeDraggingOverCanvas_(id_, getBounds());
+        }
     }
 
     void mouseUp(const juce::MouseEvent& e) override {
-        if (processor_ != nullptr) {
-            const auto pins = processor_->getPins();
-            for (size_t i = 0; i < pins.size(); ++i) {
-                const bool isInput = (pins[i].type == PinType::AudioInput || pins[i].type == PinType::EventInput);
-                if (isInput) {
-                    auto pinRect = getPinLocalRect(static_cast<int>(i), isInput);
-                    if (pinRect.expanded(6.0f).contains(e.position)) {
-                        if (onPinConnected_) {
-                            onPinConnected_(id_, pins[i].id, pins[i].dataType);
-                            return;
-                        }
-                    }
-                }
+        if (isDraggingPin_) {
+            isDraggingPin_ = false;
+            auto canvasPos = (getParentComponent() != nullptr)
+                ? getParentComponent()->getLocalPoint(this, e.position).toFloat()
+                : (getPosition().toFloat() + e.position);
+            if (onPinDragEnded_) {
+                onPinDragEnded_(id_, draggedPinId_, draggedPinType_, draggedPinDataType_, canvasPos);
             }
+            return;
+        }
+
+        if (onNodeDropped_) {
+            onNodeDropped_(id_, getBounds());
         }
     }
 
 private:
-    juce::Rectangle<float> getPinLocalRect(int pinIndex, bool isInput) const {
-        const float pinY = 40.0f + static_cast<float>(pinIndex) * 22.0f;
+    juce::Rectangle<float> getPinLocalRect(size_t pinIndex) const {
+        if (processor_ == nullptr) return { 4.0f, 40.0f, 10.0f, 10.0f };
+        const auto pins = processor_->getPins();
+        if (pinIndex >= pins.size()) return { 4.0f, 40.0f, 10.0f, 10.0f };
+
+        const bool isInput = (pins[pinIndex].type == PinType::AudioInput || pins[pinIndex].type == PinType::EventInput);
+        int slot = 0;
+        for (size_t i = 0; i < pinIndex; ++i) {
+            const bool otherIsInput = (pins[i].type == PinType::AudioInput || pins[i].type == PinType::EventInput);
+            if (otherIsInput == isInput) ++slot;
+        }
+
+        const float pinY = 40.0f + static_cast<float>(slot) * 24.0f;
         const float pinX = isInput ? 4.0f : static_cast<float>(getWidth() - 14.0f);
         return { pinX, pinY, 10.0f, 10.0f };
     }
@@ -239,13 +308,26 @@ private:
     AudioProcessorNode* processor_{ nullptr };
 
     bool isSelected_{ false };
+    bool isDropCandidate_{ false };
+    PinId highlightedPinId_{ InvalidPinId };
+
+    bool isDraggingPin_{ false };
+    PinId draggedPinId_{ InvalidPinId };
+    PinType draggedPinType_{ PinType::AudioOutput };
+    PinDataType draggedPinDataType_{ PinDataType::AudioStereo };
+
     juce::ComponentDragger dragger_;
     std::vector<std::unique_ptr<ModulationSlider>> sliders_;
 
+    std::function<void(NodeId)> onNodeSelected_;
     std::function<void(NodeId, float, float)> onNodeMoved_;
     std::function<void(NodeId)> onNodeDeleted_;
     std::function<void(NodeId, PinId, PinDataType, juce::Point<float>)> onPinDragStarted_;
-    std::function<void(NodeId, PinId, PinDataType)> onPinConnected_;
+    std::function<void(juce::Point<float>)> onPinDragging_;
+    std::function<void(NodeId, PinId, PinType, PinDataType, juce::Point<float>)> onPinDragEnded_;
+    std::function<void(NodeId, PinId)> onPinRightClicked_;
+    std::function<void(NodeId, juce::Rectangle<int>)> onNodeDraggingOverCanvas_;
+    std::function<void(NodeId, juce::Rectangle<int>)> onNodeDropped_;
     std::function<void(NodeId, ParameterId, float)> onParameterChanged_;
 };
 

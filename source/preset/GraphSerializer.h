@@ -149,14 +149,34 @@ public:
                 const float x = extractFloat(nodeJson, "x", 50.0f);
                 const float y = extractFloat(nodeJson, "y", 50.0f);
 
-                const NodeType type = static_cast<NodeType>(typeInt);
+                NodeType type = static_cast<NodeType>(typeInt);
+                const auto paramsSec = extractObjectSection(nodeJson, "params");
+
+                // Migración inteligente y resolución de tipos legados (Regla 21)
+                if (typeInt == 4) {
+                    if (name.find("EQ") != std::string::npos || name.find("Parametric") != std::string::npos ||
+                        paramsSec.find("\"4\"") != std::string_view::npos || paramsSec.find("\"7\"") != std::string_view::npos) {
+                        type = NodeType::ParametricEQ;
+                    }
+                } else if (typeInt == 5) {
+                    if (paramsSec.find("\"4\"") != std::string_view::npos || paramsSec.find("\"6\"") != std::string_view::npos ||
+                        name.find("Advanced") != std::string::npos || name.find("Ping-Pong") != std::string::npos ||
+                        name.find("Space") != std::string::npos) {
+                        type = NodeType::AdvancedDelay;
+                    }
+                } else if (typeInt == 100 || (typeInt == 12 && name.find("Processor") != std::string::npos)) {
+                    type = NodeType::SpectralProcessor;
+                }
+
                 auto proc = NodeFactory::getInstance().create(type);
+                if (!proc) {
+                    proc = NodeFactory::getInstance().create(static_cast<NodeType>(typeInt));
+                }
                 if (!proc) {
                     continue; // Ignorar nodo no registrado de forma segura
                 }
 
                 // Restaurar parámetros del nodo
-                const auto paramsSec = extractObjectSection(nodeJson, "params");
                 if (!paramsSec.empty()) {
                     const auto paramPairs = parseKeyValueFloats(paramsSec);
                     for (const auto& [paramId, val] : paramPairs) {

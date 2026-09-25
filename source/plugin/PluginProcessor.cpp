@@ -3,6 +3,7 @@
 #include "../dsp/PassthroughNode.h"
 #include "../dsp/SimpleFilterNode.h"
 #include "../dsp/SimpleDelayNode.h"
+#include "../dsp/AllDspNodes.h"
 #include "../graph/NodeFactory.h"
 
 namespace audio_graph {
@@ -10,21 +11,39 @@ namespace audio_graph {
 N8AudioProcessor::N8AudioProcessor()
     : AudioProcessor(BusesProperties()
                      .withInput("Input", juce::AudioChannelSet::stereo(), true)
+                     .withInput("Sidechain", juce::AudioChannelSet::stereo(), false)
                      .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       apvts_(*this, nullptr, "Parameters", createParameterLayout())
 {
     dryParam_ = apvts_.getRawParameterValue("dry_level");
     wetParam_ = apvts_.getRawParameterValue("wet_level");
 
-    // Construcción del grafo por defecto para el Event World
-    auto nFilter = graph_.addNode(std::make_unique<SimpleFilterNode>(), "SVFFilter");
-    auto nDelay = graph_.addNode(std::make_unique<SimpleDelayNode>(), "StereoDelay");
-    graph_.connect(nFilter, 2, nDelay, 1);
+    const char* macroIds[8] = {
+        "macro_texture", "macro_motion", "macro_space", "macro_color",
+        "macro_chaos", "macro_density", "macro_energy", "macro_morph"
+    };
+    for (size_t i = 0; i < 8; ++i) {
+        macroParams_[i] = apvts_.getRawParameterValue(macroIds[i]);
+    }
 
-    std::vector<NodeId> sorted;
-    std::string err;
-    if (graph_.validateAndTopologicalSort(sorted, err)) {
-        currentPlan_.compileFrom(graph_, sorted);
+    // Cargar la Cadena Maestra de 10 Efectos con bifurcación paralela y secuenciación por defecto
+    PresetMetadata meta;
+    std::array<float, 8> macros;
+    if (presetManager_.loadFactoryPreset(0, graph_, meta, macros)) {
+        dualWorldEngine_.setDryLevel(meta.dryLevel);
+        dualWorldEngine_.setWetLevel(meta.wetLevel);
+        if (auto* p = apvts_.getParameter("dry_level")) {
+            p->setValueNotifyingHost(apvts_.getParameterRange("dry_level").convertTo0to1(meta.dryLevel));
+        }
+        if (auto* p = apvts_.getParameter("wet_level")) {
+            p->setValueNotifyingHost(apvts_.getParameterRange("wet_level").convertTo0to1(meta.wetLevel));
+        }
+        recompilePlan();
+    } else {
+        auto nFilter = graph_.addNode(std::make_unique<SimpleFilterNode>(), "SVFFilter");
+        auto nDelay = graph_.addNode(std::make_unique<SimpleDelayNode>(), "StereoDelay");
+        graph_.connect(nFilter, 2, nDelay, 1);
+        recompilePlan();
     }
 
     undoManager_.pushState(graph_);
@@ -55,6 +74,23 @@ juce::AudioProcessorValueTreeState::ParameterLayout N8AudioProcessor::createPara
         2500.0f
     ));
 
+    const char* macroIds[8] = {
+        "macro_texture", "macro_motion", "macro_space", "macro_color",
+        "macro_chaos", "macro_density", "macro_energy", "macro_morph"
+    };
+    const char* macroNames[8] = {
+        "Texture", "Motion", "Space", "Color",
+        "Chaos", "Density", "Energy", "Morph"
+    };
+    for (size_t i = 0; i < 8; ++i) {
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID{ macroIds[i], 1 },
+            macroNames[i],
+            juce::NormalisableRange<float>(0.0f, 1.0f, 0.001f),
+            0.5f
+        ));
+    }
+
     return { params.begin(), params.end() };
 }
 
@@ -67,7 +103,8 @@ void N8AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     };
 
     dualWorldEngine_.prepare(currentSpec_);
-    testSynth_.prepare(sampleRate);
+    testSynth_.prepare(sampleRate, samplesPerBlock);
+    dualWorldEngine_.getExecutor().setProbeVisualizer(&probeVisualizerBuffer_);
 
     for (const auto& [_, inst] : graph_.getNodes()) {
         if (inst && inst->processor) {
@@ -83,7 +120,6 @@ void N8AudioProcessor::releaseResources() {
 
 void N8AudioProcessor::reset() {
     dualWorldEngine_.reset();
-    keyboardState_.reset();
     testSynth_.reset();
     for (const auto& [_, inst] : graph_.getNodes()) {
         if (inst && inst->processor) {
@@ -102,55 +138,77 @@ bool N8AudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const 
     if (mainIn != juce::AudioChannelSet::mono() && mainIn != juce::AudioChannelSet::stereo())
         return false;
 
+    if (layouts.inputBuses.size() > 1) {
+        const auto& sidechain = layouts.getChannelSet(true, 1);
+        if (!sidechain.isDisabled() && sidechain != juce::AudioChannelSet::mono() && sidechain != juce::AudioChannelSet::stereo())
+            return false;
+    }
+
     return true;
 }
 
-void N8AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages) {
+void N8AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/) {
+    if (isSuspended()) {
+        buffer.clear();
+        return;
+    }
+
+    struct AudioScope {
+        std::atomic<bool>& flag;
+        explicit AudioScope(std::atomic<bool>& f) noexcept : flag(f) { flag.store(true, std::memory_order_release); }
+        ~AudioScope() noexcept { flag.store(false, std::memory_order_release); }
+    } scope(isAudioThreadRunning_);
+
     juce::ScopedNoDenormals noDenormals; // Regla 9 y 34
     const int totalNumInputChannels = getTotalNumInputChannels();
     const int totalNumOutputChannels = getTotalNumOutputChannels();
     const int numSamples = buffer.getNumSamples();
 
-    // 1. Integrar eventos del teclado virtual en el buffer MIDI (Reglas 1, 9, 23)
-    keyboardState_.processNextMidiBuffer(midiMessages, 0, numSamples, true);
-
-    // 2. Procesar mensajes MIDI en el sintetizador de pruebas
-    for (const auto metadata : midiMessages) {
-        const auto msg = metadata.getMessage();
-        if (msg.isNoteOn()) {
-            testSynth_.noteOn(msg.getNoteNumber(), msg.getFloatVelocity());
-        } else if (msg.isNoteOff()) {
-            testSynth_.noteOff(msg.getNoteNumber());
-        } else if (msg.isAllNotesOff() || msg.isAllSoundOff()) {
-            testSynth_.allNotesOff();
-        } else if (msg.isPitchWheel()) {
-            const float bend = static_cast<float>(msg.getPitchWheelValue() - 8192) / 8192.0f * 2.0f;
-            testSynth_.setPitchBend(bend);
-        }
-    }
-
-    // 3. Limpiar canales de salida no utilizados
+    // Limpiar canales de salida no utilizados
     for (int i = totalNumInputChannels; i < totalNumOutputChannels; ++i) {
         buffer.clear(i, 0, numSamples);
     }
 
-    // 4. Inyectar audio del sintetizador de prueba en el buffer de entrada para audicionar el grafo
-    const uint32_t activeChannels = static_cast<uint32_t>(std::max(totalNumInputChannels, std::min(totalNumOutputChannels, 2)));
-    if (activeChannels > 0) {
-        testSynth_.renderAudioAdding(buffer.getArrayOfWritePointers(), activeChannels, static_cast<uint32_t>(numSamples));
+    const int bufferChannels = buffer.getNumChannels();
+    const uint32_t synthChannels = static_cast<uint32_t>(std::min(bufferChannels, 2));
+
+    // Inyectar señal de prueba del teclado visual si hay notas activas (Reglas 1, 9 y 17)
+    if (testSynth_.hasActiveVoices()) {
+        testSynth_.renderAndInject(buffer.getArrayOfWritePointers(), synthChannels, static_cast<uint32_t>(numSamples));
     }
 
     // Actualizar parámetros atómicos (sin lock)
     if (dryParam_ != nullptr) dualWorldEngine_.setDryLevel(dryParam_->load(std::memory_order_relaxed));
     if (wetParam_ != nullptr) dualWorldEngine_.setWetLevel(wetParam_->load(std::memory_order_relaxed));
 
+    // Actualizar los 8 Macros globales para la ModulationMatrix (Reglas 7, 8 y 25)
+    for (size_t i = 0; i < 8; ++i) {
+        if (macroParams_[i] != nullptr) {
+            dualWorldEngine_.getModulationEngine().getMacroManager().setMacro(
+                static_cast<MacroManager::MacroIndex>(i),
+                macroParams_[i]->load(std::memory_order_relaxed)
+            );
+        }
+    }
+
+    const uint32_t effectiveInChannels = testSynth_.hasActiveVoices()
+        ? std::max(static_cast<uint32_t>(totalNumInputChannels), synthChannels)
+        : static_cast<uint32_t>(totalNumInputChannels > 0 ? totalNumInputChannels : std::min(bufferChannels, 2));
+
+    // Capturar bus de Sidechain del DAW host si está habilitado (Reglas 6, 13 y 37)
+    auto scBus = getBusBuffer(buffer, true, 1);
+    const float* const* scChannels = (scBus.getNumChannels() > 0) ? scBus.getArrayOfReadPointers() : nullptr;
+    const uint32_t numScChannels = (scChannels != nullptr) ? static_cast<uint32_t>(scBus.getNumChannels()) : 0;
+
     // Obtener información de transporte del host si está disponible (Regla 37)
     ProcessContext context{
-        .inputChannels = const_cast<const float**>(buffer.getArrayOfReadPointers()),
+        .inputChannels = buffer.getArrayOfReadPointers(),
         .outputChannels = buffer.getArrayOfWritePointers(),
-        .numInputChannels = activeChannels,
+        .numInputChannels = effectiveInChannels,
         .numOutputChannels = static_cast<uint32_t>(totalNumOutputChannels),
-        .numSamples = static_cast<uint32_t>(numSamples)
+        .numSamples = static_cast<uint32_t>(numSamples),
+        .sidechainChannels = scChannels,
+        .numSidechainChannels = numScChannels
     };
 
     if (auto* currentPlayHead = getPlayHead()) {
@@ -162,7 +220,15 @@ void N8AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Midi
     }
 
     // Procesamiento Dual World (Dry puro vs Event World con Modulación Universal)
-    dualWorldEngine_.process(currentPlan_, context, buffer.getArrayOfWritePointers(), &graph_);
+    const auto* plan = activePlan_.load(std::memory_order_acquire);
+    if (plan != nullptr) {
+        dualWorldEngine_.process(*plan, context, buffer.getArrayOfWritePointers(), &graph_);
+    }
+
+    // Telemetría para el analizador visual (Reglas 9, 23 y 26)
+    visualizerBuffer_.writeBlock(buffer.getReadPointer(0),
+                                 buffer.getNumChannels() > 1 ? buffer.getReadPointer(1) : buffer.getReadPointer(0),
+                                 static_cast<size_t>(numSamples));
 }
 
 juce::AudioProcessorEditor* N8AudioProcessor::createEditor() {
@@ -210,148 +276,199 @@ void N8AudioProcessor::setStateInformation(const void* data, int sizeInBytes) {
         if (GraphSerializer::deserialize(json, graph_, meta, macros, err)) {
             dualWorldEngine_.setDryLevel(meta.dryLevel);
             dualWorldEngine_.setWetLevel(meta.wetLevel);
+            if (auto* p = apvts_.getParameter("dry_level")) {
+                p->setValueNotifyingHost(apvts_.getParameterRange("dry_level").convertTo0to1(meta.dryLevel));
+            }
+            if (auto* p = apvts_.getParameter("wet_level")) {
+                p->setValueNotifyingHost(apvts_.getParameterRange("wet_level").convertTo0to1(meta.wetLevel));
+            }
             recompilePlan();
         }
     }
 }
 
 bool N8AudioProcessor::recompilePlan() {
+    for (const auto& [_, inst] : graph_.getNodes()) {
+        if (inst && inst->processor) {
+            inst->processor->prepare(currentSpec_);
+        }
+    }
+
     std::vector<NodeId> sorted;
     std::string err;
     if (graph_.validateAndTopologicalSort(sorted, err)) {
-        ExecutionPlan newPlan;
-        newPlan.compileFrom(graph_, sorted);
-        currentPlan_ = std::move(newPlan);
+        // Double buffering thread-safe (Reglas 9, 26, 30)
+        auto* current = activePlan_.load(std::memory_order_relaxed);
+        ExecutionPlan* nextPlan = (current == &planA_) ? &planB_ : &planA_;
+        nextPlan->compileFrom(graph_, sorted);
+        activePlan_.store(nextPlan, std::memory_order_release);
         return true;
     }
     return false;
 }
 
 NodeId N8AudioProcessor::addNodeToGraph(NodeType type, float x, float y) {
-    auto proc = NodeFactory::getInstance().create(type);
-    if (!proc) return InvalidNodeId;
+    return executeSafeGraphMutation([this, type, x, y]() -> NodeId {
+        auto proc = NodeFactory::getInstance().create(type);
+        if (!proc) return InvalidNodeId;
 
-    proc->prepare(currentSpec_);
-    NodeId id = graph_.addNode(std::move(proc), "", x, y);
-    if (recompilePlan()) {
-        undoManager_.pushState(graph_);
-    }
-    return id;
+        proc->prepare(currentSpec_);
+        NodeId id = graph_.addNode(std::move(proc), "", x, y);
+        if (recompilePlan()) {
+            undoManager_.pushState(graph_);
+        }
+        return id;
+    });
 }
 
 bool N8AudioProcessor::removeNodeFromGraph(NodeId id) {
-    bool res = graph_.removeNode(id);
-    if (res) {
-        recompilePlan();
-        undoManager_.pushState(graph_);
-    }
-    return res;
+    return executeSafeGraphMutation([this, id]() -> bool {
+        bool res = graph_.removeNode(id);
+        if (res) {
+            recompilePlan();
+            undoManager_.pushState(graph_);
+        }
+        return res;
+    });
 }
 
 ConnectionId N8AudioProcessor::connectNodes(NodeId srcNode, PinId srcPin, NodeId destNode, PinId destPin) {
-    ConnectionId cid = graph_.connect(srcNode, srcPin, destNode, destPin);
-    if (cid != 0) {
-        if (!recompilePlan()) {
-            graph_.disconnect(cid);
-            return 0;
+    return executeSafeGraphMutation([this, srcNode, srcPin, destNode, destPin]() -> ConnectionId {
+        ConnectionId cid = graph_.connect(srcNode, srcPin, destNode, destPin);
+        if (cid != 0) {
+            if (!recompilePlan()) {
+                graph_.disconnect(cid);
+                return 0;
+            }
+            undoManager_.pushState(graph_);
         }
-        undoManager_.pushState(graph_);
-    }
-    return cid;
+        return cid;
+    });
 }
 
-std::vector<NodeId> N8AudioProcessor::getLinearNodeChain() const {
-    std::vector<NodeId> sorted;
-    std::string err;
-    if (graph_.validateAndTopologicalSort(sorted, err)) {
-        return sorted;
-    }
-    std::vector<NodeId> ids;
-    for (const auto& [id, _] : graph_.getNodes()) {
-        ids.push_back(id);
-    }
-    return ids;
-}
-
-bool N8AudioProcessor::setLinearNodeChain(const std::vector<NodeId>& newOrder) {
-    // 1. Desconectar enlaces de audio estéreo previos entre nodos
-    std::vector<ConnectionId> toRemove;
-    for (const auto& c : graph_.getConnections()) {
-        if (c.sourcePinId == 2 && c.destPinId == 1) {
-            toRemove.push_back(c.id);
+bool N8AudioProcessor::disconnectConnection(ConnectionId cid) {
+    return executeSafeGraphMutation([this, cid]() -> bool {
+        if (graph_.disconnect(cid)) {
+            recompilePlan();
+            undoManager_.pushState(graph_);
+            return true;
         }
-    }
-    for (ConnectionId cid : toRemove) {
-        graph_.disconnect(cid);
-    }
-
-    // 2. Conectar en serie secuencial: newOrder[i] Pin 2 -> newOrder[i+1] Pin 1
-    if (newOrder.size() > 1) {
-        for (size_t i = 0; i < newOrder.size() - 1; ++i) {
-            graph_.connect(newOrder[i], 2, newOrder[i + 1], 1);
-        }
-    }
-
-    // 3. Alinear en el canvas 2D para sincronía visual absoluta
-    for (size_t i = 0; i < newOrder.size(); ++i) {
-        if (auto* node = graph_.getNode(newOrder[i])) {
-            node->posX = 80.0f + static_cast<float>(i) * 230.0f;
-            node->posY = 140.0f;
-        }
-    }
-
-    // 4. Recompilar plan seguro (Safe Swap) y registrar Undo
-    bool ok = recompilePlan();
-    if (ok) {
-        undoManager_.pushState(graph_);
-    }
-    return ok;
-}
-
-NodeId N8AudioProcessor::insertNodeInLinearChain(NodeType type, int index) {
-    auto proc = NodeFactory::getInstance().create(type);
-    if (!proc) return InvalidNodeId;
-
-    proc->prepare(currentSpec_);
-    NodeId id = graph_.addNode(std::move(proc), "", 100.0f, 100.0f);
-    if (id == InvalidNodeId) return InvalidNodeId;
-
-    auto chain = getLinearNodeChain();
-    std::erase(chain, id);
-
-    if (index < 0 || index >= static_cast<int>(chain.size())) {
-        chain.push_back(id);
-    } else {
-        chain.insert(chain.begin() + index, id);
-    }
-
-    setLinearNodeChain(chain);
-    return id;
-}
-
-bool N8AudioProcessor::removeNodeFromLinearChain(NodeId id) {
-    auto chain = getLinearNodeChain();
-    std::erase(chain, id);
-    bool res = graph_.removeNode(id);
-    if (res) {
-        setLinearNodeChain(chain);
-    }
-    return res;
-}
-
-bool N8AudioProcessor::moveNodeInLinearChain(int fromIndex, int toIndex) {
-    auto chain = getLinearNodeChain();
-    if (fromIndex < 0 || fromIndex >= static_cast<int>(chain.size()) ||
-        toIndex < 0 || toIndex >= static_cast<int>(chain.size()) ||
-        fromIndex == toIndex) {
         return false;
-    }
+    });
+}
 
-    NodeId nodeToMove = chain[static_cast<size_t>(fromIndex)];
-    chain.erase(chain.begin() + fromIndex);
-    chain.insert(chain.begin() + toIndex, nodeToMove);
+bool N8AudioProcessor::disconnectPin(NodeId nodeId, PinId pinId) {
+    return executeSafeGraphMutation([this, nodeId, pinId]() -> bool {
+        const auto connections = graph_.getConnections();
+        bool any = false;
+        for (const auto& c : connections) {
+            if ((c.sourceNodeId == nodeId && c.sourcePinId == pinId) ||
+                (c.destNodeId == nodeId && c.destPinId == pinId)) {
+                graph_.disconnect(c.id);
+                any = true;
+            }
+        }
+        if (any) {
+            recompilePlan();
+            undoManager_.pushState(graph_);
+        }
+        return any;
+    });
+}
 
-    return setLinearNodeChain(chain);
+bool N8AudioProcessor::loadFactoryPreset(size_t index) {
+    return executeSafeGraphMutation([this, index]() -> bool {
+        PresetMetadata meta;
+        std::array<float, 8> macros;
+        if (presetManager_.loadFactoryPreset(index, graph_, meta, macros)) {
+            dualWorldEngine_.setDryLevel(meta.dryLevel);
+            dualWorldEngine_.setWetLevel(meta.wetLevel);
+
+            if (auto* p = apvts_.getParameter("dry_level")) {
+                p->setValueNotifyingHost(apvts_.getParameterRange("dry_level").convertTo0to1(meta.dryLevel));
+            }
+            if (auto* p = apvts_.getParameter("wet_level")) {
+                p->setValueNotifyingHost(apvts_.getParameterRange("wet_level").convertTo0to1(meta.wetLevel));
+            }
+
+            recompilePlan();
+            undoManager_.pushState(graph_, meta, macros);
+            return true;
+        }
+        return false;
+    });
+}
+
+bool N8AudioProcessor::loadPresetFromJson(const std::string& json) {
+    return executeSafeGraphMutation([this, &json]() -> bool {
+        PresetMetadata meta;
+        std::array<float, 8> macros;
+        std::string err;
+        if (GraphSerializer::deserialize(json, graph_, meta, macros, err)) {
+            dualWorldEngine_.setDryLevel(meta.dryLevel);
+            dualWorldEngine_.setWetLevel(meta.wetLevel);
+
+            if (auto* p = apvts_.getParameter("dry_level")) {
+                p->setValueNotifyingHost(apvts_.getParameterRange("dry_level").convertTo0to1(meta.dryLevel));
+            }
+            if (auto* p = apvts_.getParameter("wet_level")) {
+                p->setValueNotifyingHost(apvts_.getParameterRange("wet_level").convertTo0to1(meta.wetLevel));
+            }
+
+            recompilePlan();
+            undoManager_.pushState(graph_, meta, macros);
+            return true;
+        }
+        return false;
+    });
+}
+
+bool N8AudioProcessor::undo(PresetMetadata& outMeta, std::array<float, 8>& outMacros) {
+    return executeSafeGraphMutation([this, &outMeta, &outMacros]() -> bool {
+        if (undoManager_.undo(graph_, outMeta, outMacros)) {
+            dualWorldEngine_.setDryLevel(outMeta.dryLevel);
+            dualWorldEngine_.setWetLevel(outMeta.wetLevel);
+            if (auto* p = apvts_.getParameter("dry_level")) {
+                p->setValueNotifyingHost(apvts_.getParameterRange("dry_level").convertTo0to1(outMeta.dryLevel));
+            }
+            if (auto* p = apvts_.getParameter("wet_level")) {
+                p->setValueNotifyingHost(apvts_.getParameterRange("wet_level").convertTo0to1(outMeta.wetLevel));
+            }
+            recompilePlan();
+            return true;
+        }
+        return false;
+    });
+}
+
+bool N8AudioProcessor::redo(PresetMetadata& outMeta, std::array<float, 8>& outMacros) {
+    return executeSafeGraphMutation([this, &outMeta, &outMacros]() -> bool {
+        if (undoManager_.redo(graph_, outMeta, outMacros)) {
+            dualWorldEngine_.setDryLevel(outMeta.dryLevel);
+            dualWorldEngine_.setWetLevel(outMeta.wetLevel);
+            if (auto* p = apvts_.getParameter("dry_level")) {
+                p->setValueNotifyingHost(apvts_.getParameterRange("dry_level").convertTo0to1(outMeta.dryLevel));
+            }
+            if (auto* p = apvts_.getParameter("wet_level")) {
+                p->setValueNotifyingHost(apvts_.getParameterRange("wet_level").convertTo0to1(outMeta.wetLevel));
+            }
+            recompilePlan();
+            return true;
+        }
+        return false;
+    });
+}
+
+bool N8AudioProcessor::randomizeGraph(SmartRandomizer::RandomMode mode) {
+    return executeSafeGraphMutation([this, mode]() -> bool {
+        PresetMetadata meta;
+        std::array<float, 8> macros{ 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+        if (SmartRandomizer::applyRandom(graph_, meta, macros, undoManager_, mode)) {
+            recompilePlan();
+            return true;
+        }
+        return false;
+    });
 }
 
 } // namespace audio_graph

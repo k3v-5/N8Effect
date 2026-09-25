@@ -27,6 +27,7 @@ public:
     CompressorNode() {
         pins_[0] = { 1, "Audio In", PinType::AudioInput, PinDataType::AudioStereo };
         pins_[1] = { 2, "Audio Out", PinType::AudioOutput, PinDataType::AudioStereo };
+        pins_[2] = { SidechainPinId, "Sidechain", PinType::AudioInput, PinDataType::AudioStereo };
 
         params_[0] = { Threshold, "Threshold", -18.0f, -60.0f, 0.0f, true };
         params_[1] = { Ratio, "Ratio", 4.0f, 1.0f, 20.0f, true };
@@ -59,12 +60,20 @@ public:
         const float knee = targetKnee_;
         const float halfKnee = knee * 0.5f;
 
+        const float* scLPtr = (context.numSidechainChannels > 0 && context.sidechainChannels != nullptr && context.sidechainChannels[0] != nullptr)
+            ? context.sidechainChannels[0] : ((context.numInputChannels > 0) ? context.inputChannels[0] : nullptr);
+        const float* scRPtr = (context.numSidechainChannels > 1 && context.sidechainChannels != nullptr && context.sidechainChannels[1] != nullptr)
+            ? context.sidechainChannels[1] : scLPtr;
+
         for (uint32_t s = 0; s < context.numSamples; ++s) {
             float inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr) ? context.inputChannels[0][s] : 0.0f;
             float inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr) ? context.inputChannels[1][s] : inL;
 
-            // Detector sidechain estéreo
-            float maxSample = std::max(std::abs(inL), std::abs(inR));
+            float scL = (scLPtr != nullptr) ? scLPtr[s] : inL;
+            float scR = (scRPtr != nullptr) ? scRPtr[s] : inR;
+
+            // Detector sidechain estéreo (Reglas 6, 13 y 34)
+            float maxSample = std::max(std::abs(scL), std::abs(scR));
             float env = detector_.processSample(maxSample);
             float envDb = EnvelopeDetector::linearToDb(env);
 
@@ -135,7 +144,7 @@ private:
 
     float currentGainReduction_{ 1.0f };
 
-    std::array<PinDescriptor, 2> pins_;
+    std::array<PinDescriptor, 3> pins_;
     std::array<ParameterInfo, 6> params_;
 };
 

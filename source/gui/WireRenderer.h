@@ -6,7 +6,7 @@
 namespace audio_graph {
 
 /**
- * @brief Renderizador de curvas de Bézier cúbicas de alta fidelidad para conexiones del grafo (Reglas 4, 24, 25).
+ * @brief Renderizador minimalista de curvas de Bézier monocromáticas con contornos blancos nítidos (Reglas 4, 24, 25).
  */
 class WireRenderer {
 public:
@@ -14,11 +14,11 @@ public:
         switch (dataType) {
             case PinDataType::AudioStereo:
             case PinDataType::AudioMono:
-                return juce::Colour(0xff00d2ff); // Cian brillante para Audio
+                return juce::Colours::white;
             case PinDataType::EventMessage:
-                return juce::Colour(0xffff2d88); // Magenta eléctrico para Eventos
+                return juce::Colours::white.withAlpha(0.9f);
             case PinDataType::ModulationScalar:
-                return juce::Colour(0xff00ff88); // Verde esmeralda para Modulación
+                return juce::Colours::white.withAlpha(0.75f);
             default:
                 return juce::Colours::white;
         }
@@ -39,27 +39,43 @@ public:
 
         path.cubicTo(c1, c2, end);
 
-        const juce::Colour baseColour = getPinColour(dataType);
+        // Halo / resplandor exterior blanco sutil cuando se pasa el ratón por encima
+        if (isHovered) {
+            g.setColour(juce::Colours::white.withAlpha(0.25f));
+            g.strokePath(path, juce::PathStrokeType(5.0f));
+        }
 
-        // Halo / resplandor exterior suave
-        g.setColour(baseColour.withAlpha(isHovered ? 0.35f : 0.15f));
-        g.strokePath(path, juce::PathStrokeType(isHovered ? 6.0f : 4.0f));
+        // Trazado de línea minimalista nítido
+        g.setColour(isHovered ? juce::Colours::white : getPinColour(dataType));
 
-        // Línea central sólida o discontinua
-        g.setColour(isHovered ? baseColour.brighter(0.2f) : baseColour);
-        if (isDashed) {
-            juce::PathStrokeType stroke(2.5f);
+        const bool shouldDash = isDashed || (dataType == PinDataType::EventMessage);
+        const bool shouldDot = (dataType == PinDataType::ModulationScalar);
+
+        if (shouldDash) {
+            juce::PathStrokeType stroke(isHovered ? 2.0f : 1.5f);
             float dashes[] = { 6.0f, 4.0f };
             stroke.createDashedStroke(path, path, dashes, 2);
             g.strokePath(path, stroke);
+        } else if (shouldDot) {
+            juce::PathStrokeType stroke(isHovered ? 2.0f : 1.5f);
+            float dashes[] = { 2.5f, 3.5f };
+            stroke.createDashedStroke(path, path, dashes, 2);
+            g.strokePath(path, stroke);
         } else {
-            g.strokePath(path, juce::PathStrokeType(2.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.strokePath(path, juce::PathStrokeType(isHovered ? 2.2f : 1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
         }
 
-        // Puntos terminales en conectores
-        g.setColour(baseColour.brighter(0.5f));
-        g.fillEllipse(start.x - 3.5f, start.y - 3.5f, 7.0f, 7.0f);
-        g.fillEllipse(end.x - 3.5f, end.y - 3.5f, 7.0f, 7.0f);
+        // Puntos terminales en conectores: círculo negro con contorno blanco nítido y punto central
+        auto drawTerminal = [&](float x, float y) {
+            g.setColour(juce::Colour(0xff000000));
+            g.fillEllipse(x - 4.0f, y - 4.0f, 8.0f, 8.0f);
+            g.setColour(juce::Colours::white);
+            g.drawEllipse(x - 4.0f, y - 4.0f, 8.0f, 8.0f, 1.2f);
+            g.fillEllipse(x - 1.5f, y - 1.5f, 3.0f, 3.0f);
+        };
+
+        drawTerminal(start.x, start.y);
+        drawTerminal(end.x, end.y);
     }
 };
 

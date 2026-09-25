@@ -54,10 +54,13 @@ public:
     }
 
     void process(ProcessContext& context) override {
+        if (timeInL_.empty() || context.numSamples == 0 || context.numOutputChannels == 0) return;
+
         const float gateThresholdLinear = std::pow(10.0f, targetGateDb_ * 0.05f);
         const float tilt = targetTilt_;
         const float mix = targetMix_;
         const size_t fftSize = fftEngineL_.getFFTSize();
+        if (fftSize == 0) return;
 
         for (uint32_t s = 0; s < context.numSamples; ++s) {
             float inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr) ? context.inputChannels[0][s] : 0.0f;
@@ -74,8 +77,8 @@ public:
                 bufferPos_ = 0;
 
                 // 1. Análisis hacia frecuencia
-                fftEngineL_.forward(timeInL_.data());
-                fftEngineR_.forward(timeInR_.data());
+                fftEngineL_.forward(timeInL_.data(), false);
+                fftEngineR_.forward(timeInR_.data(), false);
 
                 auto& freqL = fftEngineL_.getFrequencyBuffer();
                 auto& freqR = fftEngineR_.getFrequencyBuffer();
@@ -135,7 +138,7 @@ public:
         }
     }
 
-    NodeType getType() const override { return NodeType::Custom; }
+    NodeType getType() const override { return NodeType::SpectralProcessor; }
     const char* getName() const override { return "Spectral Processor"; }
 
     std::span<const PinDescriptor> getPins() const override { return pins_; }
@@ -160,6 +163,6 @@ private:
     std::array<ParameterInfo, 3> params_;
 };
 
-inline AutoRegisterNode<SpectralProcessorNode> registerSpectralProcessor(NodeType::Custom, "spectral_processor", "Spectral");
+inline AutoRegisterNode<SpectralProcessorNode> registerSpectralProcessor(NodeType::SpectralProcessor, "spectral_processor", "Spectral");
 
 } // namespace audio_graph

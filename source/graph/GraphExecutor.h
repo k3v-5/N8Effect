@@ -1,6 +1,8 @@
 #pragma once
 
 #include <vector>
+#include <array>
+#include <unordered_map>
 #include <memory>
 #include <atomic>
 #include "Graph.h"
@@ -12,11 +14,18 @@ namespace audio_graph {
 /**
  * @brief Paso de ejecución compilado para el Runtime Graph (Regla 28)
  */
+/**
+ * @brief Paso de ejecución compilado para el Runtime Graph (Regla 28)
+ */
 struct ExecutionStep {
     AudioProcessorNode* processor{ nullptr };
     NodeId nodeId{ InvalidNodeId };
     std::vector<NodeId> predecessorNodes;
     std::vector<NodeId> successorNodes;
+    std::vector<size_t> predecessorStepIndices;
+    int sidechainStepIndex{ -1 };
+    bool isRoot{ true };
+    bool isLeaf{ true };
 };
 
 /**
@@ -29,25 +38,56 @@ public:
     void compileFrom(const Graph& graph, const std::vector<NodeId>& topologicalOrder) {
         steps_.clear();
         steps_.reserve(topologicalOrder.size());
+        hasExplicitConnections_ = !graph.getConnections().empty();
 
-        for (NodeId id : topologicalOrder) {
+        // Mapeo de nodeId a índice de paso
+        std::unordered_map<NodeId, size_t> nodeToStepIdx;
+
+        for (size_t i = 0; i < topologicalOrder.size(); ++i) {
+            NodeId id = topologicalOrder[i];
             auto* proc = graph.getNodeProcessor(id);
             if (proc == nullptr) continue;
+
+            nodeToStepIdx[id] = steps_.size();
 
             ExecutionStep step;
             step.processor = proc;
             step.nodeId = id;
+            steps_.push_back(std::move(step));
+        }
 
-            // Encontrar predecesores y sucesores de audio
-            for (const auto& conn : graph.getConnections()) {
-                if (conn.destNodeId == id) {
-                    step.predecessorNodes.push_back(conn.sourceNodeId);
-                }
-                if (conn.sourceNodeId == id) {
-                    step.successorNodes.push_back(conn.destNodeId);
+        // Resolver dependencias de predecesores, sucesores y sidechain (Reglas 4 y 6)
+        for (const auto& conn : graph.getConnections()) {
+            auto srcIt = nodeToStepIdx.find(conn.sourceNodeId);
+            auto destIt = nodeToStepIdx.find(conn.destNodeId);
+
+            if (srcIt != nodeToStepIdx.end() && destIt != nodeToStepIdx.end()) {
+                const size_t srcIdx = srcIt->second;
+                const size_t destIdx = destIt->second;
+
+                steps_[srcIdx].successorNodes.push_back(conn.destNodeId);
+                steps_[srcIdx].isLeaf = false;
+
+                if (conn.destPinId == SidechainPinId) {
+                    // Es una conexión de Sidechain modular: no se mezcla con el audio principal
+                    steps_[destIdx].sidechainStepIndex = static_cast<int>(srcIdx);
+                } else {
+                    steps_[destIdx].predecessorNodes.push_back(conn.sourceNodeId);
+                    steps_[destIdx].predecessorStepIndices.push_back(srcIdx);
+                    steps_[destIdx].isRoot = false;
                 }
             }
-            steps_.push_back(std::move(step));
+        }
+
+        // Regla 4: Si el grafo tiene conexiones explícitas, los nodos aislados (sin cables conectados)
+        // permanecen inactivos en el audio stream (ni reciben señal maestra ni se mezclan al master)
+        if (hasExplicitConnections_) {
+            for (auto& step : steps_) {
+                if (step.predecessorNodes.empty() && step.successorNodes.empty() && step.sidechainStepIndex < 0) {
+                    step.isRoot = false;
+                    step.isLeaf = false;
+                }
+            }
         }
     }
 
@@ -55,10 +95,12 @@ public:
         return steps_;
     }
 
+    bool hasExplicitConnections() const noexcept { return hasExplicitConnections_; }
     bool isEmpty() const noexcept { return steps_.empty(); }
 
 private:
     std::vector<ExecutionStep> steps_;
+    bool hasExplicitConnections_{ false };
 };
 
 /**
@@ -70,10 +112,8 @@ public:
 
     /**
      * @brief Prepara el ejecutor con dimensionamiento acotado y racional (Regla 47).
-     * En lugar de sobredimensionar buffers innecesariamente, prealoca un pool compacto
-     * para mantener los datos calientes en la memoria caché L1/L2.
      */
-    void prepare(const ProcessSpec& spec, uint32_t maxConcurrentBuffers = 16) {
+    void prepare(const ProcessSpec& spec, uint32_t maxConcurrentBuffers = 64) {
         spec_ = spec;
         bufferPool_.prepare(maxConcurrentBuffers, spec.numOutputChannels, spec.maximumBlockSize);
     }
@@ -90,7 +130,7 @@ public:
         return bufferPool_.getAvailableCount();
     }
 
-    // Ejecuta el plan compilado en tiempo real con cero allocations y reciclaje de caché (Reglas 9, 34 y 47)
+    // Ejecuta el plan compilado en tiempo real con cero allocations y soporte completo de rutas DAG (Reglas 4, 9, 34 y 47)
     void process(const ExecutionPlan& plan, const ProcessContext& mainContext, PreallocatedBuffer& finalOutput) {
         ScopedDenormalGuard denormalGuard; // Erradicación de denormales por hardware (Reglas 34 y 47)
         bufferPool_.releaseAll();
@@ -101,49 +141,177 @@ public:
             return;
         }
 
-        // Buffer primario para la señal de entrada
-        PreallocatedBuffer* bufA = bufferPool_.acquire();
-        if (bufA == nullptr) {
-            finalOutput.clear(mainContext.numSamples);
-            return;
-        }
+        const uint32_t numSamples = mainContext.numSamples;
+        const uint32_t numChannels = finalOutput.getNumChannels();
 
-        bufA->copyFrom(mainContext.inputChannels, mainContext.numInputChannels, mainContext.numSamples);
+        // 1. CASO COMPATIBILIDAD RETROACTIVA: Si no hay conexiones explícitas, ejecutar en cadena lineal ping-pong
+        if (!plan.hasExplicitConnections()) {
+            PreallocatedBuffer* bufA = bufferPool_.acquire();
+            if (bufA == nullptr) {
+                finalOutput.clear(numSamples);
+                return;
+            }
+            bufA->copyFrom(mainContext.inputChannels, mainContext.numInputChannels, numSamples);
 
-        // Buffer secundario para alternancia ping-pong en caché L1
-        PreallocatedBuffer* bufB = bufferPool_.acquire();
-        if (bufB == nullptr) {
-            finalOutput.copyFrom(bufA->getArrayOfReadPointers(), bufA->getNumChannels(), mainContext.numSamples);
+            PreallocatedBuffer* bufB = bufferPool_.acquire();
+            if (bufB == nullptr) {
+                finalOutput.copyFrom(bufA->getArrayOfReadPointers(), bufA->getNumChannels(), numSamples);
+                bufferPool_.releaseAll();
+                return;
+            }
+
+            PreallocatedBuffer* currentInput = bufA;
+            PreallocatedBuffer* currentOutput = bufB;
+
+            for (const auto& step : steps) {
+                ProcessContext stepContext = mainContext;
+                stepContext.inputChannels = currentInput->getArrayOfReadPointers();
+                stepContext.outputChannels = currentOutput->getArrayOfWritePointers();
+                stepContext.numInputChannels = currentInput->getNumChannels();
+                stepContext.numOutputChannels = currentOutput->getNumChannels();
+
+                step.processor->process(stepContext);
+                std::swap(currentInput, currentOutput);
+            }
+
+            finalOutput.copyFrom(currentInput->getArrayOfReadPointers(), currentInput->getNumChannels(), numSamples);
             bufferPool_.releaseAll();
             return;
         }
 
-        PreallocatedBuffer* currentInput = bufA;
-        PreallocatedBuffer* currentOutput = bufB;
+        // 2. CASO DAG MODULAR: Conexiones explícitas, bifurcaciones paralelas y mezclas (Reglas 4, 6, 9)
+        constexpr size_t MaxSteps = 64;
+        std::array<PreallocatedBuffer*, MaxSteps> stepOutputBuffers{};
+        stepOutputBuffers.fill(nullptr);
 
-        for (const auto& step : steps) {
+        const size_t totalSteps = std::min(steps.size(), MaxSteps);
+
+        for (size_t i = 0; i < totalSteps; ++i) {
+            const auto& step = steps[i];
+            PreallocatedBuffer* outBuf = bufferPool_.acquire();
+            if (outBuf == nullptr) {
+                break; // Protección de sobrecarga de pool
+            }
+            stepOutputBuffers[i] = outBuf;
+
+            const float* inL = nullptr;
+            const float* inR = nullptr;
+
+            // Determinar fuente de entrada para este nodo
+            if (step.isRoot) {
+                // Nodo raíz: recibe directamente la señal principal del bloque
+                inL = (mainContext.numInputChannels > 0 && mainContext.inputChannels[0] != nullptr)
+                    ? mainContext.inputChannels[0] : nullptr;
+                inR = (mainContext.numInputChannels > 1 && mainContext.inputChannels[1] != nullptr)
+                    ? mainContext.inputChannels[1] : inL;
+            } else if (step.predecessorStepIndices.size() == 1) {
+                // 1 predecesor: enlace directo sin copia
+                const size_t predIdx = step.predecessorStepIndices[0];
+                PreallocatedBuffer* predBuf = (predIdx < MaxSteps) ? stepOutputBuffers[predIdx] : nullptr;
+                if (predBuf != nullptr) {
+                    inL = predBuf->getReadPointer(0);
+                    inR = (predBuf->getNumChannels() > 1) ? predBuf->getReadPointer(1) : inL;
+                }
+            } else {
+                // Múltiples predecesores (FAN-IN / MERGE): mezclar señales en un buffer acumulador
+                PreallocatedBuffer* mixBuf = bufferPool_.acquire();
+                if (mixBuf != nullptr) {
+                    mixBuf->clear(numSamples);
+                    float* mixL = mixBuf->getWritePointer(0);
+                    float* mixR = (mixBuf->getNumChannels() > 1) ? mixBuf->getWritePointer(1) : mixL;
+
+                    for (size_t predIdx : step.predecessorStepIndices) {
+                        if (predIdx < MaxSteps && stepOutputBuffers[predIdx] != nullptr) {
+                            const auto* pBuf = stepOutputBuffers[predIdx];
+                            const float* pL = pBuf->getReadPointer(0);
+                            const float* pR = (pBuf->getNumChannels() > 1) ? pBuf->getReadPointer(1) : pL;
+                            for (uint32_t s = 0; s < numSamples; ++s) {
+                                mixL[s] += pL[s];
+                                mixR[s] += pR[s];
+                            }
+                        }
+                    }
+                    inL = mixBuf->getReadPointer(0);
+                    inR = (mixBuf->getNumChannels() > 1) ? mixBuf->getReadPointer(1) : inL;
+                }
+            }
+
+            // Resolver canales de Sidechain (Regla 6 y 13)
+            const float* scL = nullptr;
+            const float* scR = nullptr;
+            if (step.sidechainStepIndex >= 0 && static_cast<size_t>(step.sidechainStepIndex) < MaxSteps && stepOutputBuffers[step.sidechainStepIndex] != nullptr) {
+                const auto* scBuf = stepOutputBuffers[step.sidechainStepIndex];
+                scL = scBuf->getReadPointer(0);
+                scR = (scBuf->getNumChannels() > 1) ? scBuf->getReadPointer(1) : scL;
+            } else {
+                scL = inL;
+                scR = inR;
+            }
+            const float* scPointers[2] = { scL, scR };
+
+            // Preparar contexto del paso
+            const float* inPointers[2] = { inL, inR };
+            float* outPointers[2] = { outBuf->getWritePointer(0), (outBuf->getNumChannels() > 1) ? outBuf->getWritePointer(1) : nullptr };
+
             ProcessContext stepContext = mainContext;
-            stepContext.inputChannels = currentInput->getArrayOfReadPointers();
-            stepContext.outputChannels = currentOutput->getArrayOfWritePointers();
-            stepContext.numInputChannels = currentInput->getNumChannels();
-            stepContext.numOutputChannels = currentOutput->getNumChannels();
+            stepContext.inputChannels = inPointers;
+            stepContext.outputChannels = outPointers;
+            stepContext.sidechainChannels = scPointers;
+            stepContext.numInputChannels = (inL != nullptr) ? (inR != nullptr ? 2 : 1) : 0;
+            stepContext.numOutputChannels = numChannels;
+            stepContext.numSidechainChannels = (scL != nullptr) ? (scR != nullptr ? 2 : 1) : 0;
 
             step.processor->process(stepContext);
 
-            // Reutilización inmediata: la salida actual se convierte en la entrada del siguiente
-            std::swap(currentInput, currentOutput);
+            // Telemetría de nodo probado (Node Probing para el Visualizador, Regla 23 y 26)
+            if (probeVisualizer_ != nullptr && step.nodeId == probeNodeId_.load(std::memory_order_relaxed)) {
+                probeVisualizer_->writeBlock(outBuf->getReadPointer(0),
+                                             (outBuf->getNumChannels() > 1) ? outBuf->getReadPointer(1) : outBuf->getReadPointer(0),
+                                             numSamples);
+            }
         }
 
-        // currentInput contiene el último resultado procesado tras el swap
-        finalOutput.copyFrom(currentInput->getArrayOfReadPointers(), currentInput->getNumChannels(), mainContext.numSamples);
+        // 3. MEZCLA HACIA LA SALIDA FINAL: Combinar todos los nodos terminales (hojas del grafo)
+        finalOutput.clear(numSamples);
+        bool anyLeafWritten = false;
+
+        for (size_t i = 0; i < totalSteps; ++i) {
+            if (steps[i].isLeaf && stepOutputBuffers[i] != nullptr) {
+                const auto* leafBuf = stepOutputBuffers[i];
+                const float* leafL = leafBuf->getReadPointer(0);
+                const float* leafR = (leafBuf->getNumChannels() > 1) ? leafBuf->getReadPointer(1) : leafL;
+
+                float* outL = finalOutput.getWritePointer(0);
+                float* outR = (numChannels > 1) ? finalOutput.getWritePointer(1) : outL;
+
+                if (!anyLeafWritten) {
+                    for (uint32_t s = 0; s < numSamples; ++s) {
+                        outL[s] = leafL[s];
+                        outR[s] = leafR[s];
+                    }
+                    anyLeafWritten = true;
+                } else {
+                    for (uint32_t s = 0; s < numSamples; ++s) {
+                        outL[s] += leafL[s];
+                        outR[s] += leafR[s];
+                    }
+                }
+            }
+        }
 
         // Reciclar todos los buffers del pool para el próximo bloque
         bufferPool_.releaseAll();
     }
 
+    void setProbeNodeId(NodeId id) noexcept { probeNodeId_.store(id, std::memory_order_relaxed); }
+    NodeId getProbeNodeId() const noexcept { return probeNodeId_.load(std::memory_order_relaxed); }
+    void setProbeVisualizer(AudioVisualizerBuffer* viz) noexcept { probeVisualizer_ = viz; }
+
 private:
     ProcessSpec spec_;
     AudioBufferPool bufferPool_;
+    std::atomic<NodeId> probeNodeId_{ InvalidNodeId };
+    AudioVisualizerBuffer* probeVisualizer_{ nullptr };
 };
 
 } // namespace audio_graph

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <array>
 #include <atomic>
 #include <memory>
 #include <cstdint>
@@ -205,6 +206,52 @@ private:
     T buffer_[Capacity];
     alignas(64) std::atomic<size_t> head_;
     alignas(64) std::atomic<size_t> tail_;
+};
+
+/**
+ * @brief Buffer circular lock-free SPSC para telemetría visual de audio (Reglas 9, 23, 26, 47).
+ * Permite al audio thread volcar bloques de audio sin bloqueo ni allocations,
+ * y al GUI thread leerlos a 30/60 fps para alimentar el analizador FFT, osciloscopio y goniometro.
+ */
+class AudioVisualizerBuffer {
+public:
+    static constexpr size_t Capacity = 4096;
+    static constexpr size_t IndexMask = Capacity - 1;
+
+    AudioVisualizerBuffer() {
+        bufferL_.fill(0.0f);
+        bufferR_.fill(0.0f);
+        writeIndex_.store(0, std::memory_order_relaxed);
+    }
+
+    void writeBlock(const float* l, const float* r, size_t numSamples) noexcept {
+        if (numSamples == 0 || l == nullptr) return;
+        size_t writePos = writeIndex_.load(std::memory_order_relaxed);
+        for (size_t i = 0; i < numSamples; ++i) {
+            const size_t idx = (writePos + i) & IndexMask;
+            bufferL_[idx] = l[i];
+            bufferR_[idx] = (r != nullptr) ? r[i] : l[i];
+        }
+        writeIndex_.store((writePos + numSamples) & IndexMask, std::memory_order_release);
+    }
+
+    size_t getLatestSamples(float* destL, float* destR, size_t numSamplesToRead) const noexcept {
+        if (numSamplesToRead == 0 || destL == nullptr) return 0;
+        const size_t count = std::min(numSamplesToRead, Capacity);
+        const size_t currentWrite = writeIndex_.load(std::memory_order_acquire);
+        const size_t startPos = (currentWrite + Capacity - count) & IndexMask;
+        for (size_t i = 0; i < count; ++i) {
+            const size_t idx = (startPos + i) & IndexMask;
+            destL[i] = bufferL_[idx];
+            if (destR != nullptr) destR[i] = bufferR_[idx];
+        }
+        return count;
+    }
+
+private:
+    std::array<float, Capacity> bufferL_{};
+    std::array<float, Capacity> bufferR_{};
+    alignas(64) std::atomic<size_t> writeIndex_{ 0 };
 };
 
 } // namespace audio_graph

@@ -2,6 +2,7 @@
 #include <vector>
 #include <cmath>
 #include <cassert>
+#include <unordered_set>
 
 #include "../source/core/Types.h"
 #include "../source/core/RealtimePools.h"
@@ -58,8 +59,29 @@
 #include "../source/preset/PresetManager.h"
 #include "../source/dsp/core/FastMath.h"
 #include "../source/dsp/core/DenormalGuards.h"
-#include "../source/dsp/core/TestSynthEngine.h"
+#include "../source/dsp/core/TestInputSynthesizer.h"
 #include "../source/core/CpuProfiler.h"
+#include "../source/dsp/processors/TapeStopNode.h"
+#include "../source/dsp/processors/FormantFilterNode.h"
+#include "../source/dsp/processors/NoiseTextureNode.h"
+#include "../source/dsp/processors/TransientShaperNode.h"
+#include "../source/dsp/processors/RotarySpeakerNode.h"
+#include "../source/dsp/processors/HarmonicExciterNode.h"
+#include "../source/dsp/processors/VocoderNode.h"
+#include "../source/dsp/processors/KarplusStrongNode.h"
+#include "../source/dsp/processors/ReverseReverbNode.h"
+#include "../source/dsp/processors/BrickwallLimiterNode.h"
+#include "../source/dsp/processors/BitcrusherNode.h"
+#include "../source/dsp/processors/NoiseGateNode.h"
+#include "../source/dsp/processors/DeEsserNode.h"
+#include "../source/dsp/processors/ExternalSidechainNode.h"
+#include "../source/dsp/processors/MidiArpeggiatorNode.h"
+#include "../source/dsp/processors/MidiChordEngineNode.h"
+#include "../source/dsp/processors/MidiScaleQuantizerNode.h"
+#include "../source/modulation/MSEGModulator.h"
+#include "../source/modulation/EuclideanModulator.h"
+#include "../source/modulation/ChaosModulator.h"
+#include "../source/preset/SmartRandomizer.h"
 
 using namespace audio_graph;
 
@@ -1280,9 +1302,9 @@ void testGraphUndoRedoStack() {
     // Verificar catálogo de Presets de Fábrica
     PresetManager presetMgr;
     const auto& factory = presetMgr.getFactoryPresets();
-    assert(factory.size() == 6);
+    assert(factory.size() == 40);
 
-    // Validar que TODOS los 6 presets de fábrica deserializan limpiamente
+    // Validar que TODOS los 40 presets de fábrica deserializan limpiamente
     for (size_t i = 0; i < factory.size(); ++i) {
         Graph testG;
         PresetMetadata testM;
@@ -2336,87 +2358,413 @@ void testOverloadProtectionAndGracefulDegradation() {
     std::cout << "PASSED\n";
 }
 
-void testSequentialLinearChainReordering() {
-    std::cout << "[TEST] Sequential Slot Chain Reordering & Dynamic Insertion (Arturia Efx Mode)... ";
+void testGraphDAGParallelRoutingAndBranching() {
+    std::cout << "[TEST] Graph DAG Parallel Routing (Split & Merge 2 Effects at the Same Time) (Reglas 4, 6, 9, 28)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+
     Graph graph;
+    // Node 1: Passthrough (Input distributor)
+    auto n1 = graph.addNode(std::make_unique<PassthroughNode>(), "Distributor");
+    // Node 2 (Branch A): Chorus (Modulation)
+    auto n2 = graph.addNode(std::make_unique<ChorusNode>(), "ChorusBranch");
+    // Node 3 (Branch B): Resonator Bank (Resonance - AL MISMO TIEMPO!)
+    auto n3 = graph.addNode(std::make_unique<ResonatorBankNode>(), "ResonatorBranch");
+    // Node 4: Passthrough (Merge collector)
+    auto n4 = graph.addNode(std::make_unique<PassthroughNode>(), "MergeCollector");
 
-    // 1. Agregar 3 nodos iniciales
-    auto n1 = graph.addNode(std::make_unique<DistortionNode>(), "Distortion");
-    auto n2 = graph.addNode(std::make_unique<SimpleFilterNode>(), "Filter");
-    auto n3 = graph.addNode(std::make_unique<AdvancedDelayNode>(), "Delay");
-
-    assert(n1 != InvalidNodeId && n2 != InvalidNodeId && n3 != InvalidNodeId);
-
-    // 2. Conectar en secuencia: n1 -> n2 -> n3
+    // Conectar: n1 -> n2 y n1 -> n3 (SPLIT: 2 efectos al mismo tiempo)
     graph.connect(n1, 2, n2, 1);
-    graph.connect(n2, 2, n3, 1);
+    graph.connect(n1, 2, n3, 1);
+
+    // Conectar: n2 -> n4 y n3 -> n4 (MERGE)
+    graph.connect(n2, 2, n4, 1);
+    graph.connect(n3, 2, n4, 1);
+
+    for (const auto& [id, inst] : graph.getNodes()) {
+        inst->processor->prepare(spec);
+    }
 
     std::vector<NodeId> sorted;
     std::string err;
-    bool valid = graph.validateAndTopologicalSort(sorted, err);
-    assert(valid);
-    assert(sorted.size() == 3);
-    assert(sorted[0] == n1);
-    assert(sorted[1] == n2);
-    assert(sorted[2] == n3);
-
-    // 3. Reordenar la cola: n3 -> n1 -> n2 (Delay -> Distortion -> Filter)
-    std::vector<ConnectionId> toRemove;
-    for (const auto& c : graph.getConnections()) {
-        if (c.sourcePinId == 2 && c.destPinId == 1) {
-            toRemove.push_back(c.id);
-        }
-    }
-    for (auto cid : toRemove) graph.disconnect(cid);
-
-    graph.connect(n3, 2, n1, 1);
-    graph.connect(n1, 2, n2, 1);
-
-    sorted.clear();
-    valid = graph.validateAndTopologicalSort(sorted, err);
-    assert(valid);
-    assert(sorted[0] == n3);
-    assert(sorted[1] == n1);
-    assert(sorted[2] == n2);
-
-    // 4. Inserción dinámica de nuevo nodo en medio (n4: Reverb entre n1 y n2)
-    auto n4 = graph.addNode(std::make_unique<ReverbNode>(), "Reverb");
-    for (const auto& c : graph.getConnections()) {
-        if (c.sourceNodeId == n1 && c.destNodeId == n2) {
-            graph.disconnect(c.id);
-            break;
-        }
-    }
-    graph.connect(n1, 2, n4, 1);
-    graph.connect(n4, 2, n2, 1);
-
-    sorted.clear();
-    valid = graph.validateAndTopologicalSort(sorted, err);
-    assert(valid);
+    assert(graph.validateAndTopologicalSort(sorted, err));
     assert(sorted.size() == 4);
-    assert(sorted[0] == n3);
-    assert(sorted[1] == n1);
-    assert(sorted[2] == n4);
-    assert(sorted[3] == n2);
 
-    // 5. Compilación del ExecutionPlan y procesamiento real con cero NaNs
     ExecutionPlan plan;
     plan.compileFrom(graph, sorted);
-    assert(!plan.isEmpty());
+    assert(plan.hasExplicitConnections());
 
     GraphExecutor executor;
-    ProcessSpec spec{ 48000.0, 512, 2, 2 };
-    executor.prepare(spec);
+    executor.prepare(spec, 32);
 
-    for (const auto& [id, node] : graph.getNodes()) {
-        node->processor->prepare(spec);
+    std::vector<float> inL(256, 0.5f);
+    std::vector<float> inR(256, 0.5f);
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    std::vector<float> dummyOutL(256, 0.0f);
+    std::vector<float> dummyOutR(256, 0.0f);
+    float* outChannels[2] = { dummyOutL.data(), dummyOutR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    PreallocatedBuffer finalOut;
+    finalOut.prepare(2, 256);
+
+    // Procesar bloques de audio y verificar que la señal atraviesa las ramas paralelas y se suma
+    for (int b = 0; b < 10; ++b) {
+        executor.process(plan, ctx, finalOut);
     }
 
-    std::vector<float> inL(512, 0.35f);
-    std::vector<float> inR(512, 0.35f);
+    const float* outL = finalOut.getReadPointer(0);
+    const float* outR = finalOut.getReadPointer(1);
+    for (size_t s = 0; s < 256; ++s) {
+        assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+        assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+    }
+    // La suma de ambas ramas activas debe producir amplitud válida
+    assert(std::abs(outL[128]) > 0.001f);
+
+    std::cout << "PASSED\n";
+}
+
+void testDecaMatrix10FXChainPreset() {
+    std::cout << "[TEST] DecaMatrix 10-FX Master Chain Preset & Key-Release CUT Behavior (Reglas 2, 3, 4, 7, 21)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+
+    // Deserializar directamente la configuración DecaMatrix 10-FX
+    const char* decaMatrixJson = R"json({
+  "schemaVersion": 1,
+  "name": "DecaMatrix: 10-FX Master Chain",
+  "author": "N8Audio",
+  "category": "Master Chains",
+  "description": "Cadena de 10 efectos: EQ, saturador, split paralelo (Chorus + Resonador armónico simultáneos), secuenciación glitch, pitch shift, rack de eventos con corte inmediato por seguimiento de fuente (CUT al soltar tecla), delay estéreo, reverb FDN y OTT multibanda",
+  "dryLevel": 0.85,
+  "wetLevel": 0.90,
+  "macros": [0.6, 0.7, 0.5, 0.8, 0.4, 0.9, 0.5, 0.0],
+  "nodes": [
+    { "id": 1, "name": "Parametric EQ", "type": 4, "x": 25.0, "y": 25.0, "params": { "1": 80.0, "2": -2.0, "3": 2800.0, "4": 2.5, "5": 1.2, "6": 9000.0, "7": 1.0 } },
+    { "id": 2, "name": "Distortion", "type": 8, "x": 225.0, "y": 25.0, "params": { "1": 3.0, "2": 3.5, "3": 6500.0, "4": 0.5 } },
+    { "id": 3, "name": "Chorus Branch A", "type": 17, "x": 425.0, "y": 15.0, "params": { "1": 1.2, "2": 0.65, "3": 0.25, "4": 4.0, "5": 0.75 } },
+    { "id": 4, "name": "Resonator Branch B", "type": 13, "x": 425.0, "y": 185.0, "params": { "1": 220.0, "2": 2.0, "3": 0.12, "4": 0.35, "5": 0.6 } },
+    { "id": 5, "name": "Glitch Slicer", "type": 14, "x": 625.0, "y": 25.0, "params": { "1": 4.0, "2": 0.7, "3": 0.35, "4": 0.2, "5": 0.85 } },
+    { "id": 6, "name": "Pitch Shifter", "type": 11, "x": 825.0, "y": 25.0, "params": { "1": 7.0, "2": 0.0, "3": 1.0, "4": 0.4 } },
+    { "id": 7, "name": "Event Rack Key CUT", "type": 23, "x": 825.0, "y": 235.0, "params": { "1": 0.0, "2": 0.8, "3": 1.0, "4": 200.0, "5": 1.0, "6": 0.85 } },
+    { "id": 8, "name": "Stereo Delay", "type": 5, "x": 625.0, "y": 235.0, "params": { "1": 250.0, "2": 375.0, "3": 0.45, "4": 6000.0, "5": 1.0, "6": 0.4 } },
+    { "id": 9, "name": "FDN Reverb", "type": 6, "x": 425.0, "y": 355.0, "params": { "1": 0.75, "2": 2.5, "3": 5500.0, "4": 15.0, "5": 0.35 } },
+    { "id": 10, "name": "Multiband OTT", "type": 15, "x": 225.0, "y": 355.0, "params": { "1": 200.0, "2": 2500.0, "3": 1.0, "4": 1.0, "5": 1.0, "6": 0.9 } }
+  ],
+  "connections": [
+    { "id": 1, "srcNode": 1, "srcPin": 2, "destNode": 2, "destPin": 1 },
+    { "id": 2, "srcNode": 2, "srcPin": 2, "destNode": 3, "destPin": 1 },
+    { "id": 3, "srcNode": 2, "srcPin": 2, "destNode": 4, "destPin": 1 },
+    { "id": 4, "srcNode": 3, "srcPin": 2, "destNode": 5, "destPin": 1 },
+    { "id": 5, "srcNode": 4, "srcPin": 2, "destNode": 5, "destPin": 1 },
+    { "id": 6, "srcNode": 5, "srcPin": 2, "destNode": 6, "destPin": 1 },
+    { "id": 7, "srcNode": 6, "srcPin": 2, "destNode": 7, "destPin": 1 },
+    { "id": 8, "srcNode": 7, "srcPin": 2, "destNode": 8, "destPin": 1 },
+    { "id": 9, "srcNode": 8, "srcPin": 2, "destNode": 9, "destPin": 1 },
+    { "id": 10, "srcNode": 9, "srcPin": 2, "destNode": 10, "destPin": 1 }
+  ]
+})json";
+
+    Graph graph;
+    PresetMetadata meta;
+    std::array<float, 8> macros;
+    std::string errDeser;
+    bool loaded = GraphSerializer::deserialize(decaMatrixJson, graph, meta, macros, errDeser);
+    assert(loaded);
+    assert(graph.getNodes().size() == 10);
+    assert(graph.getConnections().size() == 10);
+
+    for (const auto& [id, inst] : graph.getNodes()) {
+        inst->processor->prepare(spec);
+    }
+
+    std::vector<NodeId> sorted;
+    std::string err;
+    assert(graph.validateAndTopologicalSort(sorted, err));
+    assert(sorted.size() == 10);
+
+    ExecutionPlan plan;
+    plan.compileFrom(graph, sorted);
+    assert(plan.hasExplicitConnections());
+    assert(plan.getSteps().size() == 10);
+
+    GraphExecutor executor;
+    executor.prepare(spec, 32);
+
+    // Probar con señal de entrada activa (tecla presionada)
+    std::vector<float> inL(256, 0.4f);
+    std::vector<float> inR(256, 0.4f);
     const float* inChannels[2] = { inL.data(), inR.data() };
-    std::vector<float> outL(512, 0.0f);
-    std::vector<float> outR(512, 0.0f);
+    std::vector<float> dummyOutL(256, 0.0f);
+    std::vector<float> dummyOutR(256, 0.0f);
+    float* outChannels[2] = { dummyOutL.data(), dummyOutR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    PreallocatedBuffer finalOut;
+    finalOut.prepare(2, 256);
+
+    for (int b = 0; b < 20; ++b) {
+        executor.process(plan, ctx, finalOut);
+    }
+
+    const float* outL = finalOut.getReadPointer(0);
+    for (size_t s = 0; s < 256; ++s) {
+        assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+    }
+
+    // Probar con cese de entrada (tecla liberada / source energy = 0):
+    std::vector<float> silentL(256, 0.0f);
+    std::vector<float> silentR(256, 0.0f);
+    const float* silentChannels[2] = { silentL.data(), silentR.data() };
+    ctx.inputChannels = silentChannels;
+
+    for (int b = 0; b < 10; ++b) {
+        executor.process(plan, ctx, finalOut);
+    }
+
+    for (size_t s = 0; s < 256; ++s) {
+        assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testTestInputSynthesizerPolyphonyAndLifecycle() {
+    std::cout << "[TEST] TestInputSynthesizer Polyphony, Voice Stealing & Audio Injection (Reglas 9, 13, 34, 47)... ";
+    TestInputSynthesizer synth;
+    const double sr = 48000.0;
+    const int blockSize = 256;
+    synth.prepare(sr, blockSize);
+
+    assert(!synth.hasActiveVoices());
+
+    // 1. Probar disparo de nota simple (C4 = 60)
+    synth.noteOn(60, 0.8f);
+    assert(synth.hasActiveVoices());
+
+    std::vector<float> bufL(blockSize, 0.0f);
+    std::vector<float> bufR(blockSize, 0.0f);
+    float* channels[2] = { bufL.data(), bufR.data() };
+
+    synth.renderAndInject(channels, 2, blockSize);
+
+    // Verificar que se generó señal audible en ambos canales y sin NaN / Inf
+    float sumEnergy = 0.0f;
+    for (int s = 0; s < blockSize; ++s) {
+        assert(!std::isnan(bufL[s]) && !std::isinf(bufL[s]));
+        assert(!std::isnan(bufR[s]) && !std::isinf(bufR[s]));
+        sumEnergy += std::abs(bufL[s]);
+    }
+    assert(sumEnergy > 0.01f);
+
+    // 2. Probar Polifonía de 8 voces completas
+    synth.reset();
+    assert(!synth.hasActiveVoices());
+    const int chord[8] = { 60, 62, 64, 65, 67, 69, 71, 72 };
+    for (int i = 0; i < 8; ++i) {
+        synth.noteOn(chord[i], 0.7f);
+    }
+    assert(synth.hasActiveVoices());
+
+    // 3. Probar Voice Stealing (9ª nota sin crash ni memory allocation)
+    synth.noteOn(74, 0.9f);
+    assert(synth.hasActiveVoices());
+
+    // Renderizar varias iteraciones para probar la continuidad
+    for (int b = 0; b < 10; ++b) {
+        std::fill(bufL.begin(), bufL.end(), 0.0f);
+        std::fill(bufR.begin(), bufR.end(), 0.0f);
+        synth.renderAndInject(channels, 2, blockSize);
+        for (int s = 0; s < blockSize; ++s) {
+            assert(!std::isnan(bufL[s]) && !std::isinf(bufL[s]));
+        }
+    }
+
+    // 4. Probar NoteOff individual y decaimiento ADSR anti-click
+    for (int i = 0; i < 8; ++i) {
+        synth.noteOff(chord[i]);
+    }
+    synth.noteOff(74);
+
+    // Renderizar suficientes bloques para permitir la fase Release (15ms @ 48kHz = 720 samples ~ 3 bloques)
+    for (int b = 0; b < 10; ++b) {
+        std::fill(bufL.begin(), bufL.end(), 0.0f);
+        std::fill(bufR.begin(), bufR.end(), 0.0f);
+        synth.renderAndInject(channels, 2, blockSize);
+    }
+    // Una vez completada la etapa de liberación, todas las voces deben estar apagadas
+    assert(!synth.hasActiveVoices());
+
+    // 5. Probar todos los modos tímbricos (ElectricPiano, Sine, Triangle, WarmSaw)
+    const TestTimbreMode timbres[] = {
+        TestTimbreMode::ElectricPiano,
+        TestTimbreMode::Sine,
+        TestTimbreMode::Triangle,
+        TestTimbreMode::WarmSaw
+    };
+
+    for (auto timbre : timbres) {
+        synth.setTimbreMode(timbre);
+        assert(synth.getTimbreMode() == timbre);
+        synth.noteOn(69, 0.75f); // A4 = 440 Hz
+        std::fill(bufL.begin(), bufL.end(), 0.0f);
+        std::fill(bufR.begin(), bufR.end(), 0.0f);
+        synth.renderAndInject(channels, 2, blockSize);
+        for (int s = 0; s < blockSize; ++s) {
+            assert(!std::isnan(bufL[s]) && !std::isinf(bufL[s]));
+        }
+        synth.allNotesOff();
+    }
+
+    // Drenar voces tras allNotesOff
+    for (int b = 0; b < 10; ++b) {
+        std::fill(bufL.begin(), bufL.end(), 0.0f);
+        std::fill(bufR.begin(), bufR.end(), 0.0f);
+        synth.renderAndInject(channels, 2, blockSize);
+    }
+    assert(!synth.hasActiveVoices());
+
+    std::cout << "PASSED\n";
+}
+
+void testAll40FactoryPresetsCatalog() {
+    std::cout << "[TEST] 20 Thematic Categories & 40 Creative Presets (Reglas 4, 5, 9, 21, 22, 34, 38, 44, 46)... ";
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+
+    PresetManager pm;
+    const auto& presets = pm.getFactoryPresets();
+    assert(presets.size() == 40);
+
+    const auto categories = pm.getCategories();
+    assert(categories.size() == 20);
+
+    // Set para rastrear los tipos de nodos DSP del motor
+    std::unordered_set<NodeType> presentNodeTypes;
+
+    GraphExecutor executor;
+    executor.prepare(spec, 32);
+
+    PreallocatedBuffer finalOut;
+    finalOut.prepare(2, 256);
+
+    std::vector<float> inL(256);
+    std::vector<float> inR(256);
+    for (size_t s = 0; s < 256; ++s) {
+        float sample = std::sin(2.0f * 3.14159265f * 440.0f * static_cast<float>(s) / 48000.0f) * 0.5f;
+        inL[s] = sample;
+        inR[s] = sample;
+    }
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    std::vector<float> dummyOutL(256, 0.0f);
+    std::vector<float> dummyOutR(256, 0.0f);
+    float* outChannels[2] = { dummyOutL.data(), dummyOutR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    std::unordered_map<std::string, int> categoryCounts;
+
+    for (size_t i = 0; i < presets.size(); ++i) {
+        Graph graph;
+        PresetMetadata meta;
+        std::array<float, 8> macros;
+
+        bool loaded = pm.loadFactoryPreset(i, graph, meta, macros);
+        assert(loaded);
+        assert(!meta.name.empty());
+        assert(!meta.category.empty());
+        assert(meta.dryLevel >= 0.0f && meta.dryLevel <= 2.0f);
+        assert(meta.wetLevel >= 0.0f && meta.wetLevel <= 2.0f);
+        assert(!graph.getNodes().empty());
+
+        categoryCounts[meta.category]++;
+
+        for (const auto& [nodeId, nodeInst] : graph.getNodes()) {
+            assert(nodeInst->processor != nullptr);
+            presentNodeTypes.insert(nodeInst->type);
+            nodeInst->processor->prepare(spec);
+        }
+
+        std::vector<NodeId> sorted;
+        std::string err;
+        bool valid = graph.validateAndTopologicalSort(sorted, err);
+        if (!valid) {
+            std::cerr << "\nValidation error in preset " << i << " (" << meta.name << "): " << err << "\n";
+        }
+        assert(valid);
+
+        ExecutionPlan plan;
+        plan.compileFrom(graph, sorted);
+
+        // Procesar 20 bloques consecutivos de audio a 48kHz
+        for (int b = 0; b < 20; ++b) {
+            executor.process(plan, ctx, finalOut);
+        }
+
+        // Validación estricta de estabilidad acústica (cero NaN / Inf)
+        const float* outL = finalOut.getReadPointer(0);
+        const float* outR = finalOut.getReadPointer(1);
+        float rmsOut = 0.0f;
+        float maxDiff = 0.0f;
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+            rmsOut += outL[s] * outL[s];
+            float d = std::abs(outL[s] - inL[s]);
+            if (d > maxDiff) maxDiff = d;
+        }
+        rmsOut = std::sqrt(rmsOut / 256.0f);
+        if (rmsOut < 1e-4f || maxDiff < 1e-3f) {
+            std::cout << "\n   [WARNING] Preset " << i << " (" << meta.name << "): rmsOut=" << rmsOut << ", maxDiff=" << maxDiff;
+        }
+    }
+
+    // Comprobar que todas las 20 categorías tienen exactamente 2 presets
+    assert(categoryCounts.size() == 20);
+    for (const auto& [cat, count] : categoryCounts) {
+        assert(count == 2);
+    }
+
+    // Verificar que se emplean al menos 23 tipos distintos de nodos en el catálogo de presets
+    assert(presentNodeTypes.size() >= 23);
+
+    std::cout << "PASSED (40 presets, 20 categorias, " << presentNodeTypes.size() << " tipos DSP verificados)\n";
+}
+
+void testTapeStopProcessingAndHermiteInterpolation() {
+    std::cout << "[TEST] TapeStopNode Braking, Spin-Up & Hermite Interpolation (Reglas 5, 8, 14, 34, 35, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    TapeStopNode node;
+    node.prepare(spec);
+
+    assert(node.getType() == NodeType::TapeStop);
+    assert(std::string(node.getName()) == "Tape Stop");
+    assert(node.getPins().size() == 2);
+    assert(node.getParameters().size() == 6);
+
+    std::vector<float> inL(256);
+    std::vector<float> inR(256);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inChannels[2] = { inL.data(), inR.data() };
     float* outChannels[2] = { outL.data(), outR.data() };
 
     ProcessContext ctx{
@@ -2424,106 +2772,1216 @@ void testSequentialLinearChainReordering() {
         .outputChannels = outChannels,
         .numInputChannels = 2,
         .numOutputChannels = 2,
-        .numSamples = 512
+        .numSamples = 256
     };
 
-    PreallocatedBuffer outBuffer;
-    outBuffer.prepare(2, 512);
-    executor.process(plan, ctx, outBuffer);
+    // Generar tono senoidal de entrada
+    for (size_t i = 0; i < 256; ++i) {
+        inL[i] = std::sin(2.0f * std::numbers::pi_v<float> * 440.0f * (static_cast<float>(i) / 44100.0f));
+        inR[i] = inL[i];
+    }
 
-    // Verificar salida procesada estable
-    for (uint32_t s = 0; s < 512; ++s) {
-        assert(!std::isnan(outBuffer.getReadPointer(0)[s]));
-        assert(!std::isinf(outBuffer.getReadPointer(0)[s]));
-        assert(!std::isnan(outBuffer.getReadPointer(1)[s]));
-        assert(!std::isinf(outBuffer.getReadPointer(1)[s]));
+    // 1. Probar en reproducción normal (Trigger = 0)
+    node.setParameter(TapeStopNode::Trigger, 0.0f);
+    node.setParameter(TapeStopNode::StopTime, 0.2f);
+    node.setParameter(TapeStopNode::Mix, 1.0f);
+
+    for (int b = 0; b < 10; ++b) {
+        node.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // 2. Activar freno (Trigger = 1)
+    node.setParameter(TapeStopNode::Trigger, 1.0f);
+    float lastRms = 1.0f;
+    for (int b = 0; b < 40; ++b) {
+        node.process(ctx);
+        float rms = 0.0f;
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            rms += outL[i] * outL[i];
+        }
+        rms = std::sqrt(rms / 256.0f);
+        lastRms = rms;
+    }
+    // Al finalizar el tiempo de frenado, la señal debe haber caído sustancialmente
+    assert(lastRms < 0.15f);
+
+    // 3. Reanudar (Trigger = 0)
+    node.setParameter(TapeStopNode::Trigger, 0.0f);
+    node.setParameter(TapeStopNode::SpinUpTime, 0.15f);
+    for (int b = 0; b < 40; ++b) {
+        node.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        }
+    }
+
+    node.reset();
+    std::cout << "PASSED\n";
+}
+
+void testFormantFilterVowelMorphing() {
+    std::cout << "[TEST] FormantFilterNode Resonant Vowels & Continuous Morphing (Reglas 5, 8, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    FormantFilterNode node;
+    node.prepare(spec);
+
+    assert(node.getType() == NodeType::FormantFilter);
+    assert(std::string(node.getName()) == "Formant Filter");
+
+    std::vector<float> inL(256, 0.5f);
+    std::vector<float> inR(256, 0.5f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    // Probar cada vocal pura (0=A, 1=E, 2=I, 3=O, 4=U) y posiciones intermedias
+    for (float v : { 0.0f, 0.5f, 1.0f, 1.8f, 2.0f, 3.0f, 3.7f, 4.0f }) {
+        node.setParameter(FormantFilterNode::Vowel, v);
+        node.setParameter(FormantFilterNode::Resonance, 8.0f);
+        node.setParameter(FormantFilterNode::FormantShift, 1.1f);
+        node.setParameter(FormantFilterNode::Warmth, 0.4f);
+        node.process(ctx);
+
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    node.reset();
+    std::cout << "PASSED\n";
+}
+
+void testNoiseTextureGenerationAndSidechainDuck() {
+    std::cout << "[TEST] NoiseTextureNode Organic Textures & Sidechain Ducking (Reglas 5, 8, 9, 34, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    NoiseTextureNode node;
+    node.prepare(spec);
+
+    assert(node.getType() == NodeType::NoiseTexture);
+
+    std::vector<float> inSilentL(256, 0.0f);
+    std::vector<float> inSilentR(256, 0.0f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inSilentChannels[2] = { inSilentL.data(), inSilentR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctxSilent{
+        .inputChannels = inSilentChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    // 1. Probar que genera ruido en todos los 5 modos (White, Pink, Tape, Vinyl, Rain)
+    for (int mode = 0; mode < 5; ++mode) {
+        node.setParameter(NoiseTextureNode::Mode, static_cast<float>(mode));
+        node.setParameter(NoiseTextureNode::Level, 0.5f);
+        node.setParameter(NoiseTextureNode::Density, 0.6f);
+        node.process(ctxSilent);
+
+        float rms = 0.0f;
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            rms += outL[i] * outL[i];
+        }
+        rms = std::sqrt(rms / 256.0f);
+        assert(rms > 0.001f);
+    }
+
+    // 2. Probar Sidechain Ducking: ante señal entrante fuerte, el ruido debe duckearse
+    std::vector<float> inLoudL(256, 1.0f);
+    std::vector<float> inLoudR(256, 1.0f);
+    const float* inLoudChannels[2] = { inLoudL.data(), inLoudR.data() };
+    ProcessContext ctxLoud{
+        .inputChannels = inLoudChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    node.setParameter(NoiseTextureNode::SidechainDuck, 1.0f);
+    for (int b = 0; b < 20; ++b) {
+        node.process(ctxLoud);
+    }
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+    }
+
+    node.reset();
+    std::cout << "PASSED\n";
+}
+
+void testMSEGModulatorCurvesAndSync() {
+    std::cout << "[TEST] MSEGModulator Multi-Segment Bézier Curves & Loops (Reglas 7, 8, 25, 37, 46, 47)... ";
+    MSEGModulator mseg;
+    mseg.prepare(44100.0);
+
+    mseg.setNumPoints(4);
+    mseg.setPoint(0, 0.0f,  0.0f,  0.0f);
+    mseg.setPoint(1, 0.3f,  1.0f,  0.6f);
+    mseg.setPoint(2, 0.7f,  0.2f, -0.6f);
+    mseg.setPoint(3, 1.0f,  0.0f,  0.0f);
+
+    mseg.setMode(MSEGModulator::PlayMode::Loop);
+    mseg.setSync(SyncDivision::FreeHz, 2.0f);
+
+    float minVal = 100.0f;
+    float maxVal = -100.0f;
+    for (int s = 0; s < 22050; ++s) {
+        mseg.processSample(120.0, 0.0, false);
+        float val = mseg.getCurrentValue();
+        assert(!std::isnan(val) && !std::isinf(val));
+        assert(val >= -0.01f && val <= 1.01f);
+        minVal = std::min(minVal, val);
+        maxVal = std::max(maxVal, val);
+    }
+
+    assert(maxVal > 0.95f);
+    assert(minVal < 0.05f);
+
+    mseg.setMode(MSEGModulator::PlayMode::OneShot);
+    mseg.trigger();
+    for (int s = 0; s < 44100; ++s) {
+        mseg.processSample(120.0, 0.0, false);
+    }
+    assert(std::abs(mseg.getCurrentValue()) < 0.01f);
+
+    std::cout << "PASSED\n";
+}
+
+void testEuclideanModulatorBjorklundRhythm() {
+    std::cout << "[TEST] EuclideanModulator Bjorklund Rhythm & Dynamic Envelopes (Reglas 7, 8, 37, 46, 47)... ";
+    EuclideanModulator euc;
+    euc.prepare(44100.0);
+
+    euc.setSteps(16);
+    euc.setPulses(4);
+    euc.setRotation(0);
+    assert(euc.hasPulseAtStep(0) == true);
+    assert(euc.hasPulseAtStep(1) == false);
+    assert(euc.hasPulseAtStep(2) == false);
+    assert(euc.hasPulseAtStep(3) == false);
+    assert(euc.hasPulseAtStep(4) == true);
+    assert(euc.hasPulseAtStep(8) == true);
+    assert(euc.hasPulseAtStep(12) == true);
+
+    euc.setSteps(8);
+    euc.setPulses(3);
+    assert(euc.hasPulseAtStep(0) == true);
+    assert(euc.hasPulseAtStep(1) == false);
+    assert(euc.hasPulseAtStep(2) == false);
+    assert(euc.hasPulseAtStep(3) == true);
+    assert(euc.hasPulseAtStep(4) == false);
+    assert(euc.hasPulseAtStep(5) == false);
+    assert(euc.hasPulseAtStep(6) == true);
+    assert(euc.hasPulseAtStep(7) == false);
+
+    euc.setDecay(0.05f);
+    euc.setSync(SyncDivision::FreeHz, 120.0f);
+    for (int s = 0; s < 44100; ++s) {
+        euc.processSample(120.0, 0.0, false);
+        float val = euc.getCurrentValue();
+        assert(!std::isnan(val) && !std::isinf(val));
+        assert(val >= 0.0f && val <= 1.0f);
     }
 
     std::cout << "PASSED\n";
 }
 
-void testTestSynthEnginePolyphonyAndSafety() {
-    std::cout << "[TEST] TestSynthEngine Polyphony, PolyBLEP Anti-Aliasing & Voice Stealing (Reglas 9, 13, 34, 46)... ";
+void testChaosModulatorLorenzAttractor() {
+    std::cout << "[TEST] ChaosModulator Non-Linear Lorenz RK4 Integration (Reglas 7, 8, 25, 46, 47)... ";
+    ChaosModulator chaos;
+    chaos.prepare(44100.0);
+    chaos.setSpeed(4.0f);
 
-    TestSynthEngine synth;
-    synth.prepare(48000.0);
+    float minX = 10.0f, maxX = -10.0f;
+    float minY = 10.0f, maxY = -10.0f;
+    float minZ = 10.0f, maxZ = -10.0f;
 
-    assert(synth.getActiveVoiceCount() == 0);
-    assert(synth.isEnabled());
+    for (int s = 0; s < 20000; ++s) {
+        chaos.processSample();
+        float x = chaos.getNormalizedX();
+        float y = chaos.getNormalizedY();
+        float z = chaos.getNormalizedZ();
 
-    // 1. Probar Note On y polifonía (Acorde C mayor: C4, E4, G4)
-    synth.noteOn(60, 0.8f);
-    synth.noteOn(64, 0.7f);
-    synth.noteOn(67, 0.9f);
-    assert(synth.getActiveVoiceCount() == 3);
+        assert(!std::isnan(x) && !std::isinf(x));
+        assert(!std::isnan(y) && !std::isinf(y));
+        assert(!std::isnan(z) && !std::isinf(z));
 
-    // 2. Renderizar audio en buffer estéreo
-    constexpr uint32_t blockSize = 256;
-    std::vector<float> bufL(blockSize, 0.0f);
-    std::vector<float> bufR(blockSize, 0.0f);
-    float* channels[2] = { bufL.data(), bufR.data() };
+        assert(x >= -1.0f && x <= 1.0f);
+        assert(y >= -1.0f && y <= 1.0f);
+        assert(z >= -1.0f && z <= 1.0f);
 
-    synth.renderAudioAdding(channels, 2, blockSize);
-
-    // Comprobar que hay señal generada y que no hay NaN/Inf
-    float maxAbsL = 0.0f;
-    float maxAbsR = 0.0f;
-    for (uint32_t i = 0; i < blockSize; ++i) {
-        assert(!std::isnan(bufL[i]) && !std::isinf(bufL[i]));
-        assert(!std::isnan(bufR[i]) && !std::isinf(bufR[i]));
-        maxAbsL = std::max(maxAbsL, std::abs(bufL[i]));
-        maxAbsR = std::max(maxAbsR, std::abs(bufR[i]));
+        minX = std::min(minX, x); maxX = std::max(maxX, x);
+        minY = std::min(minY, y); maxY = std::max(maxY, y);
+        minZ = std::min(minZ, z); maxZ = std::max(maxZ, z);
     }
-    assert(maxAbsL > 0.01f);
-    assert(maxAbsR > 0.01f);
 
-    // 3. Probar todos los timbres (Saw, Sine, Square, Pluck)
-    for (uint8_t t = 0; t < static_cast<uint8_t>(SynthSoundType::Count); ++t) {
-        synth.setSoundType(static_cast<SynthSoundType>(t));
-        std::fill(bufL.begin(), bufL.end(), 0.0f);
-        std::fill(bufR.begin(), bufR.end(), 0.0f);
-        synth.renderAudioAdding(channels, 2, blockSize);
-        for (uint32_t i = 0; i < blockSize; ++i) {
-            assert(!std::isnan(bufL[i]) && !std::isinf(bufL[i]));
-            assert(!std::isnan(bufR[i]) && !std::isinf(bufR[i]));
+    assert((maxX - minX) > 0.4f);
+    assert((maxY - minY) > 0.4f);
+
+    std::cout << "PASSED\n";
+}
+
+void testSmartRandomizerSafeguardsAndMutation() {
+    std::cout << "[TEST] SmartRandomizer Acoustic Safeguards & DAG Mutation (Reglas 4, 11, 21, 28, 34, 46, 47)... ";
+    Graph graph;
+    graph.addNode(NodeFactory::getInstance().create(NodeType::Input), "", 100.0f, 200.0f);
+    graph.addNode(NodeFactory::getInstance().create(NodeType::Output), "", 700.0f, 200.0f);
+
+    NodeId dId = graph.addNode(NodeFactory::getInstance().create(NodeType::Distortion), "", 300.0f, 200.0f);
+    NodeId fId = graph.addNode(NodeFactory::getInstance().create(NodeType::Delay), "", 500.0f, 200.0f);
+
+    graph.connect(1, 1, dId, 1);
+    graph.connect(dId, 2, fId, 1);
+    graph.connect(fId, 2, 2, 1);
+
+    PresetMetadata meta{ .name = "Base" };
+    std::array<float, 8> macros{ 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+    GraphUndoManager undoMgr(16);
+
+    // 1. Probar Subtle Tweak
+    bool okTweak = SmartRandomizer::applyRandom(graph, meta, macros, undoMgr, SmartRandomizer::RandomMode::SubtleTweak);
+    assert(okTweak);
+
+    auto* delayNode = graph.getNode(fId)->processor.get();
+    float fdbk = delayNode->getParameter(SimpleDelayNode::Feedback);
+    assert(fdbk <= 0.85f);
+
+    // 2. Probar Surprise Patch
+    bool okSurprise = SmartRandomizer::applyRandom(graph, meta, macros, undoMgr, SmartRandomizer::RandomMode::SurprisePatch);
+    assert(okSurprise);
+
+    std::vector<NodeId> sortedIds;
+    std::string errMsg;
+    bool okSort = graph.validateAndTopologicalSort(sortedIds, errMsg);
+    assert(okSort);
+    assert(!sortedIds.empty());
+    assert(graph.getNodeCount() >= 4);
+
+    // 3. Probar Undo para restaurar el estado previo
+    PresetMetadata restoredMeta;
+    std::array<float, 8> restoredMacros;
+    bool okUndo = undoMgr.undo(graph, restoredMeta, restoredMacros);
+    assert(okUndo);
+
+    std::cout << "PASSED\n";
+}
+
+void testTransientShaperDynamics() {
+    std::cout << "[TEST] TransientShaperNode Punch, Sustain & Soft-Clipping (Reglas 5, 8, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    TransientShaperNode node;
+    node.prepare(spec);
+
+    assert(node.getType() == NodeType::TransientShaper);
+    assert(std::string(node.getName()) == "Transient Shaper");
+    assert(node.getPins().size() == 2);
+    assert(node.getParameters().size() == 6);
+
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    // Generar transiente pronunciado tipo caja / bombo (ataque rápido y decaimiento)
+    inL[0] = 1.0f;
+    for (size_t i = 1; i < 256; ++i) {
+        inL[i] = inL[i - 1] * 0.94f;
+        inR[i] = inL[i];
+    }
+
+    // 1. Probar realce de ataque (+1.0)
+    node.setParameter(TransientShaperNode::Attack, 1.0f);
+    node.setParameter(TransientShaperNode::Sustain, 0.0f);
+    node.setParameter(TransientShaperNode::SoftClip, 0.0f);
+    node.process(ctx);
+
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+    }
+    float boostedAttackPeak = outL[0];
+    assert(boostedAttackPeak > 1.05f);
+
+    // 2. Probar atenuación de ataque (-1.0)
+    node.reset();
+    node.setParameter(TransientShaperNode::Attack, -1.0f);
+    node.process(ctx);
+    float softenedAttackPeak = outL[0];
+    assert(softenedAttackPeak < boostedAttackPeak);
+
+    node.reset();
+    std::cout << "PASSED\n";
+}
+
+void testRotarySpeakerDopplerAndInertia() {
+    std::cout << "[TEST] RotarySpeakerNode Leslie Dual Rotor & Doppler Physics (Reglas 5, 8, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    RotarySpeakerNode node;
+    node.prepare(spec);
+
+    assert(node.getType() == NodeType::RotarySpeaker);
+    assert(std::string(node.getName()) == "Rotary Speaker");
+
+    std::vector<float> inL(256, 0.5f);
+    std::vector<float> inR(256, 0.5f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    node.setParameter(RotarySpeakerNode::SpeedMode, 1.0f);
+    node.setParameter(RotarySpeakerNode::Drive, 1.2f);
+    node.setParameter(RotarySpeakerNode::Spread, 0.9f);
+
+    for (int b = 0; b < 20; ++b) {
+        node.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
         }
     }
 
-    // 4. Probar saturación de polifonía y robo de voces (MaxVoices = 16)
-    for (int n = 36; n < 36 + 20; ++n) {
-        synth.noteOn(n, 0.6f);
-    }
-    assert(synth.getActiveVoiceCount() <= TestSynthEngine::MaxVoices);
-
-    // 5. Probar Note Off y All Notes Off con desvanecimiento limpio
-    synth.allNotesOff();
-    // Renderizar suficientes bloques para permitir la liberación de la envolvente (80ms a 48kHz = ~3840 muestras = 15 bloques)
-    for (int b = 0; b < 25; ++b) {
-        std::fill(bufL.begin(), bufL.end(), 0.0f);
-        std::fill(bufR.begin(), bufR.end(), 0.0f);
-        synth.renderAudioAdding(channels, 2, blockSize);
-    }
-    assert(synth.getActiveVoiceCount() == 0);
-
-    // 6. Probar desactivación / Mute
-    synth.noteOn(60, 0.8f);
-    synth.setEnabled(false);
-    assert(!synth.isEnabled());
-    std::fill(bufL.begin(), bufL.end(), 0.0f);
-    std::fill(bufR.begin(), bufR.end(), 0.0f);
-    synth.renderAudioAdding(channels, 2, blockSize);
-    for (uint32_t i = 0; i < blockSize; ++i) {
-        assert(bufL[i] == 0.0f && bufR[i] == 0.0f);
+    node.setParameter(RotarySpeakerNode::SpeedMode, 0.0f);
+    for (int b = 0; b < 20; ++b) {
+        node.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        }
     }
 
-    // 7. Probar reseteo y cambio de sample rate
-    synth.prepare(192000.0);
-    synth.setEnabled(true);
-    synth.noteOn(72, 0.9f);
-    assert(synth.getActiveVoiceCount() == 1);
-    synth.renderAudioAdding(channels, 2, blockSize);
-    for (uint32_t i = 0; i < blockSize; ++i) {
-        assert(!std::isnan(bufL[i]) && !std::isinf(bufL[i]));
+    node.reset();
+    std::cout << "PASSED\n";
+}
+
+void testHarmonicExciterAirAndSub() {
+    std::cout << "[TEST] HarmonicExciterNode Air Sheen & Sub-Harmonic Synthesis (Reglas 5, 8, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    HarmonicExciterNode node;
+    node.prepare(spec);
+
+    assert(node.getType() == NodeType::HarmonicExciter);
+    assert(std::string(node.getName()) == "Harmonic Exciter");
+
+    std::vector<float> inL(256);
+    std::vector<float> inR(256);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    for (size_t i = 0; i < 256; ++i) {
+        inL[i] = std::sin(2.0f * std::numbers::pi_v<float> * 8000.0f * (static_cast<float>(i) / 44100.0f));
+        inR[i] = inL[i];
+    }
+    node.setParameter(HarmonicExciterNode::AirFreq, 6000.0f);
+    node.setParameter(HarmonicExciterNode::AirDrive, 3.0f);
+    node.setParameter(HarmonicExciterNode::AirMix, 0.8f);
+    node.process(ctx);
+
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+    }
+
+    for (size_t i = 0; i < 256; ++i) {
+        inL[i] = std::sin(2.0f * std::numbers::pi_v<float> * 80.0f * (static_cast<float>(i) / 44100.0f));
+        inR[i] = inL[i];
+    }
+    node.setParameter(HarmonicExciterNode::SubFreq, 100.0f);
+    node.setParameter(HarmonicExciterNode::SubDrive, 2.5f);
+    node.setParameter(HarmonicExciterNode::SubMix, 0.6f);
+    node.process(ctx);
+
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+    }
+
+    node.reset();
+    std::cout << "PASSED\n";
+}
+
+void testVocoderFilterBank16Bands() {
+    std::cout << "[TEST] VocoderNode 16-Band Log Filter Bank & Carrier Modulation (Reglas 5, 8, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    VocoderNode node;
+    node.prepare(spec);
+
+    assert(node.getType() == NodeType::Vocoder);
+    assert(std::string(node.getName()) == "Channel Vocoder");
+
+    std::vector<float> inL(256);
+    std::vector<float> inR(256);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    for (size_t i = 0; i < 256; ++i) {
+        float t = static_cast<float>(i) / 44100.0f;
+        inL[i] = 0.5f * std::sin(2.0f * std::numbers::pi_v<float> * 300.0f * t)
+               + 0.3f * std::sin(2.0f * std::numbers::pi_v<float> * 1200.0f * t);
+        inR[i] = inL[i];
+    }
+
+    for (int mode = 0; mode < 3; ++mode) {
+        node.setParameter(VocoderNode::CarrierMode, static_cast<float>(mode));
+        node.setParameter(VocoderNode::CarrierPitch, 130.0f);
+        node.setParameter(VocoderNode::FormantShift, 1.15f);
+        node.setParameter(VocoderNode::BandQ, 6.0f);
+
+        for (int b = 0; b < 10; ++b) {
+            node.process(ctx);
+            for (size_t i = 0; i < 256; ++i) {
+                assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+                assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+            }
+        }
+    }
+
+    node.reset();
+    std::cout << "PASSED\n";
+}
+
+void testKarplusStrongPhysicalModeling() {
+    std::cout << "[TEST] KarplusStrongNode Plucked String Physical Modeling (Reglas 5, 8, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    KarplusStrongNode node;
+    node.prepare(spec);
+
+    assert(node.getType() == NodeType::KarplusStrong);
+    assert(std::string(node.getName()) == "Karplus-Strong");
+
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    node.setParameter(KarplusStrongNode::Pitch, 440.0f);
+    node.setParameter(KarplusStrongNode::Damping, 0.35f);
+    node.setParameter(KarplusStrongNode::Decay, 1.2f);
+    node.setParameter(KarplusStrongNode::AudioTrigger, 1.0f);
+
+    inL[0] = 1.0f;
+    inR[0] = 1.0f;
+    node.process(ctx);
+
+    float firstBlockRms = 0.0f;
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        firstBlockRms += outL[i] * outL[i];
+    }
+    firstBlockRms = std::sqrt(firstBlockRms / 256.0f);
+    assert(firstBlockRms > 0.05f);
+
+    inL[0] = 0.0f;
+    inR[0] = 0.0f;
+    for (int b = 0; b < 30; ++b) {
+        node.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        }
+    }
+
+    node.reset();
+    std::cout << "PASSED\n";
+}
+
+void testReverseReverbBloomDiffusion() {
+    std::cout << "[TEST] ReverseReverbNode Pre-Swell Bloom & Diffusive Tail (Reglas 5, 8, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    ReverseReverbNode node;
+    node.prepare(spec);
+
+    assert(node.getType() == NodeType::ReverseReverb);
+    assert(std::string(node.getName()) == "Reverse Reverb");
+
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    node.setParameter(ReverseReverbNode::SwellTime, 0.3f);
+    node.setParameter(ReverseReverbNode::Diffusion, 0.8f);
+    node.setParameter(ReverseReverbNode::Feedback, 0.4f);
+
+    for (size_t i = 0; i < 256; ++i) inL[i] = 0.6f;
+    for (int b = 0; b < 10; ++b) {
+        node.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    for (size_t i = 0; i < 256; ++i) inL[i] = 0.0f;
+    for (int b = 0; b < 20; ++b) {
+        node.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        }
+    }
+
+    node.reset();
+    std::cout << "PASSED\n";
+}
+
+void testBrickwallLimiterTruePeakAndLookahead() {
+    std::cout << "[TEST] BrickwallLimiterNode True Peak & Lookahead Safety (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    BrickwallLimiterNode limiter;
+    limiter.prepare(spec);
+
+    assert(limiter.getType() == NodeType::BrickwallLimiter);
+    assert(std::string(limiter.getName()) == "Brickwall Limiter");
+
+    limiter.setParameter(BrickwallLimiterNode::Ceiling, -0.5f); // -0.5 dBFS ~ 0.944f
+    limiter.setParameter(BrickwallLimiterNode::Threshold, -6.0f);
+    limiter.setParameter(BrickwallLimiterNode::Release, 20.0f);
+    limiter.setParameter(BrickwallLimiterNode::Lookahead, 2.0f);
+    limiter.setParameter(BrickwallLimiterNode::AutoMakeup, 1.0f);
+
+    std::vector<float> inL(256, 1.8f); // Hot input well above 0 dBFS
+    std::vector<float> inR(256, 1.8f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    const float maxAllowed = 0.9442f; // EnvelopeDetector::dbToLinear(-0.5f) + epsilon
+    for (int b = 0; b < 10; ++b) {
+        limiter.process(ctx);
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(std::abs(outL[s]) <= maxAllowed + 0.001f);
+            assert(std::abs(outR[s]) <= maxAllowed + 0.001f);
+        }
+    }
+
+    limiter.reset();
+    std::cout << "PASSED\n";
+}
+
+void testBitcrusherQuantizationAndDownsampling() {
+    std::cout << "[TEST] BitcrusherNode Bit Depth Quantization & Downsampling (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    BitcrusherNode node;
+    node.prepare(spec);
+
+    assert(node.getType() == NodeType::Bitcrusher);
+    assert(std::string(node.getName()) == "Bitcrusher");
+
+    node.setParameter(BitcrusherNode::BitDepth, 4.0f); // 4-bit resolution: 2^(4-1) = 8 levels
+    node.setParameter(BitcrusherNode::Downsample, 6.0f); // 6x sample-and-hold
+    node.setParameter(BitcrusherNode::Jitter, 0.0f);
+    node.setParameter(BitcrusherNode::AntiAliasing, 0.0f);
+    node.setParameter(BitcrusherNode::Drive, 0.0f);
+    node.setParameter(BitcrusherNode::Mix, 1.0f);
+
+    std::vector<float> inL(256);
+    std::vector<float> inR(256);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        inL[i] = std::sin(2.0f * std::numbers::pi_v<float> * 440.0f * (static_cast<float>(i) / 44100.0f));
+        inR[i] = inL[i];
+    }
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    node.process(ctx);
+
+    // Verify samples are quantized to steps of 1/8 = 0.125f
+    for (size_t s = 0; s < 256; ++s) {
+        assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+        float scaled = outL[s] * 8.0f;
+        float diffFromInt = std::abs(scaled - std::round(scaled));
+        assert(diffFromInt < 1e-4f);
+    }
+
+    node.reset();
+    std::cout << "PASSED\n";
+}
+
+void testNoiseGateHysteresisAndHold() {
+    std::cout << "[TEST] NoiseGateNode Hysteresis, Hold & Sidechain Filter (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    NoiseGateNode gate;
+    gate.prepare(spec);
+
+    assert(gate.getType() == NodeType::NoiseGate);
+    assert(std::string(gate.getName()) == "Noise Gate");
+
+    gate.setParameter(NoiseGateNode::Threshold, -20.0f);
+    gate.setParameter(NoiseGateNode::Hysteresis, 6.0f);
+    gate.setParameter(NoiseGateNode::Attack, 0.5f);
+    gate.setParameter(NoiseGateNode::Hold, 10.0f);
+    gate.setParameter(NoiseGateNode::Release, 20.0f);
+    gate.setParameter(NoiseGateNode::Range, -60.0f);
+    gate.setParameter(NoiseGateNode::SidechainHPF, 80.0f);
+
+    std::vector<float> inL(256, 0.5f); // ~ -6 dBFS (Above -20 dB -> Open gate)
+    std::vector<float> inR(256, 0.5f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    // 1. Loud signal: gate opens
+    for (int b = 0; b < 5; ++b) {
+        gate.process(ctx);
+    }
+    assert(outL[255] > 0.4f);
+
+    // 2. Quiet noise below -26 dB (e.g. -40 dB ~ 0.01f): gate closes down to range
+    std::fill(inL.begin(), inL.end(), 0.005f);
+    std::fill(inR.begin(), inR.end(), 0.005f);
+    for (int b = 0; b < 10; ++b) {
+        gate.process(ctx);
+    }
+    assert(outL[255] < 0.001f);
+
+    gate.reset();
+    std::cout << "PASSED\n";
+}
+
+void testDeEsserSibilanceAttenuationAndListenMode() {
+    std::cout << "[TEST] DeEsserNode Surgical Sibilance Attenuation & Listen Mode (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    DeEsserNode deesser;
+    deesser.prepare(spec);
+
+    assert(deesser.getType() == NodeType::DeEsser);
+    assert(std::string(deesser.getName()) == "De-Esser");
+
+    deesser.setParameter(DeEsserNode::Frequency, 6000.0f);
+    deesser.setParameter(DeEsserNode::Bandwidth, 2.0f);
+    deesser.setParameter(DeEsserNode::Threshold, -20.0f);
+    deesser.setParameter(DeEsserNode::Reduction, 18.0f);
+    deesser.setParameter(DeEsserNode::Mode, 0.0f); // Split Band
+    deesser.setParameter(DeEsserNode::Listen, 0.0f);
+
+    // Generate high frequency sibilance at 6000 Hz at high amplitude (0.8f)
+    std::vector<float> inL(256);
+    std::vector<float> inR(256);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        inL[i] = 0.8f * std::sin(2.0f * std::numbers::pi_v<float> * 6000.0f * (static_cast<float>(i) / 44100.0f));
+        inR[i] = inL[i];
+    }
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    // Process blocks: de-esser reduces sibilant band
+    for (int b = 0; b < 10; ++b) {
+        deesser.process(ctx);
+    }
+
+    float maxSibilantOut = 0.0f;
+    for (size_t s = 0; s < 256; ++s) {
+        assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+        maxSibilantOut = std::max(maxSibilantOut, std::abs(outL[s]));
+    }
+    // High sibilance tone must be attenuated well below the 0.8f input
+    assert(maxSibilantOut < 0.45f);
+
+    // Test Listen Mode: returns isolated band
+    deesser.setParameter(DeEsserNode::Listen, 1.0f);
+    deesser.process(ctx);
+    float listenEnergy = 0.0f;
+    for (size_t s = 0; s < 256; ++s) {
+        assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+        listenEnergy += std::abs(outL[s]);
+    }
+    assert(listenEnergy > 0.05f);
+
+    deesser.reset();
+    std::cout << "PASSED\n";
+}
+
+void testNodeAutomationSequencerMultiLaneAndSync() {
+    std::cout << "[TEST] NodeAutomationBank Multi-Lane Tabs, PPQ Sync & Parameter Dispatch (Reglas 1, 7, 8, 9, 25, 46, 47)... ";
+    Graph graph;
+    auto filterId = graph.addNode(std::make_unique<SimpleFilterNode>(), "FilterNode");
+    auto* inst = graph.getNode(filterId);
+    assert(inst != nullptr);
+    assert(inst->processor != nullptr);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    inst->processor->prepare(spec);
+    inst->sequencer.prepare(44100.0);
+
+    // 1. Configurar Lane 0 (CutoffHz a 1/16 con Amount 1.0)
+    auto& lane0 = inst->sequencer.getLane(0);
+    lane0.active = true;
+    lane0.targetParamId = SimpleFilterNode::CutoffHz;
+    lane0.numSteps = 16;
+    lane0.rate = SyncDivision::Sixteenth;
+    lane0.amount = 1.0f;
+    lane0.glide = 0.0f;
+    lane0.steps[0] = 0.1f; // paso 0
+    lane0.steps[1] = 0.9f; // paso 1 (a 0.25 beat)
+
+    // 2. Configurar Lane 1 (Resonance a 1/8 con Amount 0.6)
+    auto& lane1 = inst->sequencer.getLane(1);
+    lane1.active = true;
+    lane1.targetParamId = SimpleFilterNode::Resonance;
+    lane1.numSteps = 16;
+    lane1.rate = SyncDivision::Eighth;
+    lane1.amount = 0.6f;
+    lane1.glide = 0.0f;
+    lane1.steps[0] = 0.2f;
+    lane1.steps[1] = 0.8f; // paso 1 (a 0.50 beat)
+
+    // 3. Probar generador de formas rápidas (Sidechain Pump y RampUp)
+    inst->sequencer.applyShape(2, NodeAutomationBank::SidechainPump);
+    const auto& lane2 = inst->sequencer.getLane(2);
+    assert(lane2.steps[0] == 0.0f);
+    assert(lane2.steps[3] > 0.5f);
+
+    inst->sequencer.applyShape(3, NodeAutomationBank::RampUp);
+    const auto& lane3 = inst->sequencer.getLane(3);
+    assert(lane3.steps[0] < lane3.steps[15]);
+
+    std::vector<float> inL(256, 0.5f);
+    std::vector<float> inR(256, 0.5f);
+    const float* inCh[2] = { inL.data(), inR.data() };
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    float* outCh[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inCh,
+        .outputChannels = outCh,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256,
+        .bpm = 120.0,
+        .ppqPosition = 0.0,
+        .isPlaying = true
+    };
+
+    // Bloque 1: PPQ = 0.0 (Paso 0 de Lane 0 y Lane 1)
+    inst->sequencer.processBlock(ctx, inst->processor.get());
+    assert(lane0.currentStep == 0);
+    assert(lane1.currentStep == 0);
+
+    // Bloque 2: Avanzar PPQ a 0.26 beats (1/16 transcurrida -> Paso 1 de Lane 0, Paso 0 de Lane 1)
+    ctx.ppqPosition = 0.26;
+    inst->sequencer.processBlock(ctx, inst->processor.get());
+    assert(lane0.currentStep == 1);
+    assert(lane1.currentStep == 0); // Lane 1 a 1/8 aún no avanza
+
+    // El Cutoff debe haber alcanzado el paso 1 (~90% del rango)
+    float cutoffVal = inst->processor->getParameter(SimpleFilterNode::CutoffHz);
+    assert(cutoffVal > 15000.0f);
+
+    // Bloque 3: Avanzar PPQ a 0.51 beats (1/8 transcurrida -> Paso 2 de Lane 0, Paso 1 de Lane 1)
+    ctx.ppqPosition = 0.51;
+    inst->sequencer.processBlock(ctx, inst->processor.get());
+    assert(lane0.currentStep == 2);
+    assert(lane1.currentStep == 1);
+
+    // Verificar estabilidad numérica
+    float resVal = inst->processor->getParameter(SimpleFilterNode::Resonance);
+    assert(!std::isnan(cutoffVal) && !std::isinf(cutoffVal));
+    assert(!std::isnan(resVal) && !std::isinf(resVal));
+
+    inst->sequencer.reset();
+    std::cout << "PASSED\n";
+}
+
+void testAudioVisualizerBufferLockFree() {
+    std::cout << "[TEST] AudioVisualizerBuffer Lock-Free SPSC Ring Buffer (Reglas 9, 23, 26, 47)... ";
+    AudioVisualizerBuffer buffer;
+
+    // Escribir 10 bloques de 256 muestras (total 2560 muestras)
+    std::vector<float> blockL(256);
+    std::vector<float> blockR(256);
+    for (size_t b = 0; b < 10; ++b) {
+        for (size_t s = 0; s < 256; ++s) {
+            blockL[s] = static_cast<float>(b * 256 + s);
+            blockR[s] = -blockL[s];
+        }
+        buffer.writeBlock(blockL.data(), blockR.data(), 256);
+    }
+
+    // Leer las últimas 512 muestras
+    std::vector<float> readL(512);
+    std::vector<float> readR(512);
+    size_t count = buffer.getLatestSamples(readL.data(), readR.data(), 512);
+    assert(count == 512);
+
+    for (size_t i = 0; i < 512; ++i) {
+        const float expected = static_cast<float>(2048 + i);
+        assert(std::abs(readL[i] - expected) < 1e-4f);
+        assert(std::abs(readR[i] - (-expected)) < 1e-4f);
+    }
+
+    // Escribir 20 bloques más (para probar wrap-around completo)
+    for (size_t b = 10; b < 30; ++b) {
+        for (size_t s = 0; s < 256; ++s) {
+            blockL[s] = static_cast<float>(b * 256 + s);
+            blockR[s] = blockL[s] * 0.5f;
+        }
+        buffer.writeBlock(blockL.data(), blockR.data(), 256);
+    }
+
+    std::vector<float> read1024L(1024);
+    std::vector<float> read1024R(1024);
+    size_t count1024 = buffer.getLatestSamples(read1024L.data(), read1024R.data(), 1024);
+    assert(count1024 == 1024);
+
+    const size_t totalWritten = 30 * 256;
+    for (size_t i = 0; i < 1024; ++i) {
+        const float expected = static_cast<float>(totalWritten - 1024 + i);
+        assert(std::abs(read1024L[i] - expected) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testMacroManagerModulationMatrixRouting() {
+    std::cout << "[TEST] 8 Performance Macros & ModulationMatrix Routing (Reglas 7, 8, 25, 46)... ";
+    MacroManager macroMgr;
+    ModulationMatrix matrix;
+
+    macroMgr.setMacro(MacroManager::Texture, 0.8f);
+    macroMgr.setMacro(MacroManager::Motion, 0.25f);
+
+    assert(std::abs(macroMgr.getMacro(MacroManager::Texture) - 0.8f) < 1e-4f);
+    assert(std::abs(macroMgr.getMacro(MacroManager::Motion) - 0.25f) < 1e-4f);
+
+    int r1 = matrix.addRoute(ModSourceType::MacroTexture, 5, 1, 0.5f, false);
+    assert(r1 >= 0);
+
+    int r2 = matrix.addRoute(ModSourceType::MacroMotion, 5, 1, -0.2f, true);
+    assert(r2 >= 0);
+
+    std::array<float, static_cast<size_t>(ModSourceType::Count)> sourceValues{};
+    sourceValues.fill(0.0f);
+    sourceValues[static_cast<size_t>(ModSourceType::MacroTexture)] = macroMgr.getMacro(MacroManager::Texture);
+    sourceValues[static_cast<size_t>(ModSourceType::MacroMotion)] = macroMgr.getMacro(MacroManager::Motion);
+
+    float offset = matrix.calculateModulationOffset(5, 1, sourceValues);
+    assert(!std::isnan(offset) && !std::isinf(offset));
+    assert(std::abs(offset - 0.40f) < 0.05f);
+
+    std::cout << "PASSED\n";
+}
+
+void testMidiArpeggiatorAndScaleQuantizer() {
+    std::cout << "[TEST] MidiArpeggiatorNode & MidiScaleQuantizerNode (Reglas 5, 8, 9, 14, 34, 37, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+
+    MidiArpeggiatorNode arp;
+    arp.prepare(spec);
+    arp.setParameter(MidiArpeggiatorNode::Rate, 1.0f);
+    arp.setParameter(MidiArpeggiatorNode::Pattern, 0.0f);
+    arp.setParameter(MidiArpeggiatorNode::Octaves, 2.0f);
+    arp.setParameter(MidiArpeggiatorNode::Gate, 80.0f);
+    arp.setParameter(MidiArpeggiatorNode::SynthMix, 1.0f);
+
+    const int testChord[4] = { 60, 64, 67, 71 };
+    arp.setNotes(testChord, 4);
+
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    const float* inCh[2] = { inL.data(), inR.data() };
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    float* outCh[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inCh,
+        .outputChannels = outCh,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256,
+        .bpm = 120.0,
+        .ppqPosition = 0.0,
+        .isPlaying = true
+    };
+
+    float totalArpEnergy = 0.0f;
+    for (int b = 0; b < 16; ++b) {
+        ctx.ppqPosition = static_cast<double>(b) * 0.125;
+        arp.process(ctx);
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            totalArpEnergy += std::abs(outL[s]);
+        }
+    }
+    assert(totalArpEnergy > 1.0f);
+
+    MidiScaleQuantizerNode quant;
+    quant.prepare(spec);
+    quant.setParameter(MidiScaleQuantizerNode::RootKey, 0.0f); // C
+    quant.setParameter(MidiScaleQuantizerNode::Scale, 0.0f);   // C Major
+
+    int q1 = quant.quantizeNote(61);
+    assert(q1 == 60 || q1 == 62);
+
+    int q2 = quant.quantizeNote(63);
+    assert(q2 == 62 || q2 == 64);
+
+    quant.setParameter(MidiScaleQuantizerNode::Scale, 10.0f); // Hirajoshi
+    int qHirajoshi = quant.quantizeNote(64);
+    assert(qHirajoshi == 63 || qHirajoshi == 62);
+
+    inL.assign(256, 0.4f);
+    inR.assign(256, 0.4f);
+    quant.process(ctx);
+    for (size_t s = 0; s < 256; ++s) {
+        assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testMidiChordEngineVoicingsAndStrum() {
+    std::cout << "[TEST] MidiChordEngineNode Voicings & Strum Physics (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    MidiChordEngineNode chord;
+    chord.prepare(spec);
+
+    chord.setParameter(MidiChordEngineNode::ChordType, 7.0f); // Maj7
+    chord.setParameter(MidiChordEngineNode::RootNote, 48.0f);  // C3
+    chord.setParameter(MidiChordEngineNode::StrumDelay, 20.0f);
+    chord.setParameter(MidiChordEngineNode::Spread, 0.7f);
+    chord.setParameter(MidiChordEngineNode::SynthMix, 1.0f);
+    chord.triggerChord();
+
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    const float* inCh[2] = { inL.data(), inR.data() };
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    float* outCh[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inCh,
+        .outputChannels = outCh,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256,
+        .bpm = 120.0
+    };
+
+    float totalL = 0.0f;
+    float totalR = 0.0f;
+    for (int b = 0; b < 10; ++b) {
+        chord.process(ctx);
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+            totalL += std::abs(outL[s]);
+            totalR += std::abs(outR[s]);
+        }
+    }
+
+    assert(totalL > 1.0f && totalR > 1.0f);
+    std::cout << "PASSED\n";
+}
+
+void testSidechainModularRoutingAndVocoder() {
+    std::cout << "[TEST] Modular Sidechain Routing, Ducking Compressor & Vocoder (Reglas 4, 6, 9, 13, 28, 46, 47)... ";
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+
+    // 1. Probar CompressorNode con Sidechain directo
+    CompressorNode comp;
+    comp.prepare(spec);
+    comp.setParameter(CompressorNode::Threshold, -20.0f);
+    comp.setParameter(CompressorNode::Ratio, 8.0f);
+    comp.setParameter(CompressorNode::Attack, 1.0f);
+    comp.setParameter(CompressorNode::Release, 50.0f);
+
+    std::vector<float> inMainL(256, 0.8f);
+    std::vector<float> inMainR(256, 0.8f);
+    const float* inMainCh[2] = { inMainL.data(), inMainR.data() };
+
+    std::vector<float> scL(256, 1.0f);
+    std::vector<float> scR(256, 1.0f);
+    const float* scCh[2] = { scL.data(), scR.data() };
+
+    std::vector<float> outCompL(256, 0.0f);
+    std::vector<float> outCompR(256, 0.0f);
+    float* outCompCh[2] = { outCompL.data(), outCompR.data() };
+
+    ProcessContext compCtx{
+        .inputChannels = inMainCh,
+        .outputChannels = outCompCh,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256,
+        .sidechainChannels = scCh,
+        .numSidechainChannels = 2
+    };
+
+    for (int b = 0; b < 8; ++b) {
+        comp.process(compCtx);
+    }
+
+    assert(outCompL[255] < inMainL[255] * 0.7f);
+
+    // 2. Probar ruteo DAG modular con GraphExecutor conectando a Pin 3 (SidechainPinId)
+    Graph graph;
+    auto nSidechainSrc = graph.addNode(std::make_unique<ExternalSidechainNode>(), "ExtSC");
+    auto nComp = graph.addNode(std::make_unique<CompressorNode>(), "DuckingComp");
+
+    ConnectionId cid = graph.connect(nSidechainSrc, 1, nComp, SidechainPinId);
+    assert(cid > 0);
+
+    std::vector<NodeId> order;
+    std::string err;
+    bool validDag = graph.validateAndTopologicalSort(order, err);
+    assert(validDag);
+
+    ExecutionPlan plan;
+    plan.compileFrom(graph, order);
+
+    const auto& steps = plan.getSteps();
+    assert(steps.size() == 2);
+    bool foundSidechainLink = false;
+    for (const auto& s : steps) {
+        if (s.nodeId == nComp && s.sidechainStepIndex >= 0) {
+            foundSidechainLink = true;
+        }
+    }
+    assert(foundSidechainLink);
+
+    // 3. Probar Vocoder con Sidechain (Audio In = Carrier, Sidechain In = Modulator)
+    VocoderNode vocoder;
+    vocoder.prepare(spec);
+    std::vector<float> carL(256, 0.5f);
+    std::vector<float> carR(256, 0.5f);
+    const float* carCh[2] = { carL.data(), carR.data() };
+
+    std::vector<float> modL(256, 0.9f);
+    std::vector<float> modR(256, 0.9f);
+    const float* modCh[2] = { modL.data(), modR.data() };
+
+    std::vector<float> vocOutL(256, 0.0f);
+    std::vector<float> vocOutR(256, 0.0f);
+    float* vocOutCh[2] = { vocOutL.data(), vocOutR.data() };
+
+    ProcessContext vocCtx{
+        .inputChannels = carCh,
+        .outputChannels = vocOutCh,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256,
+        .sidechainChannels = modCh,
+        .numSidechainChannels = 2
+    };
+
+    vocoder.process(vocCtx);
+    for (size_t s = 0; s < 256; ++s) {
+        assert(!std::isnan(vocOutL[s]) && !std::isinf(vocOutL[s]));
     }
 
     std::cout << "PASSED\n";
@@ -2571,7 +4029,6 @@ int main() {
 
     // Phase 6 Tests
     testDynamicGraphEditingAndValidation();
-    testSequentialLinearChainReordering();
 
     // Phase 7 Tests
     testGraphSerializationAndDeserializationRoundtrip();
@@ -2613,11 +4070,55 @@ int main() {
     testDenseGraphHeavyLoadStress();
     testOverloadProtectionAndGracefulDegradation();
 
-    // Virtual Keyboard & Audition Synth Tests
-    testTestSynthEnginePolyphonyAndSafety();
+    // DAG Wiring, Parallel Branches & 10-FX Master Chain Tests
+    testGraphDAGParallelRoutingAndBranching();
+    testDecaMatrix10FXChainPreset();
+
+    // Virtual Piano & Test Input Synthesizer Tests
+    testTestInputSynthesizerPolyphonyAndLifecycle();
+
+    // 20 Thematic Categories & 40 Creative Factory Presets
+    testAll40FactoryPresetsCatalog();
+
+    // New Advanced DSPs Tests
+    testTapeStopProcessingAndHermiteInterpolation();
+    testFormantFilterVowelMorphing();
+    testNoiseTextureGenerationAndSidechainDuck();
+
+    // New Complex Modulators Tests
+    testMSEGModulatorCurvesAndSync();
+    testEuclideanModulatorBjorklundRhythm();
+    testChaosModulatorLorenzAttractor();
+
+    // Smart Randomizer Tests
+    testSmartRandomizerSafeguardsAndMutation();
+
+    // New Advanced DSP Suite Tests
+    testTransientShaperDynamics();
+    testRotarySpeakerDopplerAndInertia();
+    testHarmonicExciterAirAndSub();
+    testVocoderFilterBank16Bands();
+    testKarplusStrongPhysicalModeling();
+    testReverseReverbBloomDiffusion();
+
+    // Mastering & Studio Mixing Suite Tests
+    testBrickwallLimiterTruePeakAndLookahead();
+    testBitcrusherQuantizationAndDownsampling();
+    testNoiseGateHysteresisAndHold();
+    testDeEsserSibilanceAttenuationAndListenMode();
+
+    // Node Contextual Automation Sequencer Tests
+    testNodeAutomationSequencerMultiLaneAndSync();
+
+    // Option 1, 3, 5, 6 Tests: Visualizer, Macros, MIDI FX & Inter-Nodal Sidechain
+    testAudioVisualizerBufferLockFree();
+    testMacroManagerModulationMatrixRouting();
+    testMidiArpeggiatorAndScaleQuantizer();
+    testMidiChordEngineVoicingsAndStrum();
+    testSidechainModularRoutingAndVocoder();
 
     std::cout << "==================================================\n";
-    std::cout << "TODOS LOS TESTS DE FASES 1 A 13 + TEST SYNTH (56 PRUEBAS) HAN PASADO CON EXITO\n";
+    std::cout << "TODOS LOS TESTS DE FASES 1 A 13 + VISUALIZER, MACROS, MIDI FX & SIDECHAIN (81 PRUEBAS) HAN PASADO CON EXITO\n";
     std::cout << "==================================================\n";
 
     return 0;

@@ -18,7 +18,8 @@ public:
     enum Param : ParameterId {
         Semitones = 1,
         FineCents = 2,
-        DryWet = 3
+        WindowSizeMs = 3,
+        DryWet = 4
     };
 
     PitchShifterNode() {
@@ -27,14 +28,17 @@ public:
 
         params_[0] = { Semitones, "Semitones", 0.0f, -24.0f, 24.0f, true };
         params_[1] = { FineCents, "Fine", 0.0f, -100.0f, 100.0f, true };
-        params_[2] = { DryWet, "Mix", 1.0f, 0.0f, 1.0f, true };
+        params_[2] = { WindowSizeMs, "Window (ms)", 45.0f, 10.0f, 120.0f, true };
+        params_[3] = { DryWet, "Mix", 1.0f, 0.0f, 1.0f, true };
     }
 
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
-        windowSizeSamples_ = static_cast<float>(spec.sampleRate * 0.05); // Ventana de 50ms
-        delayL_.prepare(static_cast<size_t>(windowSizeSamples_ * 2.5));
-        delayR_.prepare(static_cast<size_t>(windowSizeSamples_ * 2.5));
+        updateWindowSize();
+        // Reserva para máxima ventana de 120ms
+        const size_t maxDelay = static_cast<size_t>(spec.sampleRate * 0.35);
+        delayL_.prepare(maxDelay);
+        delayR_.prepare(maxDelay);
         reset();
     }
 
@@ -45,6 +49,8 @@ public:
     }
 
     void process(ProcessContext& context) override {
+        updateWindowSize();
+
         const float totalSemitones = targetSemitones_ + targetFine_ * 0.01f;
         const float pitchRatio = std::pow(2.0f, totalSemitones / 12.0f);
         // Velocidad relativa del cabezal de lectura
@@ -95,6 +101,7 @@ public:
         switch (id) {
             case Semitones: targetSemitones_ = std::clamp(value, -24.0f, 24.0f); break;
             case FineCents: targetFine_ = std::clamp(value, -100.0f, 100.0f); break;
+            case WindowSizeMs: targetWindowMs_ = std::clamp(value, 10.0f, 120.0f); break;
             case DryWet: targetMix_ = std::clamp(value, 0.0f, 1.0f); break;
         }
     }
@@ -103,12 +110,13 @@ public:
         switch (id) {
             case Semitones: return targetSemitones_;
             case FineCents: return targetFine_;
+            case WindowSizeMs: return targetWindowMs_;
             case DryWet: return targetMix_;
             default: return 0.0f;
         }
     }
 
-    NodeType getType() const override { return NodeType::Custom; }
+    NodeType getType() const override { return NodeType::PitchShifter; }
     const char* getName() const override { return "Pitch Shifter"; }
     bool supportsTail() const override { return true; }
     uint32_t getTailSamples() const override { return static_cast<uint32_t>(windowSizeSamples_ * 2.0f); }
@@ -117,6 +125,11 @@ public:
     std::span<const ParameterInfo> getParameters() const override { return params_; }
 
 private:
+    void updateWindowSize() noexcept {
+        const double sr = spec_.sampleRate > 0.0 ? spec_.sampleRate : 44100.0;
+        windowSizeSamples_ = std::max(64.0f, static_cast<float>(sr * targetWindowMs_ * 0.001));
+    }
+
     ProcessSpec spec_;
     DelayLine delayL_;
     DelayLine delayR_;
@@ -125,12 +138,13 @@ private:
 
     float targetSemitones_{ 0.0f };
     float targetFine_{ 0.0f };
+    float targetWindowMs_{ 45.0f };
     float targetMix_{ 1.0f };
 
     std::array<PinDescriptor, 2> pins_;
-    std::array<ParameterInfo, 3> params_;
+    std::array<ParameterInfo, 4> params_;
 };
 
-inline AutoRegisterNode<PitchShifterNode> registerPitchShifter(NodeType::Custom, "pitch_shifter", "Pitch");
+inline AutoRegisterNode<PitchShifterNode> registerPitchShifter(NodeType::PitchShifter, "pitch_shifter", "Pitch");
 
 } // namespace audio_graph

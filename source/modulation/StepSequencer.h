@@ -69,7 +69,7 @@ public:
     }
 
     // Procesa una muestra con sincronización rítmica (Regla 37)
-    float processSample(double ppqPosition, bool isHostPlaying, SyncDivision stepRate = SyncDivision::Sixteenth) noexcept {
+    float processSample(double ppqPosition, bool isHostPlaying, SyncDivision /*stepRate*/ = SyncDivision::Sixteenth) noexcept {
         if (isHostPlaying) {
             // Calcular qué step corresponde según el PPQ actual
             const double beatsPerStep = 0.25; // 1/16 por defecto

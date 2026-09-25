@@ -44,8 +44,30 @@ enum class NodeType : uint32_t {
     MidSideEncoder = 24,
     MidSideDecoder = 25,
     SpatialPanner = 26,
+    ParametricEQ = 27,
+    AdvancedDelay = 28,
+    SpectralProcessor = 29,
+    TapeStop = 30,
+    FormantFilter = 31,
+    NoiseTexture = 32,
+    TransientShaper = 33,
+    RotarySpeaker = 34,
+    HarmonicExciter = 35,
+    Vocoder = 36,
+    KarplusStrong = 37,
+    ReverseReverb = 38,
+    BrickwallLimiter = 39,
+    Bitcrusher = 40,
+    NoiseGate = 41,
+    DeEsser = 42,
+    MidiArpeggiator = 43,
+    MidiChordEngine = 44,
+    MidiScaleQuantizer = 45,
+    ExternalSidechain = 46,
     Custom = 100
 };
+
+constexpr PinId SidechainPinId = 3;
 
 enum class PinType : uint8_t {
     AudioInput,
@@ -99,6 +121,10 @@ struct ProcessContext {
     uint32_t numInputChannels{ 0 };
     uint32_t numOutputChannels{ 0 };
     uint32_t numSamples{ 0 };
+
+    // Sidechain modular e inter-nodal (Regla 6)
+    const float* const* sidechainChannels{ nullptr };
+    uint32_t numSidechainChannels{ 0 };
     
     // Información de sincronización del host (Regla 37)
     double bpm{ 120.0 };

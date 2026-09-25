@@ -36,11 +36,11 @@ public:
         pins_[2] = { 3, "Event In", PinType::EventInput, PinDataType::EventMessage };
 
         params_[0] = { Trigger, "Trigger", 0.0f, 0.0f, 1.0f, false };
-        params_[1] = { Density, "Density", 0.0f, 0.0f, 1.0f, true };
+        params_[1] = { Density, "Density", 0.5f, 0.0f, 1.0f, true };
         params_[2] = { Pitch, "Pitch", 1.0f, 0.25f, 4.0f, true };
         params_[3] = { Duration, "Duration (ms)", 150.0f, 10.0f, 1000.0f, true };
         params_[4] = { SourceFollow, "Source Follow", 0.0f, 0.0f, 1.0f, true };
-        params_[5] = { Mix, "Mix", 1.0f, 0.0f, 1.0f, true };
+        params_[5] = { Mix, "Mix", 0.7f, 0.0f, 1.0f, true };
     }
 
     void prepare(const ProcessSpec& spec) override {
@@ -106,7 +106,7 @@ public:
         // 3. Manejo de disparador manual (edge detector)
         if (targetTrigger_ >= 0.5f && lastTrigger_ < 0.5f) {
             const uint64_t durSamples = static_cast<uint64_t>(targetDurationMs_ * 0.001 * spec_.sampleRate);
-            eventManager_.spawnEvent(EventType::Grain, 0.0, durSamples, targetPitch_, 1.0f, 0.0f,
+            eventManager_.spawnEvent(EventType::Grain, static_cast<double>(durSamples), durSamples, targetPitch_, 1.0f, 0.0f,
                                     targetSourceFollow_, SourceDisappearanceMode::Fade);
         }
         lastTrigger_ = targetTrigger_;
@@ -118,7 +118,7 @@ public:
             if (autoTriggerCounter_ >= std::max(256u, triggerInterval)) {
                 autoTriggerCounter_ = 0;
                 const uint64_t durSamples = static_cast<uint64_t>(targetDurationMs_ * 0.001 * spec_.sampleRate);
-                eventManager_.spawnEvent(EventType::Grain, 0.0, durSamples, targetPitch_, 0.85f, 0.0f,
+                eventManager_.spawnEvent(EventType::Grain, static_cast<double>(durSamples), durSamples, targetPitch_, 0.85f, 0.0f,
                                         targetSourceFollow_, SourceDisappearanceMode::Fade);
             }
         }
@@ -207,12 +207,12 @@ private:
 
     float targetTrigger_{ 0.0f };
     float lastTrigger_{ 0.0f };
-    float targetDensity_{ 0.0f };
+    float targetDensity_{ 0.5f };
     float targetPitch_{ 1.0f };
     float targetDurationMs_{ 150.0f };
     float targetSourceFollow_{ 0.0f };
-    float targetMix_{ 1.0f };
-    float currentMix_{ 1.0f };
+    float targetMix_{ 0.7f };
+    float currentMix_{ 0.7f };
 
     uint32_t autoTriggerCounter_{ 0 };
 

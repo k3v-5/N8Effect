@@ -27,7 +27,6 @@ add_executable(N8Effect_Tests
     source/dsp/core/SaturationFunctions.h
     source/dsp/core/FastMath.h
     source/dsp/core/DenormalGuards.h
-    source/dsp/core/TestSynthEngine.h
     source/dsp/core/FFTEngine.h
     source/dsp/core/SpatialPannerCore.h
     source/dsp/processors/CompressorNode.h
@@ -78,6 +77,10 @@ add_executable(N8Effect_Tests
     source/analysis/PitchTracker.h
     source/analysis/SpectralFeatureExtractor.h
     source/analysis/AnalysisEngine.h
+    source/dsp/processors/ExternalSidechainNode.h
+    source/dsp/processors/MidiArpeggiatorNode.h
+    source/dsp/processors/MidiChordEngineNode.h
+    source/dsp/processors/MidiScaleQuantizerNode.h
     source/plugin/DualWorldEngine.h
 )
 
@@ -139,7 +142,6 @@ target_sources(N8Effect PRIVATE
     source/dsp/core/SaturationFunctions.h
     source/dsp/core/FastMath.h
     source/dsp/core/DenormalGuards.h
-    source/dsp/core/TestSynthEngine.h
     source/dsp/core/FFTEngine.h
     source/dsp/core/SpatialPannerCore.h
     source/dsp/processors/CompressorNode.h
@@ -185,13 +187,9 @@ target_sources(N8Effect PRIVATE
     source/gui/WireRenderer.h
     source/gui/ModulationSlider.h
     source/gui/NodeComponent.h
-    source/gui/SequentialSlotComponent.h
-    source/gui/SequentialStripComponent.h
-    source/gui/SequentialStripComponent.cpp
     source/gui/NodePaletteComponent.h
     source/gui/PresetBarComponent.h
     source/gui/PerformanceHudComponent.h
-    source/gui/VirtualKeyboardComponent.h
     source/gui/GraphCanvasComponent.h
     source/gui/GraphCanvasComponent.cpp
     source/preset/GraphSerializer.h
@@ -202,6 +200,13 @@ target_sources(N8Effect PRIVATE
     source/analysis/PitchTracker.h
     source/analysis/SpectralFeatureExtractor.h
     source/analysis/AnalysisEngine.h
+    source/dsp/processors/ExternalSidechainNode.h
+    source/dsp/processors/MidiArpeggiatorNode.h
+    source/dsp/processors/MidiChordEngineNode.h
+    source/dsp/processors/MidiScaleQuantizerNode.h
+    source/gui/AudioVisualizerComponent.h
+    source/gui/AudioVisualizerComponent.cpp
+    source/gui/MacroDashboardComponent.h
     source/plugin/DualWorldEngine.h
     source/plugin/PluginProcessor.h
     source/plugin/PluginProcessor.cpp

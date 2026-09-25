@@ -64,6 +64,10 @@ public:
         return executor_;
     }
 
+    const GraphExecutor& getExecutor() const noexcept {
+        return executor_;
+    }
+
     EventManager& getEventManager() noexcept {
         return eventManager_;
     }

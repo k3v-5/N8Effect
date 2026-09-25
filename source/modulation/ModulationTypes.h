@@ -32,6 +32,13 @@ enum class ModSourceType : uint16_t {
     AnalysisPitch,
     AnalysisCentroid,
     AnalysisFlux,
+    MSEG1,
+    MSEG2,
+    Euclidean1,
+    Euclidean2,
+    ChaosX,
+    ChaosY,
+    ChaosZ,
     Count
 };
 
