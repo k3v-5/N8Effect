@@ -230,6 +230,16 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
         macroDashboard_.setSelectedNodeId(id);
     });
 
+    canvas_.setOnSampleLoaded([this]() {
+        piano_.setTimbreMode(TestTimbreMode::LoadedSample);
+        if (!isPianoVisible_) {
+            isPianoVisible_ = true;
+            presetBar_.setPianoToggleState(true);
+            piano_.setVisible(true);
+            resized();
+        }
+    });
+
     // 5. Teclado de Piano Visual de Prueba para Efectos
     piano_.setOnNoteOn([this](int note, float vel) {
         processorRef.getTestSynthesizer().noteOn(note, vel);

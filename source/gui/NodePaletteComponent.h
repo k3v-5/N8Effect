@@ -280,6 +280,7 @@ private:
             { NodeType::Glitch, "Glitch Slicer", "Stutter & Re-Trigger Buffer", 6, juce::Colour(0xffffd700) },
 
             // SYNTH & MIDI (7)
+            { NodeType::SamplePlayer, "Sample Player", "Polyphonic WAV / Sampler", 7, juce::Colour(0xffa0e000) },
             { NodeType::MidiArpeggiator, "Arpeggiator", "Polyphonic Pattern Gen", 7, juce::Colour(0xffa0e000) },
             { NodeType::MidiChordEngine, "Chord Engine", "Multi-Voicing Harmonies", 7, juce::Colour(0xffa0e000) },
             { NodeType::MidiScaleQuantizer, "Scale Quantizer", "Root & Scale Conformer", 7, juce::Colour(0xffa0e000) },

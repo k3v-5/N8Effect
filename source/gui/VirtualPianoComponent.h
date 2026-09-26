@@ -51,6 +51,7 @@ public:
         timbreBox_.addItem("Sine Tone", 2);
         timbreBox_.addItem("Triangle", 3);
         timbreBox_.addItem("Warm Saw", 4);
+        timbreBox_.addItem("Loaded Sample", 5);
         timbreBox_.setSelectedId(1, juce::dontSendNotification);
         timbreBox_.onChange = [this]() {
             const int id = timbreBox_.getSelectedId();
@@ -58,6 +59,7 @@ public:
             if (id == 2) mode = TestTimbreMode::Sine;
             else if (id == 3) mode = TestTimbreMode::Triangle;
             else if (id == 4) mode = TestTimbreMode::WarmSaw;
+            else if (id == 5) mode = TestTimbreMode::LoadedSample;
             if (onTimbreChanged_) {
                 onTimbreChanged_(mode);
             }
@@ -88,6 +90,15 @@ public:
     void setOnNoteOff(std::function<void(int)> cb) { onNoteOff_ = std::move(cb); }
     void setOnTimbreChanged(std::function<void(TestTimbreMode)> cb) { onTimbreChanged_ = std::move(cb); }
     void setOnCloseRequested(std::function<void()> cb) { onCloseRequested_ = std::move(cb); }
+
+    void setTimbreMode(TestTimbreMode mode) {
+        int id = 1;
+        if (mode == TestTimbreMode::Sine) id = 2;
+        else if (mode == TestTimbreMode::Triangle) id = 3;
+        else if (mode == TestTimbreMode::WarmSaw) id = 4;
+        else if (mode == TestTimbreMode::LoadedSample) id = 5;
+        timbreBox_.setSelectedId(id, juce::dontSendNotification);
+    }
 
     void allNotesOff() {
         for (int note = 0; note < 128; ++note) {

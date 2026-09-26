@@ -71,12 +71,15 @@ public:
     void fileDragExit(const juce::StringArray& files) override;
     void filesDropped(const juce::StringArray& files, int x, int y) override;
 
+    void setOnSampleLoaded(std::function<void()> cb) { onSampleLoaded_ = std::move(cb); }
+
     // Encadenamiento automático Drag & Drop entre nodos
     void handleNodeDragging(NodeId draggedNodeId, juce::Rectangle<int> draggedBounds);
     void handleNodeDropped(NodeId draggedNodeId, juce::Rectangle<int> draggedBounds);
 
 private:
     void loadIRFileIntoNode(NodeId id, const juce::File& file);
+    void loadSampleFileIntoNode(NodeId id, const juce::File& file);
     bool findPinAtCanvasPos(juce::Point<float> pos, NodeId& outNodeId, PinId& outPinId, PinType& outType, PinDataType& outDataType, juce::Point<float>& outCenter, float tolerance = 18.0f) const;
     ConnectionId findConnectionNear(juce::Point<float> pos, float threshold = 8.0f) const;
 
@@ -86,6 +89,7 @@ private:
     NodeId selectedNodeId_{ InvalidNodeId };
     std::unordered_set<NodeId> selectedNodeIds_;
     std::function<void(NodeId)> onNodeSelected_;
+    std::function<void()> onSampleLoaded_;
 
     // Estado de arrastre y snapping de cables
     bool isDraggingWire_{ false };

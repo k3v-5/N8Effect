@@ -10,6 +10,7 @@
 #include "../core/Types.h"
 #include "../graph/AudioProcessorNode.h"
 #include "../dsp/processors/ConvolutionNode.h"
+#include "../dsp/processors/SamplePlayerNode.h"
 #include "ModulationSlider.h"
 #include "WireRenderer.h"
 
@@ -78,6 +79,8 @@ public:
                 return juce::Colour(0xffec4899); // Pink / Magenta for Containers
             case NodeType::Oversampler:
                 return juce::Colour(0xff818cf8); // Indigo for Oversampling HQ
+            case NodeType::SamplePlayer:
+                return juce::Colour(0xffa0e000); // Lime green for Synth & Sampler
             default:
                 return juce::Colour(0xff94a3b8); // Slate silver
         }
@@ -85,6 +88,7 @@ public:
 
     static juce::String getCategorySubtitle(NodeType type) {
         switch (type) {
+            case NodeType::SamplePlayer: return "SAMPLER // WAV PLAYER";
             case NodeType::Filter: return "FILTER // BIQUAD";
             case NodeType::ParametricEQ: return "EQUALIZER // 4-BAND";
             case NodeType::FormantFilter: return "FORMANT // VOWEL";
@@ -235,6 +239,58 @@ public:
                 curvePath.startNewSubPath(x + 2.0f, y + h - 3.0f);
                 curvePath.quadraticTo(x + 8.0f, y + 4.0f, x + w * 0.3f, y + 10.0f);
                 curvePath.quadraticTo(x + w * 0.7f, y + h * 0.6f, x + w - 2.0f, y + h - 3.0f);
+                break;
+            }
+            case NodeType::SamplePlayer: {
+                if (processor != nullptr) {
+                    auto* sp = dynamic_cast<const SamplePlayerNode*>(processor);
+                    if (sp != nullptr) {
+                        const auto& thumb = sp->getThumbnail();
+                        const float stepX = (w - 8.0f) / 63.0f;
+                        const float maxAmpH = (h * 0.44f);
+
+                        // 1. Resplandor de fondo de la forma de onda
+                        juce::Path glowPath;
+                        glowPath.startNewSubPath(x + 4.0f, midY);
+                        for (size_t i = 0; i < 64; ++i) {
+                            float px = x + 4.0f + static_cast<float>(i) * stepX;
+                            float py = midY - std::clamp(thumb[i], 0.0f, 1.0f) * maxAmpH;
+                            glowPath.lineTo(px, py);
+                        }
+                        for (int i = 63; i >= 0; --i) {
+                            float px = x + 4.0f + static_cast<float>(i) * stepX;
+                            float py = midY + std::clamp(thumb[static_cast<size_t>(i)], 0.0f, 1.0f) * maxAmpH;
+                            glowPath.lineTo(px, py);
+                        }
+                        glowPath.closeSubPath();
+
+                        juce::ColourGradient glowGrad(accentColour.withAlpha(isBypassed ? 0.05f : 0.28f), x + 4.0f, midY,
+                                                      accentColour.withAlpha(isBypassed ? 0.01f : 0.04f), x + w - 4.0f, midY, false);
+                        g.setGradientFill(glowGrad);
+                        g.fillPath(glowPath);
+
+                        // 2. Trazo de contorno superior e inferior de la forma de onda
+                        juce::Path waveOutline;
+                        waveOutline.startNewSubPath(x + 4.0f, midY);
+                        for (size_t i = 0; i < 64; ++i) {
+                            float px = x + 4.0f + static_cast<float>(i) * stepX;
+                            float py = midY - std::clamp(thumb[i], 0.0f, 1.0f) * maxAmpH;
+                            waveOutline.lineTo(px, py);
+                        }
+                        waveOutline.startNewSubPath(x + 4.0f, midY);
+                        for (size_t i = 0; i < 64; ++i) {
+                            float px = x + 4.0f + static_cast<float>(i) * stepX;
+                            float py = midY + std::clamp(thumb[i], 0.0f, 1.0f) * maxAmpH;
+                            waveOutline.lineTo(px, py);
+                        }
+                        g.setColour(accentColour.withAlpha(isBypassed ? 0.3f : 0.88f));
+                        g.strokePath(waveOutline, juce::PathStrokeType(1.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+                        return;
+                    }
+                }
+                curvePath.startNewSubPath(x + 4.0f, midY);
+                curvePath.quadraticTo(x + w * 0.25f, y + 6.0f, x + w * 0.5f, midY);
+                curvePath.quadraticTo(x + w * 0.75f, y + h - 6.0f, x + w - 4.0f, midY);
                 break;
             }
             case NodeType::Compressor:

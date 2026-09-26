@@ -51,3 +51,4 @@
 #include "processors/ShimmerReverbNode.h"
 #include "processors/RefractionNode.h"
 #include "processors/SpectralSmearNode.h"
+#include "processors/SamplePlayerNode.h"

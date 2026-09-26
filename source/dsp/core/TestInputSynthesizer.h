@@ -19,7 +19,8 @@ enum class TestTimbreMode : uint8_t {
     ElectricPiano = 0,
     Sine = 1,
     Triangle = 2,
-    WarmSaw = 3
+    WarmSaw = 3,
+    LoadedSample = 4
 };
 
 /**
@@ -32,6 +33,7 @@ struct SynthVoice {
     float velocity{ 0.0f };
     float phase{ 0.0f };
     float phaseIncrement{ 0.0f };
+    double samplePlayhead{ 0.0 };
 
     // Envolvente rápida ADSR musical anti-click
     enum class EnvStage { Off, Attack, Decay, Sustain, Release };
@@ -46,6 +48,7 @@ struct SynthVoice {
         midiNote = note;
         velocity = vel;
         phase = 0.0f;
+        samplePlayhead = 0.0;
 
         // Frecuencia estándar MIDI (A4 = 440 Hz)
         const float freq = 440.0f * std::pow(2.0f, static_cast<float>(note - 69) / 12.0f);
@@ -73,9 +76,10 @@ struct SynthVoice {
         envStage = EnvStage::Off;
         currentLevel = 0.0f;
         midiNote = -1;
+        samplePlayhead = 0.0;
     }
 
-    float getNextSample(TestTimbreMode timbre) noexcept {
+    float getNextSample(TestTimbreMode timbre, const float* sampleData = nullptr, size_t sampleLen = 0, double sampleSr = 44100.0, double hostSr = 44100.0) noexcept {
         if (!active) return 0.0f;
 
         // Avanzar máquina de estados de envolvente
@@ -129,6 +133,25 @@ struct SynthVoice {
                 break;
             }
 
+            case TestTimbreMode::LoadedSample: {
+                if (sampleData != nullptr && sampleLen > 0) {
+                    const size_t idx0 = static_cast<size_t>(samplePlayhead);
+                    const size_t idx1 = (idx0 + 1 < sampleLen) ? (idx0 + 1) : idx0;
+                    const float frac = static_cast<float>(samplePlayhead - static_cast<double>(idx0));
+                    const float s0 = sampleData[idx0];
+                    const float s1 = sampleData[idx1];
+                    osc = s0 + frac * (s1 - s0);
+
+                    const float pitchFactor = std::pow(2.0f, static_cast<float>(midiNote - 60) / 12.0f);
+                    const double rate = pitchFactor * (sampleSr / (hostSr > 0.0 ? hostSr : 44100.0));
+                    samplePlayhead += rate;
+                    if (samplePlayhead >= static_cast<double>(sampleLen)) {
+                        kill();
+                    }
+                }
+                break;
+            }
+
             case TestTimbreMode::ElectricPiano:
             default: {
                 // Tono tipo Rhodes/E-Piano: Fundamental + armónico segundo sutil con calidez sigmoidal
@@ -159,6 +182,12 @@ class TestInputSynthesizer {
 public:
     static constexpr size_t MaxVoices = 8;
 
+    struct LoadedSampleData {
+        std::vector<float> data;
+        size_t length{ 0 };
+        double sampleRate{ 44100.0 };
+    };
+
     TestInputSynthesizer() = default;
 
     void prepare(double sampleRate, int samplesPerBlock) {
@@ -181,6 +210,22 @@ public:
 
     TestTimbreMode getTimbreMode() const noexcept {
         return timbreMode_.load(std::memory_order_relaxed);
+    }
+
+    void setLoadedSample(const float* data, size_t length, double sampleRate) {
+        if (!data || length == 0) return;
+        const size_t active = activeSampleIdx_.load(std::memory_order_relaxed);
+        const size_t inactive = 1 - active;
+        loadedSamples_[inactive].data.assign(data, data + length);
+        loadedSamples_[inactive].length = length;
+        loadedSamples_[inactive].sampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
+        activeSampleIdx_.store(inactive, std::memory_order_release);
+        timbreMode_.store(TestTimbreMode::LoadedSample, std::memory_order_relaxed);
+    }
+
+    bool hasLoadedSample() const noexcept {
+        const size_t active = activeSampleIdx_.load(std::memory_order_relaxed);
+        return loadedSamples_[active].length > 0;
     }
 
     void noteOn(int midiNote, float velocity) noexcept {
@@ -248,12 +293,18 @@ public:
         ScopedDenormalGuard denormalGuard; // Reglas 34 y 47
         const TestTimbreMode timbre = timbreMode_.load(std::memory_order_relaxed);
 
+        const size_t activeIdx = activeSampleIdx_.load(std::memory_order_acquire);
+        const auto& sampleSlot = loadedSamples_[activeIdx];
+        const float* samplePtr = (sampleSlot.length > 0) ? sampleSlot.data.data() : nullptr;
+        const size_t sampleLen = sampleSlot.length;
+        const double sampleSr = sampleSlot.sampleRate;
+
         for (uint32_t s = 0; s < numSamples; ++s) {
             float sumSample = 0.0f;
 
             for (auto& v : voices_) {
                 if (v.active) {
-                    sumSample += v.getNextSample(timbre);
+                    sumSample += v.getNextSample(timbre, samplePtr, sampleLen, sampleSr, sampleRate_);
                 }
             }
 
@@ -282,6 +333,8 @@ private:
     std::array<SynthVoice, MaxVoices> voices_{};
     std::atomic<int> activeVoicesCount_{ 0 };
     std::atomic<TestTimbreMode> timbreMode_{ TestTimbreMode::ElectricPiano };
+    std::array<LoadedSampleData, 2> loadedSamples_{};
+    std::atomic<size_t> activeSampleIdx_{ 0 };
     PreallocatedBuffer internalBuffer_;
 };
 

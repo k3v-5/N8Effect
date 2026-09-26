@@ -70,6 +70,7 @@ enum class NodeType : uint32_t {
     ShimmerReverb = 50,
     Refraction = 51,
     SpectralSmear = 52,
+    SamplePlayer = 53,
     Custom = 100
 };
 

@@ -31,6 +31,7 @@
 #include "../source/dsp/processors/ShimmerReverbNode.h"
 #include "../source/dsp/processors/RefractionNode.h"
 #include "../source/dsp/processors/SpectralSmearNode.h"
+#include "../source/dsp/processors/SamplePlayerNode.h"
 #include "../source/dsp/core/GrainPool.h"
 #include "../source/dsp/core/LinkwitzRileyFilter.h"
 #include "../source/dsp/processors/GranularNode.h"
@@ -6375,6 +6376,126 @@ void testSpectralSmearNode() {
     std::cout << "PASSED\n";
 }
 
+void testSamplePlayerNodeAndLoadedSample() {
+    std::cout << "[TEST] SamplePlayerNode & TestInputSynthesizer LoadedSample (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+
+    // 1. Instanciación vía NodeFactory
+    auto node = NodeFactory::getInstance().create(NodeType::SamplePlayer);
+    assert(node != nullptr);
+    assert(node->getType() == NodeType::SamplePlayer);
+    assert(std::string(node->getName()) == "Sample Player");
+    assert(node->getPins().size() == 3);
+    assert(node->getParameters().size() == 8);
+
+    node->prepare(spec);
+
+    // 2. Probar procesamiento de la muestra predeterminada (Default Chime / Bell)
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256,
+        .sidechainChannels = nullptr,
+        .numSidechainChannels = 0
+    };
+
+    float totalDefaultEnergy = 0.0f;
+    for (int b = 0; b < 20; ++b) {
+        node->process(ctx);
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+            totalDefaultEnergy += std::abs(outL[s]) + std::abs(outR[s]);
+        }
+    }
+    assert(totalDefaultEnergy > 0.05f);
+
+    // 3. Probar carga de muestra personalizada en caliente (loadAudioSample)
+    auto* sp = dynamic_cast<SamplePlayerNode*>(node.get());
+    assert(sp != nullptr);
+
+    constexpr size_t customLen = 1200;
+    std::vector<float> customL(customLen, 0.0f);
+    std::vector<float> customR(customLen, 0.0f);
+    for (size_t i = 0; i < customLen; ++i) {
+        customL[i] = std::sin(2.0f * 3.14159265f * static_cast<float>(i) / 40.0f);
+        customR[i] = customL[i] * 0.9f;
+    }
+
+    sp->loadAudioSample(customL.data(), customR.data(), customLen, 48000.0);
+
+    const auto& thumb = sp->getThumbnail();
+    float maxThumb = 0.0f;
+    for (float v : thumb) {
+        assert(!std::isnan(v) && !std::isinf(v));
+        assert(v >= 0.0f && v <= 1.05f);
+        if (v > maxThumb) maxThumb = v;
+    }
+    assert(maxThumb > 0.5f);
+
+    // 4. Probar transposición de tono y modo One-Shot vs Loop
+    sp->setParameter(SamplePlayerNode::LoopMode, 0.0f); // One-shot
+    sp->setParameter(SamplePlayerNode::PitchSemitones, 12.0f); // +1 octava (doble velocidad)
+    sp->triggerPlayback();
+
+    float oneShotEnergy = 0.0f;
+    for (int b = 0; b < 10; ++b) {
+        node->process(ctx);
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            oneShotEnergy += std::abs(outL[s]);
+        }
+    }
+    assert(oneShotEnergy > 0.05f);
+
+    // Tras terminar el One-Shot a doble velocidad, la señal cesa
+    for (int b = 0; b < 25; ++b) {
+        node->process(ctx);
+    }
+    float postOneShotEnergy = 0.0f;
+    for (size_t s = 0; s < 256; ++s) {
+        postOneShotEnergy += std::abs(outL[s]);
+    }
+    assert(postOneShotEnergy < 1e-4f);
+
+    // 5. Probar TestInputSynthesizer con LoadedSample
+    TestInputSynthesizer testSynth;
+    testSynth.prepare(48000.0, 256);
+    testSynth.setLoadedSample(customL.data(), customLen, 48000.0);
+    assert(testSynth.hasLoadedSample());
+    assert(testSynth.getTimbreMode() == TestTimbreMode::LoadedSample);
+
+    testSynth.noteOn(60, 0.9f);
+    assert(testSynth.hasActiveVoices());
+
+    std::vector<float> synthBufferL(256, 0.0f);
+    std::vector<float> synthBufferR(256, 0.0f);
+    float* synthChannels[2] = { synthBufferL.data(), synthBufferR.data() };
+
+    testSynth.renderAndInject(synthChannels, 2, 256);
+
+    float synthEnergy = 0.0f;
+    for (size_t s = 0; s < 256; ++s) {
+        assert(!std::isnan(synthBufferL[s]) && !std::isinf(synthBufferL[s]));
+        synthEnergy += std::abs(synthBufferL[s]) + std::abs(synthBufferR[s]);
+    }
+    assert(synthEnergy > 0.01f);
+
+    testSynth.noteOff(60);
+    node->reset();
+    std::cout << "PASSED\n";
+}
+
 int main() {
     std::cout << "==================================================\n";
     std::cout << "AUDIO EVENT GRAPH ENGINE - UNIT & INTEGRATION TESTS\n";
@@ -6563,9 +6684,10 @@ int main() {
     testShimmerReverbNode();
     testRefractionNode();
     testSpectralSmearNode();
+    testSamplePlayerNodeAndLoadedSample();
 
     std::cout << "==================================================\n";
-    std::cout << "TODOS LOS TESTS (115 PRUEBAS UNITARIAS) HAN PASADO CON EXITO\n";
+    std::cout << "TODOS LOS TESTS (116 PRUEBAS UNITARIAS) HAN PASADO CON EXITO\n";
     std::cout << "==================================================\n";
 
     return 0;

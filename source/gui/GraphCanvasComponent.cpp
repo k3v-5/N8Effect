@@ -2,6 +2,7 @@
 #include "ThemeManager.h"
 #include "../plugin/PluginProcessor.h"
 #include "../dsp/processors/ConvolutionNode.h"
+#include "../dsp/processors/SamplePlayerNode.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <cmath>
 
@@ -890,46 +891,73 @@ void GraphCanvasComponent::filesDropped(const juce::StringArray& files, int x, i
     juce::File audioFile(files[0]);
     if (!audioFile.existsAsFile()) return;
 
-    // 1. Comprobar si se soltó sobre un nodo Convolution existente
-    NodeComponent* targetComp = nullptr;
+    // 1. Comprobar si se soltó sobre un nodo existente (Convolution o SamplePlayer)
     for (const auto& comp : nodeComponents_) {
-        if (comp && comp->getBounds().contains(x, y) && comp->getNodeType() == NodeType::Convolution) {
-            targetComp = comp.get();
-            break;
+        if (comp && comp->getBounds().contains(x, y)) {
+            if (comp->getNodeType() == NodeType::Convolution) {
+                loadIRFileIntoNode(comp->getNodeId(), audioFile);
+                repaint();
+                return;
+            } else if (comp->getNodeType() == NodeType::SamplePlayer) {
+                loadSampleFileIntoNode(comp->getNodeId(), audioFile);
+                repaint();
+                return;
+            }
         }
     }
 
-    NodeId convNodeId = InvalidNodeId;
-    if (targetComp != nullptr) {
-        convNodeId = targetComp->getNodeId();
-    } else {
-        // 2. Crear automáticamente un nodo ConvolutionNode en la posición donde se soltó
-        const float minX = 15.0f;
-        const float minY = 15.0f;
-        const float maxX = static_cast<float>(std::max(15, getWidth() - 195));
-        const float maxY = static_cast<float>(std::max(15, getHeight() - 120));
+    // 2. Si se soltó en lienzo vacío, desplegar menú contextual para elegir modo de carga
+    juce::PopupMenu menu;
+    menu.addSectionHeader("AUDIO: " + audioFile.getFileName());
+    menu.addItem(1, "🎹 Cargar como Sample Player (Tocar con teclado / MIDI)");
+    menu.addItem(2, "🌌 Cargar como Convolución (Reverb / Respuesta de Impulso)");
 
-        const float spawnX = std::clamp(static_cast<float>(x) - 90.0f, minX, maxX);
-        const float spawnY = std::clamp(static_cast<float>(y) - 30.0f, minY, maxY);
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+        [this, audioFile, x, y](int result) {
+            if (result == 0) return;
 
-        convNodeId = processor_.addNodeToGraph(NodeType::Convolution, spawnX, spawnY);
-        selectedNodeId_ = convNodeId;
-        rebuildFromGraph();
-    }
+            const float minX = 15.0f;
+            const float minY = 15.0f;
+            const float maxX = static_cast<float>(std::max(15, getWidth() - 195));
+            const float maxY = static_cast<float>(std::max(15, getHeight() - 120));
 
-    if (convNodeId != InvalidNodeId) {
-        loadIRFileIntoNode(convNodeId, audioFile);
-    }
+            const float spawnX = std::clamp(static_cast<float>(x) - 90.0f, minX, maxX);
+            const float spawnY = std::clamp(static_cast<float>(y) - 30.0f, minY, maxY);
 
-    repaint();
+            const NodeId prevSelected = selectedNodeId_;
 
-    juce::MessageManager::callAsync([this]() {
-        rebuildFromGraph();
-        repaint();
-        if (auto* p = getParentComponent()) {
-            p->repaint();
-        }
-    });
+            if (result == 1) { // 🎹 Cargar como Sample Player
+                NodeId newId = processor_.addNodeToGraph(NodeType::SamplePlayer, spawnX, spawnY);
+                if (newId != InvalidNodeId) {
+                    loadSampleFileIntoNode(newId, audioFile);
+                    // Auto-conectar con el nodo seleccionado previo si existe para que suene de inmediato
+                    if (prevSelected != InvalidNodeId && prevSelected != newId) {
+                        processor_.connectNodes(prevSelected, 2, newId, 1);
+                    }
+                    selectedNodeId_ = newId;
+                    rebuildFromGraph();
+                }
+            } else if (result == 2) { // 🌌 Cargar como Convolución
+                NodeId newId = processor_.addNodeToGraph(NodeType::Convolution, spawnX, spawnY);
+                if (newId != InvalidNodeId) {
+                    loadIRFileIntoNode(newId, audioFile);
+                    if (prevSelected != InvalidNodeId && prevSelected != newId) {
+                        processor_.connectNodes(prevSelected, 2, newId, 1);
+                    }
+                    selectedNodeId_ = newId;
+                    rebuildFromGraph();
+                }
+            }
+
+            repaint();
+            juce::MessageManager::callAsync([this]() {
+                rebuildFromGraph();
+                repaint();
+                if (auto* p = getParentComponent()) {
+                    p->repaint();
+                }
+            });
+        });
 }
 
 void GraphCanvasComponent::loadIRFileIntoNode(NodeId id, const juce::File& file) {
@@ -975,6 +1003,62 @@ void GraphCanvasComponent::loadIRFileIntoNode(NodeId id, const juce::File& file)
             repaint();
         }
     }
+}
+
+void GraphCanvasComponent::loadSampleFileIntoNode(NodeId id, const juce::File& file) {
+    juce::AudioFormatManager formatMgr;
+    formatMgr.registerBasicFormats();
+
+    std::unique_ptr<juce::AudioFormatReader> reader(formatMgr.createReaderFor(file));
+    if (reader == nullptr) return;
+
+    const double hostSampleRate = processor_.getCurrentSpec().sampleRate > 0.0 ? processor_.getCurrentSpec().sampleRate : 48000.0;
+    const int numChannels = static_cast<int>(reader->numChannels);
+    if (numChannels <= 0) return;
+
+    // Limitar a 30 segundos de muestra para control estricto de memoria (Regla 47)
+    const int maxSamplesToRead = static_cast<int>(std::min<int64_t>(reader->lengthInSamples, static_cast<int64_t>(reader->sampleRate * 30.0)));
+    if (maxSamplesToRead <= 0) return;
+
+    juce::AudioBuffer<float> tempBuffer(numChannels, maxSamplesToRead);
+    reader->read(&tempBuffer, 0, maxSamplesToRead, 0, true, true);
+
+    juce::AudioBuffer<float> resampledBuffer;
+    if (std::abs(reader->sampleRate - hostSampleRate) > 1.0) {
+        const double ratio = reader->sampleRate / hostSampleRate;
+        const int newLength = static_cast<int>(std::round(static_cast<double>(maxSamplesToRead) / ratio));
+        resampledBuffer.setSize(numChannels, newLength);
+
+        juce::LagrangeInterpolator interpolator;
+        for (int ch = 0; ch < numChannels; ++ch) {
+            interpolator.reset();
+            interpolator.process(ratio, tempBuffer.getReadPointer(ch),
+                                 resampledBuffer.getWritePointer(ch), newLength);
+        }
+    } else {
+        resampledBuffer.makeCopyOf(tempBuffer);
+    }
+
+    const float* lData = resampledBuffer.getReadPointer(0);
+    const float* rData = (resampledBuffer.getNumChannels() > 1) ? resampledBuffer.getReadPointer(1) : lData;
+    const size_t totalSamples = static_cast<size_t>(resampledBuffer.getNumSamples());
+
+    auto* nodeInst = processor_.getGraph().getNode(id);
+    if (nodeInst && nodeInst->processor) {
+        if (auto* sp = dynamic_cast<SamplePlayerNode*>(nodeInst->processor.get())) {
+            sp->loadAudioSample(lData, rData, totalSamples, hostSampleRate);
+            repaint();
+        }
+    }
+
+    // Cargar también en el sintetizador polifónico de prueba para disparar con el teclado visual o MIDI
+    processor_.getTestSynthesizer().setLoadedSample(lData, totalSamples, hostSampleRate);
+
+    if (onSampleLoaded_) {
+        onSampleLoaded_();
+    }
+
+    repaint();
 }
 
 // ==============================================================================
