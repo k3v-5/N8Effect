@@ -60,6 +60,12 @@ public:
     PerformanceMetrics getPerformanceMetrics() const noexcept { return dualWorldEngine_.getPerformanceMetrics(); }
     void resetCpuOverload() noexcept { dualWorldEngine_.getCpuProfiler().resetOverload(); }
 
+    void setConcurrencyMode(ConcurrencyMode mode) noexcept;
+    ConcurrencyMode getConcurrencyMode() const noexcept;
+
+    void setEditorActive(bool active) noexcept { editorActive_.store(active, std::memory_order_release); }
+    [[nodiscard]] bool isEditorActive() const noexcept { return editorActive_.load(std::memory_order_relaxed); }
+
     MpeManager& getMpeManager() noexcept { return mpeManager_; }
     MidiMappingManager& getMidiMappingManager() noexcept { return midiMappingManager_; }
 
@@ -92,6 +98,7 @@ public:
 
 private:
     std::atomic<bool> isAudioThreadRunning_{ false };
+    std::atomic<bool> editorActive_{ false };
 
     template <typename Func>
     auto executeSafeGraphMutation(Func&& func) {
@@ -128,6 +135,7 @@ private:
     // Punteros atómicos a parámetros para lectura ultra rápida en el hilo de audio
     std::atomic<float>* dryParam_{ nullptr };
     std::atomic<float>* wetParam_{ nullptr };
+    std::atomic<float>* concurrencyParam_{ nullptr };
     std::array<std::atomic<float>*, 8> macroParams_{ nullptr };
 
     // Orden lineal de efectos para SequentialStripComponent

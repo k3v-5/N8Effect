@@ -230,6 +230,19 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
         macroDashboard_.setSelectedNodeId(id);
     });
 
+    // Reenvío bidireccional transparente de teclado de PC al piano de prueba de efectos
+    canvas_.setOnPianoKeyForward([this](const juce::KeyPress& key) {
+        return piano_.keyPressed(key);
+    });
+
+    canvas_.setOnPianoKeyStateChanged([this](bool isKeyDown) {
+        return piano_.keyStateChanged(isKeyDown);
+    });
+
+    canvas_.setIsPianoVisibleCallback([this]() {
+        return true;
+    });
+
     canvas_.setOnSampleLoaded([this]() {
         piano_.setTimbreMode(TestTimbreMode::LoadedSample);
         if (!isPianoVisible_) {
@@ -329,10 +342,17 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
     openGLContext_->setSwapInterval(1); // Sincronizado a VSync (60 FPS estables)
     openGLContext_->attachTo(*this);
 
+    processorRef.setEditorActive(true);
+    processorRef.getDualWorldEngine().getEventManager().getTelemetryBuffer().reset();
+
+    setWantsKeyboardFocus(true);
+    grabKeyboardFocus();
+
     startTimerHz(30); // 30 fps para actualizaciones de telemetría sin locks
 }
 
 N8AudioProcessorEditor::~N8AudioProcessorEditor() {
+    processorRef.setEditorActive(false);
     if (openGLContext_ != nullptr) {
         openGLContext_->detach();
         openGLContext_.reset();
@@ -340,6 +360,34 @@ N8AudioProcessorEditor::~N8AudioProcessorEditor() {
     ThemeManager::getInstance().removeListener(this);
     stopTimer();
     setLookAndFeel(nullptr);
+}
+
+void N8AudioProcessorEditor::visibilityChanged() {
+    juce::AudioProcessorEditor::visibilityChanged();
+    const bool active = isShowing();
+    processorRef.setEditorActive(active);
+    if (active) {
+        grabKeyboardFocus();
+        processorRef.getDualWorldEngine().getEventManager().getTelemetryBuffer().reset();
+        if (!isTimerRunning()) {
+            startTimerHz(30);
+        }
+    } else {
+        if (isTimerRunning()) {
+            stopTimer();
+        }
+    }
+}
+
+bool N8AudioProcessorEditor::keyPressed(const juce::KeyPress& key) {
+    if (isPresetDrawerVisible_) return false;
+    if (piano_.keyPressed(key)) return true;
+    return canvas_.keyPressed(key);
+}
+
+bool N8AudioProcessorEditor::keyStateChanged(bool isKeyDown) {
+    if (isPresetDrawerVisible_) return false;
+    return piano_.keyStateChanged(isKeyDown);
 }
 
 void N8AudioProcessorEditor::themeChanged(const ThemeColors& /*newTheme*/, ThemePreset /*preset*/) {
@@ -368,6 +416,11 @@ void N8AudioProcessorEditor::parentHierarchyChanged() {
 }
 
 void N8AudioProcessorEditor::timerCallback() {
+    if (!isShowing()) {
+        stopTimer();
+        return;
+    }
+
     // Si algún banner o notificación del wrapper intentara aparecer, asegurar que se mantenga invisible
     if (auto* parent = getParentComponent()) {
         for (int i = 0; i < parent->getNumChildComponents(); ++i) {
@@ -455,7 +508,7 @@ void N8AudioProcessorEditor::resized() {
 
     // 4.1 Visualizador de Audio y Espectrograma si está activo
     if (isVisVisible_) {
-        visualizer_.setBounds(area.removeFromBottom(125));
+        visualizer_.setBounds(area.removeFromBottom(135));
     }
 
     // 4.2 Dashboard de 8 Macros de Rendimiento reacomodado en el dock inferior (minimalista 42px)

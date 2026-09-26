@@ -114,9 +114,9 @@ public:
                 targetGainReduction_ = 1.0f;
             }
 
-            // 5. Suavizado balístico del Gain Reduction (Ataque inmediato sin overshoot, release suave)
+            // 5. Suavizado balístico del Gain Reduction (Ataque progresivo suave dentro de la ventana de lookahead, release suave)
             if (targetGainReduction_ < currentGainReduction_) {
-                currentGainReduction_ = targetGainReduction_; // Ataque instantáneo gracias al lookahead
+                currentGainReduction_ += attackCoeff_ * (targetGainReduction_ - currentGainReduction_);
             } else {
                 currentGainReduction_ += (1.0f - releaseCoeff_) * (targetGainReduction_ - currentGainReduction_);
             }
@@ -132,9 +132,22 @@ public:
             float limitedL = delayedL * currentGainReduction_;
             float limitedR = delayedR * currentGainReduction_;
 
-            // 8. Protección True Peak absoluta (Brickwall Hard Clamp al Ceiling exacto)
-            limitedL = std::clamp(limitedL, -ceilingLinear, ceilingLinear);
-            limitedR = std::clamp(limitedR, -ceilingLinear, ceilingLinear);
+            // 8. Protección True Peak analógica Soft-Knee (Reglas 34 y 35: C1-continuo sin recortes duros ni pops)
+            const float knee = ceilingLinear * 0.92f;
+            const float headroom = ceilingLinear - knee;
+            const float invHeadroom = 1.0f / headroom;
+
+            if (limitedL > knee) {
+                limitedL = knee + headroom * FastMath::fastTanh((limitedL - knee) * invHeadroom);
+            } else if (limitedL < -knee) {
+                limitedL = -knee - headroom * FastMath::fastTanh((-limitedL - knee) * invHeadroom);
+            }
+
+            if (limitedR > knee) {
+                limitedR = knee + headroom * FastMath::fastTanh((limitedR - knee) * invHeadroom);
+            } else if (limitedR < -knee) {
+                limitedR = -knee - headroom * FastMath::fastTanh((-limitedR - knee) * invHeadroom);
+            }
 
             if (outL) outL[s] = limitedL;
             if (outR) outR[s] = limitedR;
@@ -150,7 +163,11 @@ public:
                 updateCoefficients(spec_.sampleRate > 0.0 ? spec_.sampleRate : 44100.0);
                 break;
             }
-            case Lookahead: targetLookahead_ = std::clamp(value, 0.2f, 5.0f); break;
+            case Lookahead: {
+                targetLookahead_ = std::clamp(value, 0.2f, 5.0f);
+                updateCoefficients(spec_.sampleRate > 0.0 ? spec_.sampleRate : 44100.0);
+                break;
+            }
             case AutoMakeup: targetAutoMakeup_ = value >= 0.5f ? 1.0f : 0.0f; break;
         }
     }
@@ -176,6 +193,8 @@ private:
     void updateCoefficients(double sampleRate) noexcept {
         const float relSamples = (targetRelease_ * 0.001f) * static_cast<float>(sampleRate);
         releaseCoeff_ = std::exp(-1.0f / std::max(1.0f, relSamples));
+        const float attSamples = std::max(4.0f, (targetLookahead_ * 0.001f * static_cast<float>(sampleRate)) * 0.5f);
+        attackCoeff_ = 1.0f - std::exp(-1.0f / attSamples);
     }
 
     ProcessSpec spec_;
@@ -184,6 +203,7 @@ private:
     size_t writeIdx_{ 0 };
 
     float releaseCoeff_{ 0.999f };
+    float attackCoeff_{ 0.5f };
     float peakHold_{ 0.0f };
     float currentGainReduction_{ 1.0f };
     float targetGainReduction_{ 1.0f };

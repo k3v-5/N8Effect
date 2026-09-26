@@ -37,30 +37,36 @@ public:
         setColour(juce::ScrollBar::thumbColourId, juce::Colours::white.withAlpha(0.4f));
     }
 
-    void drawButtonBackground(juce::Graphics& g, juce::Button& button, const juce::Colour& /*backgroundColour*/,
+    void drawButtonBackground(juce::Graphics& g, juce::Button& button, const juce::Colour& backgroundColour,
                               bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override {
         auto bounds = button.getLocalBounds().toFloat().reduced(0.5f);
         const float alpha = button.isEnabled() ? 1.0f : 0.35f;
 
-        // Fondo negro o sutil resaltado al interactuar
+        juce::Colour baseColour = backgroundColour;
         if (shouldDrawButtonAsDown) {
-            g.setColour(juce::Colours::white.withAlpha(0.30f));
+            baseColour = baseColour.brighter(0.25f);
         } else if (shouldDrawButtonAsHighlighted) {
-            g.setColour(juce::Colours::white.withAlpha(0.15f));
-        } else {
-            g.setColour(juce::Colour(0xff000000));
+            baseColour = baseColour.brighter(0.12f);
         }
+
+        g.setColour(baseColour.withMultipliedAlpha(alpha));
         g.fillRoundedRectangle(bounds, 3.0f);
 
-        // Contorno blanco nítido
-        g.setColour(juce::Colours::white.withAlpha(alpha));
+        // Contorno
+        juce::Colour outlineColour = button.findColour(juce::ComboBox::outlineColourId, false);
+        if (outlineColour.isTransparent()) {
+            outlineColour = (baseColour.getBrightness() < 0.5f) ? juce::Colours::white.withAlpha(0.25f) : juce::Colours::white.withAlpha(0.6f);
+        }
+        g.setColour(outlineColour.withMultipliedAlpha(alpha));
         g.drawRoundedRectangle(bounds, 3.0f, (shouldDrawButtonAsHighlighted || shouldDrawButtonAsDown) ? 1.5f : 1.0f);
     }
 
     void drawButtonText(juce::Graphics& g, juce::TextButton& button, bool /*isMouseOverButton*/, bool /*isButtonDown*/) override {
-        g.setFont(juce::FontOptions(button.getHeight() > 24 ? 11.5f : 10.0f, juce::Font::bold));
+        const float fontHeight = button.getHeight() > 24 ? 11.5f : (button.getHeight() >= 18 ? 9.5f : 8.5f);
+        g.setFont(juce::FontOptions(fontHeight, juce::Font::bold));
         const float alpha = button.isEnabled() ? 1.0f : 0.35f;
-        g.setColour(juce::Colours::white.withAlpha(alpha));
+        auto textColour = button.findColour(button.getToggleState() ? juce::TextButton::textColourOnId : juce::TextButton::textColourOffId);
+        g.setColour(textColour.withMultipliedAlpha(alpha));
         g.drawText(button.getButtonText(), button.getLocalBounds().reduced(2), juce::Justification::centred, true);
     }
 

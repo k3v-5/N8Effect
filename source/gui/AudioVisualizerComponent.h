@@ -10,6 +10,7 @@
 #include "../event/EventTypes.h"
 #include "../event/EventTelemetryBuffer.h"
 #include "../dsp/processors/GranularNode.h"
+#include "ThemeManager.h"
 
 namespace audio_graph {
 
@@ -20,7 +21,7 @@ class N8AudioProcessor;
  * Modos: Analizador de Espectro FFT, Osciloscopio con Zero-Crossing, Goniometro Lissajous, Split, Radar 3D y Nube Granular.
  * Soporta Master Output y Node Probing interactivo.
  */
-class AudioVisualizerComponent : public juce::Component {
+class AudioVisualizerComponent : public juce::Component, public ThemeManager::Listener {
 public:
     enum class DisplayMode : uint8_t {
         Spectrum = 0,
@@ -53,13 +54,10 @@ public:
         : processor_(processor)
     {
         setOpaque(true);
+        ThemeManager::getInstance().addListener(this);
 
         auto configureButton = [](juce::TextButton& btn, const juce::String& text) {
             btn.setButtonText(text);
-            btn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff121212));
-            btn.setColour(juce::TextButton::buttonOnColourId, juce::Colours::white);
-            btn.setColour(juce::TextButton::textColourOffId, juce::Colours::white.withAlpha(0.85f));
-            btn.setColour(juce::TextButton::textColourOnId, juce::Colours::black);
             btn.setClickingTogglesState(false);
         };
 
@@ -83,11 +81,10 @@ public:
         sourceToggleBtn_.onClick = [this]() {
             if (sourceMode_ == SourceMode::Master) {
                 sourceMode_ = SourceMode::NodeProbe;
-                sourceToggleBtn_.setButtonText("SRC: PROBE");
             } else {
                 sourceMode_ = SourceMode::Master;
-                sourceToggleBtn_.setButtonText("SRC: MASTER");
             }
+            updateButtonStates();
             repaint();
         };
 
@@ -112,6 +109,15 @@ public:
         }
     }
 
+    ~AudioVisualizerComponent() override {
+        ThemeManager::getInstance().removeListener(this);
+    }
+
+    void themeChanged(const ThemeColors& /*newTheme*/, ThemePreset /*preset*/) override {
+        updateButtonStates();
+        repaint();
+    }
+
     void setMode(DisplayMode mode) {
         mode_ = mode;
         updateButtonStates();
@@ -120,7 +126,7 @@ public:
 
     void setSourceMode(SourceMode src) {
         sourceMode_ = src;
-        sourceToggleBtn_.setButtonText(src == SourceMode::Master ? "SRC: MASTER" : "SRC: PROBE");
+        updateButtonStates();
         repaint();
     }
 
@@ -144,26 +150,38 @@ public:
 
 private:
     void updateButtonStates() {
-        specBtn_.setColour(juce::TextButton::buttonColourId, mode_ == DisplayMode::Spectrum ? juce::Colours::white : juce::Colour(0xff141414));
-        specBtn_.setColour(juce::TextButton::textColourOffId, mode_ == DisplayMode::Spectrum ? juce::Colours::black : juce::Colours::white);
+        const auto& theme = ThemeManager::getInstance().getColors();
+        auto setBtnStyle = [&](juce::TextButton& btn, bool active) {
+            if (active) {
+                btn.setColour(juce::TextButton::buttonColourId, theme.accentPrimary);
+                btn.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff000000));
+                btn.setColour(juce::TextButton::buttonOnColourId, theme.accentPrimary.brighter(0.2f));
+                btn.setColour(juce::TextButton::textColourOnId, juce::Colour(0xff000000));
+            } else {
+                btn.setColour(juce::TextButton::buttonColourId, theme.cardSurface);
+                btn.setColour(juce::TextButton::textColourOffId, theme.textSecondary);
+                btn.setColour(juce::TextButton::buttonOnColourId, theme.cardSurface);
+                btn.setColour(juce::TextButton::textColourOnId, theme.textPrimary);
+            }
+        };
 
-        scopeBtn_.setColour(juce::TextButton::buttonColourId, mode_ == DisplayMode::Oscilloscope ? juce::Colours::white : juce::Colour(0xff141414));
-        scopeBtn_.setColour(juce::TextButton::textColourOffId, mode_ == DisplayMode::Oscilloscope ? juce::Colours::black : juce::Colours::white);
+        setBtnStyle(specBtn_, mode_ == DisplayMode::Spectrum);
+        setBtnStyle(scopeBtn_, mode_ == DisplayMode::Oscilloscope);
+        setBtnStyle(gonioBtn_, mode_ == DisplayMode::Goniometer);
+        setBtnStyle(splitBtn_, mode_ == DisplayMode::Split);
+        setBtnStyle(radarBtn_, mode_ == DisplayMode::Radar);
+        setBtnStyle(waterfallBtn_, mode_ == DisplayMode::Waterfall);
+        setBtnStyle(cloudBtn_, mode_ == DisplayMode::GrainCloud);
 
-        gonioBtn_.setColour(juce::TextButton::buttonColourId, mode_ == DisplayMode::Goniometer ? juce::Colours::white : juce::Colour(0xff141414));
-        gonioBtn_.setColour(juce::TextButton::textColourOffId, mode_ == DisplayMode::Goniometer ? juce::Colours::black : juce::Colours::white);
-
-        splitBtn_.setColour(juce::TextButton::buttonColourId, mode_ == DisplayMode::Split ? juce::Colours::white : juce::Colour(0xff141414));
-        splitBtn_.setColour(juce::TextButton::textColourOffId, mode_ == DisplayMode::Split ? juce::Colours::black : juce::Colours::white);
-
-        radarBtn_.setColour(juce::TextButton::buttonColourId, mode_ == DisplayMode::Radar ? juce::Colours::white : juce::Colour(0xff141414));
-        radarBtn_.setColour(juce::TextButton::textColourOffId, mode_ == DisplayMode::Radar ? juce::Colours::black : juce::Colours::white);
-
-        waterfallBtn_.setColour(juce::TextButton::buttonColourId, mode_ == DisplayMode::Waterfall ? juce::Colours::white : juce::Colour(0xff141414));
-        waterfallBtn_.setColour(juce::TextButton::textColourOffId, mode_ == DisplayMode::Waterfall ? juce::Colours::black : juce::Colours::white);
-
-        cloudBtn_.setColour(juce::TextButton::buttonColourId, mode_ == DisplayMode::GrainCloud ? juce::Colours::white : juce::Colour(0xff141414));
-        cloudBtn_.setColour(juce::TextButton::textColourOffId, mode_ == DisplayMode::GrainCloud ? juce::Colours::black : juce::Colours::white);
+        if (sourceMode_ == SourceMode::Master) {
+            sourceToggleBtn_.setButtonText("SRC: MASTER");
+            sourceToggleBtn_.setColour(juce::TextButton::buttonColourId, theme.cardSurface);
+            sourceToggleBtn_.setColour(juce::TextButton::textColourOffId, theme.textPrimary);
+        } else {
+            sourceToggleBtn_.setButtonText("SRC: PROBE");
+            sourceToggleBtn_.setColour(juce::TextButton::buttonColourId, theme.accentSecondary);
+            sourceToggleBtn_.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+        }
     }
 
     void drawSpectrum(juce::Graphics& g, juce::Rectangle<float> bounds);
@@ -220,6 +238,7 @@ private:
     std::array<float, FftSize / 2> smoothedSpectrum_{};
 
     float phaseCorrelation_{ 1.0f };
+    uint64_t lastSamplesWritten_{ 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioVisualizerComponent)
 };

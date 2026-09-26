@@ -99,3 +99,64 @@ Integrity mode: development
 - [ ] Compilación limpia con 0 errores en `N8Effect_Tests`, `N8Effect_Standalone` y `N8Effect_VST3`.
 - [ ] 100% de la suite de pruebas unitarias (`N8Effect_Tests.exe`, 115/115 tests) pasando sin fallos ni excepciones.
 - [ ] Cambios sincronizados de forma segura a `D:\Proyectos\TEST\N8Effect` sin uso de Git.
+
+## Follow-up — 2026-09-26T14:55:05Z
+
+# Teamwork Project: N8Effect Extreme CPU & Multi-Instance Performance Optimization
+
+Optimizar drásticamente el consumo de CPU y la escalabilidad multi-instancia del motor modular N8Effect, erradicando los bucles de espera activa en los hilos de trabajo, optimizando el motor de análisis y permitiendo modos de concurrencia configurables ('Monohilo Bajo CPU', 'Multihilo Inteligente' y 'Multihilo Siempre Activo') en el motor y la interfaz gráfica, garantizando que 2 o más instancias del plugin cargadas con presets de 3-4 efectos consuman un porcentaje de CPU mínimo e imperceptible (<1-2% en reposo) sin alterar la calidad sonora ni la fluidez gráfica.
+
+Working directory: d:/Proyectos/TEST/N8Effect
+Integrity mode: development
+
+## Protocolo Multi-Agente Requerido
+1. **Auditor de Rendimiento & Cuellos de Botella**: Identificar los puntos críticos de consumo de CPU en reposo y bajo carga:
+   - `WorkStealingGraphScheduler.h`: bucle `while(running) { _mm_pause(); }` que mantiene 2 hilos al 100% de CPU por instancia.
+   - `PitchTracker.h` & `AnalysisEngine.h`: cálculo continuo de YIN (1.1M iteraciones por bloque de 256) incluso ante silencio.
+   - `SpectralFeatureExtractor.h`: FFT continua sobre silencio.
+   - `EventManager.h` & `DualWorldEngine.h`: iteraciones de render y borrado de buffers cuando no hay eventos activos.
+2. **Arquitecto / Diseñador**: Formular la estrategia de desacoplo de concurrencia y los 3 modos de ejecución en `GraphExecutor`, `DualWorldEngine` y `EngineConfigModalComponent` bajo la Regla 45.
+3. **Implementador**: Codificar en C++20 con cumplimiento estricto de:
+   - Regla 0: NO Git.
+   - Regla 9 y 47: Cero alocaciones dinámicas en el audio thread, protección anti-denormal y buffers bounded.
+   - Sincronización pasiva de coste cero (C++20 `std::atomic<uint64_t>::wait` / `notify_all` o semáforos) para que los hilos trabajadores consuman 0% CPU al estar ociosos.
+4. **Validador de Audio Safety**: Auditar ausencia de locks en el audio thread, ausencia de fugas y estabilidad numérica.
+5. **Validador de Pruebas y Benchmarking**:
+   - Agregar pruebas unitarias y benchmarks de CPU en `tests/TestMain.cpp` verificando el selector de 3 modos y la aceleración en nanosegundos para 3-4 nodos.
+   - Garantizar el 100% de aprobación de la suite de pruebas unitarias (`N8Effect_Tests.exe`).
+   - Compilación limpia en Release de `N8Effect_Tests`, `N8Effect_Standalone` y `N8Effect_VST3`.
+   - Despliegue del binario VST3 final en `C:\Users\kevin.garrido\AppData\Local\Programs\Common\VST3\`.
+
+## Requirements
+
+### R1. Erradicación del Busy-Wait en el Scheduler Multihilo
+Reemplazar la espera activa (`_mm_pause()` dentro de `while(running)`) en los hilos auxiliares de `WorkStealingGraphScheduler` por un mecanismo de sincronización pasiva de coste cero cuando estén ociosos (mediante C++20 `std::atomic<uint64_t>::wait` / `notify_all` o semáforos libres de contención), de modo que los hilos trabajadores consuman exactamente **0% de CPU** cuando no haya tareas pendientes o entre bloques de audio.
+
+### R2. Modos de Concurrencia Configurables en Motor y GUI
+Implementar 3 modos de concurrencia seleccionables en `GraphExecutor`, `DualWorldEngine` y en el modal `EngineConfigModalComponent`:
+1. **Monohilo (Bajo CPU / Modo Ligero)**: Ejecuta todas las tareas secuencialmente en el hilo de audio dentro de la caché L1, eliminando por completo cualquier sobrecarga de cambio de contexto o sincronización entre núcleos (óptimo para presets de 1 a 4 efectos).
+2. **Multihilo Inteligente (Por Defecto)**: Procesa grafos pequeños ($\le 4$ nodos) en monohilo ultrarrápido y activa dinámicamente el despachador multihilo solo cuando el grafo tenga ramificaciones paralelas densas ($>4$ nodos).
+3. **Multihilo Siempre Activo**: Mantiene el despacho concurrente distribuido en hilos de trabajo para procesamiento intensivo en paralelo.
+
+### R3. Análisis Inteligente bajo Demanda (Zero-Overhead AnalysisEngine)
+Optimizar `AnalysisEngine`, `PitchTracker` y `SpectralFeatureExtractor`:
+- **Gating de Silencio**: Cuando la señal de entrada esté en reposo o silencio (RMS < -70 dB / $0.0003$), omitir el cálculo pesado del algoritmo YIN y de la FFT espectral, reteniendo el snapshot en reposo.
+- **Optimización Algorítmica de YIN**: Vectorizar y reducir el número de operaciones del bucle de diferencia cuadrática ($O(N^2)$) para recortar más del 70% de ciclos computacionales sin pérdida de precisión en la frecuencia fundamental detectada.
+
+### R4. Bypass Inteligente de Eventos y Buffers Ociosos
+En `EventManager` y `DualWorldEngine`, si no existen eventos activos en el `EventPool`, omitir el limpiado redundante de búferes temporales de scratch, iteraciones de lista de eventos y sumas innecesarias al buffer principal.
+
+### R5. Eficiencia de Renderizado y Telemetría Multi-Instancia
+Asegurar que cuando el editor gráfico esté cerrado o no visible en el DAW, los búferes de telemetría SPSC no acumulen sobrecarga y los temporizadores visuales no consuman ciclos de CPU.
+
+## Acceptance Criteria
+
+### Verificación de Rendimiento y Correctitud de Audio
+- [ ] Con 2 o más instancias del plugin cargadas simultáneamente en el DAW o Standalone en reposo (silencio o sin señal), el uso de CPU desciende a prácticamente 0% (eliminación total de hilos girando al 100%).
+- [ ] En presets de 3 a 4 efectos (modo monohilo / inteligente), el tiempo de procesamiento por bloque se mantiene por debajo de 0.05 ms por bloque (headroom masivo en tiempo real).
+- [ ] El selector de los 3 modos de concurrencia está disponible y operativo tanto a nivel de motor como en el modal de configuración de la interfaz (`CONFIG`).
+- [ ] El 100% de la suite de pruebas unitarias (`N8Effect_Tests.exe`, 115+ pruebas) continúa aprobando con 0 errores.
+- [ ] Cero alocaciones dinámicas (`malloc`, `new`, `std::vector::resize`) en el hilo de audio durante todo el ciclo de vida del plugin (cumplimiento estricto de Regla 9 y 47).
+- [ ] Cero regresiones en la calidad del audio, modulación universal, presets de fábrica o visualizadores.
+- [ ] Compilación Release limpia (0 errores) de `N8Effect_Tests`, `N8Effect_Standalone` y `N8Effect_VST3`, con despliegue del binario VST3 actualizado en `C:\Users\kevin.garrido\AppData\Local\Programs\Common\VST3\`.
+

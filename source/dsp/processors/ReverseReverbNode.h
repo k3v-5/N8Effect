@@ -152,7 +152,14 @@ public:
             const float progress = static_cast<float>(grainPhase_) / static_cast<float>(swellWindowSamples);
 
             // Envolvente de hinchamiento inversa (crece de 0 a 1 exponencialmente)
-            const float swellEnv = std::sin(progress * (pi * 0.5f));
+            float swellEnv = std::sin(progress * (pi * 0.5f));
+
+            // Taper suave anti-pop en el último 5% de la ventana para aterrizar en 0.0 antes del wrap
+            if (progress > 0.95f) {
+                const float fadeProgress = (progress - 0.95f) / 0.05f;
+                const float taper = 0.5f * (1.0f + std::cos(fadeProgress * pi));
+                swellEnv *= taper;
+            }
 
             // Índice de lectura invertido en el tiempo
             const size_t reverseOffset = swellWindowSamples - grainPhase_;
@@ -171,9 +178,11 @@ public:
             revL = dampingLPF_[0].processSample(revL);
             revR = dampingLPF_[1].processSample(revR);
 
-            // Realimentar al buffer para colas extendidas
-            ringBuffers_[0][writeIdx_] += revL * feedback;
-            ringBuffers_[1][writeIdx_] += revR * feedback;
+            // Realimentar al buffer para colas extendidas con saturación suave para prevenir blowup
+            const float safeRevL = FastMath::fastTanh(revL * feedback);
+            const float safeRevR = FastMath::fastTanh(revR * feedback);
+            ringBuffers_[0][writeIdx_] += safeRevL;
+            ringBuffers_[1][writeIdx_] += safeRevR;
 
             writeIdx_ = (writeIdx_ + 1) % maxSamples_;
             grainPhase_ = (grainPhase_ + 1) % swellWindowSamples;

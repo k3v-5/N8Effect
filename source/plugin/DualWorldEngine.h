@@ -3,6 +3,7 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <atomic>
 #include "../core/Types.h"
 #include "../core/RealtimePools.h"
 #include "../graph/GraphExecutor.h"
@@ -11,6 +12,7 @@
 #include "../analysis/AnalysisEngine.h"
 #include "../core/CpuProfiler.h"
 #include "../dsp/core/AdaptiveNoiseFloorEstimator.h"
+#include "../dsp/core/FastMath.h"
 
 namespace audio_graph {
 
@@ -61,6 +63,23 @@ public:
 
     float getWetLevel() const noexcept {
         return targetWetLevel_;
+    }
+
+    void setConcurrencyMode(ConcurrencyMode mode) noexcept {
+        executor_.setConcurrencyMode(mode);
+    }
+
+    ConcurrencyMode getConcurrencyMode() const noexcept {
+        return executor_.getConcurrencyMode();
+    }
+
+    void setEditorActive(bool active) noexcept {
+        editorActive_.store(active, std::memory_order_relaxed);
+        eventManager_.setEditorActive(active);
+    }
+
+    [[nodiscard]] bool isEditorActive() const noexcept {
+        return editorActive_.load(std::memory_order_relaxed);
     }
 
     GraphExecutor& getExecutor() noexcept {
@@ -151,14 +170,20 @@ public:
         const int sourceSilenceOverride = noiseFloorEstimator_.isSourceSilent() ? 1 : 0;
 
         // C. Renderizar eventos activos en el eventBuffer sumados al audio entrante (Reglas 1, 2, 17, 27)
-        eventBuffer_.copyFrom(context.inputChannels, context.numInputChannels, numSamples);
-        if (numChannels >= 2) {
-            eventManager_.render(eventBuffer_.getWritePointer(0), eventBuffer_.getWritePointer(1), numSamples, sourceEnergy, sourceSilenceOverride);
+        ProcessContext eventContext = context;
+        const size_t activeEventCount = eventManager_.getActiveEventCount();
+        if (activeEventCount > 0) {
+            eventBuffer_.copyFrom(context.inputChannels, context.numInputChannels, numSamples);
+            if (numChannels >= 2) {
+                eventManager_.render(eventBuffer_.getWritePointer(0), eventBuffer_.getWritePointer(1), numSamples, sourceEnergy, sourceSilenceOverride);
+            }
+            eventContext.inputChannels = eventBuffer_.getArrayOfReadPointers();
+            eventContext.numInputChannels = eventBuffer_.getNumChannels();
         }
         profiler_.endStage(ProfilerStage::Events);
 
         // D. Telemetría reactiva en tiempo real para el Radar 3D (Reglas 9, 23, 26)
-        if (snap.onsetStrength > 0.15f || sourceEnergy > 0.003f) {
+        if (isEditorActive() && (snap.onsetStrength > 0.15f || sourceEnergy > 0.003f)) {
             const float tot = energyL + energyR;
             const float pan = (tot > 1e-5f) ? std::clamp((energyR - energyL) / tot, -1.0f, 1.0f) : 0.0f;
             const float pitchRatio = (snap.pitchNormalized > 0.01f)
@@ -178,10 +203,7 @@ public:
             eventManager_.getTelemetryBuffer().push(tItem);
         }
 
-        // E. El Grafo de Efectos recibe la suma de audio entrante + eventos en eventBuffer
-        ProcessContext eventContext = context;
-        eventContext.inputChannels = eventBuffer_.getArrayOfReadPointers();
-        eventContext.numInputChannels = eventBuffer_.getNumChannels();
+        // E. El Grafo de Efectos recibe la suma de audio entrante + eventos en eventBuffer (o passthrough directo si idle)
 
         // F. Ejecución del grafo de efectos en un buffer aislado sin tocar el Dry
         profiler_.startStage(ProfilerStage::Graph);
@@ -190,6 +212,11 @@ public:
 
         // 3. MASTER STAGE: Mezcla limpia de Dry + Wet con suavizado de volumen (Regla 35)
         const float alpha = 0.005f; // Suavizado anti-click
+        constexpr float kneeStart = 0.85f;              // -1.4 dBFS: Transparencia bit-exact para señales normales
+        constexpr float ceiling = 0.98855f;            // -0.1 dBFS True Peak ceiling para prevenir cualquier clip DAC
+        constexpr float headroom = ceiling - kneeStart; // 0.13855f
+        constexpr float invHeadroom = 1.0f / headroom;
+
         for (uint32_t s = 0; s < numSamples; ++s) {
             currentDryLevel_ += alpha * (targetDryLevel_ - currentDryLevel_);
             currentWetLevel_ += alpha * (targetWetLevel_ - currentWetLevel_);
@@ -199,7 +226,17 @@ public:
                 const float wetSample = wetBuffer_.getReadPointer(ch)[s] * currentWetLevel_;
                 
                 // Mezcla hacia la salida final del plugin
-                finalOutput[ch][s] = drySample + wetSample;
+                float sum = drySample + wetSample;
+
+                // Master True Peak Anti-Clip Protection (Reglas 17, 34, 35 y 47)
+                // C1-continuo: transparente (|sum| <= 0.85), curvatura Padé tanh asintótica a -0.1 dBFS
+                if (sum > kneeStart) {
+                    sum = kneeStart + headroom * FastMath::fastTanh((sum - kneeStart) * invHeadroom);
+                } else if (sum < -kneeStart) {
+                    sum = -kneeStart - headroom * FastMath::fastTanh((-sum - kneeStart) * invHeadroom);
+                }
+
+                finalOutput[ch][s] = sum;
             }
         }
 
@@ -209,6 +246,8 @@ public:
     }
 
 private:
+    std::atomic<bool> editorActive_{ false };
+
     ProcessSpec spec_;
     PreallocatedBuffer dryBuffer_;
     PreallocatedBuffer wetBuffer_;

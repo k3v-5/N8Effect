@@ -17,6 +17,7 @@ N8AudioProcessor::N8AudioProcessor()
 {
     dryParam_ = apvts_.getRawParameterValue("dry_level");
     wetParam_ = apvts_.getRawParameterValue("wet_level");
+    concurrencyParam_ = apvts_.getRawParameterValue("concurrency_mode");
 
     const char* macroIds[8] = {
         "macro_texture", "macro_motion", "macro_space", "macro_color",
@@ -90,6 +91,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout N8AudioProcessor::createPara
             0.5f
         ));
     }
+
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID{ "concurrency_mode", 1 },
+        "Concurrency Mode",
+        juce::StringArray{ "Single-Threaded", "Smart Multi-Threaded", "Always Multi-Threaded" },
+        1 // Default: Smart Multi-Threaded
+    ));
 
     return { params.begin(), params.end() };
 }
@@ -212,6 +220,11 @@ void N8AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Midi
     // Actualizar parámetros atómicos (sin lock)
     if (dryParam_ != nullptr) dualWorldEngine_.setDryLevel(dryParam_->load(std::memory_order_relaxed));
     if (wetParam_ != nullptr) dualWorldEngine_.setWetLevel(wetParam_->load(std::memory_order_relaxed));
+    if (concurrencyParam_ != nullptr) {
+        const int modeIdx = static_cast<int>(concurrencyParam_->load(std::memory_order_relaxed));
+        dualWorldEngine_.setConcurrencyMode(static_cast<ConcurrencyMode>(std::clamp(modeIdx, 0, 2)));
+    }
+    dualWorldEngine_.setEditorActive(isEditorActive());
 
     // Actualizar los 8 Macros globales para la ModulationMatrix (Reglas 7, 8 y 25)
     for (size_t i = 0; i < 8; ++i) {
@@ -258,9 +271,11 @@ void N8AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Midi
     }
 
     // Telemetría para el analizador visual (Reglas 9, 23 y 26)
-    visualizerBuffer_.writeBlock(buffer.getReadPointer(0),
-                                 buffer.getNumChannels() > 1 ? buffer.getReadPointer(1) : buffer.getReadPointer(0),
-                                 static_cast<size_t>(numSamples));
+    if (isEditorActive()) {
+        visualizerBuffer_.writeBlock(buffer.getReadPointer(0),
+                                     buffer.getNumChannels() > 1 ? buffer.getReadPointer(1) : buffer.getReadPointer(0),
+                                     static_cast<size_t>(numSamples));
+    }
 }
 
 juce::AudioProcessorEditor* N8AudioProcessor::createEditor() {
@@ -595,6 +610,17 @@ void N8AudioProcessor::insertNodeInLinearChain(NodeType type, int insertIndex) {
         }
         return false;
     });
+}
+
+void N8AudioProcessor::setConcurrencyMode(ConcurrencyMode mode) noexcept {
+    dualWorldEngine_.setConcurrencyMode(mode);
+    if (auto* p = apvts_.getParameter("concurrency_mode")) {
+        p->setValueNotifyingHost(apvts_.getParameterRange("concurrency_mode").convertTo0to1(static_cast<float>(static_cast<uint8_t>(mode))));
+    }
+}
+
+ConcurrencyMode N8AudioProcessor::getConcurrencyMode() const noexcept {
+    return dualWorldEngine_.getConcurrencyMode();
 }
 
 } // namespace audio_graph

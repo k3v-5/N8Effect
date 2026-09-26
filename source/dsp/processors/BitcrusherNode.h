@@ -103,6 +103,9 @@ public:
                 if (targetDrive_ > 0.1f) {
                     drivenL = FastMath::fastTanh(drivenL);
                     drivenR = FastMath::fastTanh(drivenR);
+                } else {
+                    drivenL = FastMath::fastSoftClip(drivenL);
+                    drivenR = FastMath::fastSoftClip(drivenR);
                 }
 
                 // 3. Cuantización de profundidad de bits

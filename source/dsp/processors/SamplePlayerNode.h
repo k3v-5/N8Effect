@@ -226,12 +226,25 @@ public:
                 envLevel_ = std::min(1.0f, envLevel_ + attackStep);
             }
 
-            // Envolvente de desvanecimiento cerca del final en modo One-Shot
+            // Envolvente de desvanecimiento cerca del final en modo One-Shot o suavizado en modo Bucle
             float finalEnv = envLevel_;
             if (!isLoop) {
                 const double remaining = static_cast<double>(totalSamples) - playheadPos_;
                 if (remaining < static_cast<double>(releaseSamples)) {
                     finalEnv *= static_cast<float>(remaining / static_cast<double>(releaseSamples));
+                }
+            } else {
+                // Suavizado anti-click en los extremos del bucle (Reglas 34 y 35)
+                const double loopFade = std::min(128.0, static_cast<double>(totalSamples) * 0.02);
+                if (loopFade > 1.0) {
+                    if (playheadPos_ < loopFade) {
+                        const float x = static_cast<float>(playheadPos_ / loopFade);
+                        finalEnv *= 0.5f * (1.0f - std::cos(x * std::numbers::pi_v<float>));
+                    } else if (playheadPos_ > (static_cast<double>(totalSamples) - loopFade)) {
+                        const double distToEnd = static_cast<double>(totalSamples) - playheadPos_;
+                        const float x = static_cast<float>(distToEnd / loopFade);
+                        finalEnv *= 0.5f * (1.0f - std::cos(x * std::numbers::pi_v<float>));
+                    }
                 }
             }
 

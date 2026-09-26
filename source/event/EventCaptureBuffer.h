@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cassert>
+#include <cstring>
 #include "../core/Types.h"
 
 namespace audio_graph {
@@ -36,19 +37,36 @@ public:
         writePos_ = 0;
     }
 
-    // Escribe un bloque entrante en el buffer circular (Regla 9: sin malloc)
+    // Escribe un bloque entrante en el buffer circular (Regla 9: sin malloc, optimizado con memcpy en bloques)
     void write(const float* const* input, uint32_t numChannels, uint32_t numSamples) noexcept {
-        if (capacitySamples_ == 0 || input == nullptr) return;
+        if (capacitySamples_ == 0 || input == nullptr || numSamples == 0) return;
 
         const uint32_t channelsToCopy = std::min(numChannels_, numChannels);
-        for (uint32_t s = 0; s < numSamples; ++s) {
+
+        // Si el bloque entrante excede la capacidad del buffer, registrar solo las últimas capacitySamples_
+        if (numSamples >= capacitySamples_) {
+            const size_t skip = numSamples - capacitySamples_;
             for (uint32_t ch = 0; ch < channelsToCopy; ++ch) {
                 if (input[ch] != nullptr) {
-                    channelData_[ch][writePos_] = input[ch][s];
+                    std::memcpy(channelData_[ch].data(), input[ch] + skip, capacitySamples_ * sizeof(float));
                 }
             }
-            writePos_ = (writePos_ + 1) % capacitySamples_;
+            writePos_ = 0;
+            return;
         }
+
+        const size_t firstChunk = std::min(static_cast<size_t>(numSamples), capacitySamples_ - writePos_);
+        const size_t secondChunk = numSamples - firstChunk;
+
+        for (uint32_t ch = 0; ch < channelsToCopy; ++ch) {
+            if (input[ch] != nullptr) {
+                std::memcpy(channelData_[ch].data() + writePos_, input[ch], firstChunk * sizeof(float));
+                if (secondChunk > 0) {
+                    std::memcpy(channelData_[ch].data(), input[ch] + firstChunk, secondChunk * sizeof(float));
+                }
+            }
+        }
+        writePos_ = (writePos_ + numSamples) % capacitySamples_;
     }
 
     // Lee una muestra con interpolación lineal a un offset relativo respecto a la posición de captura

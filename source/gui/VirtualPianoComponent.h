@@ -210,6 +210,7 @@ public:
     }
 
     void mouseDown(const juce::MouseEvent& e) override {
+        grabKeyboardFocus();
         const int note = getNoteAtPosition(e.position);
         if (note >= 0 && note < 128) {
             triggerNoteOn(note, 0.85f);
@@ -251,7 +252,15 @@ public:
         for (int key = 'A'; key <= 'Z'; ++key) {
             if (!juce::KeyPress::isKeyCurrentlyDown(key)) {
                 const int note = mapKeyToMidiNote(key);
-                if (note >= 0 && activeKeys_[note]) {
+                if (note >= 0 && note < 128 && activeKeys_[note]) {
+                    triggerNoteOff(note);
+                }
+            }
+        }
+        for (int key = '0'; key <= '9'; ++key) {
+            if (!juce::KeyPress::isKeyCurrentlyDown(key)) {
+                const int note = mapKeyToMidiNote(key);
+                if (note >= 0 && note < 128 && activeKeys_[note]) {
                     triggerNoteOff(note);
                 }
             }
@@ -317,21 +326,42 @@ private:
     int mapKeyToMidiNote(int keyCode) const noexcept {
         const int baseC = (baseOctave_ + 1) * 12;
         switch (std::toupper(keyCode)) {
-            case 'A': return baseC;      // C
-            case 'W': return baseC + 1;  // C#
-            case 'S': return baseC + 2;  // D
-            case 'E': return baseC + 3;  // D#
-            case 'D': return baseC + 4;  // E
-            case 'F': return baseC + 5;  // F
-            case 'T': return baseC + 6;  // F#
-            case 'G': return baseC + 7;  // G
-            case 'Y': return baseC + 8;  // G#
-            case 'H': return baseC + 9;  // A
-            case 'U': return baseC + 10; // A#
-            case 'J': return baseC + 11; // B
-            case 'K': return baseC + 12; // C (+1)
-            case 'O': return baseC + 13; // C# (+1)
-            case 'L': return baseC + 14; // D (+1)
+            // Octava Central (Fila Media QWERTY)
+            case 'A': return baseC;          // C
+            case 'W': return baseC + 1;      // C#
+            case 'S': return baseC + 2;      // D
+            case 'E': return baseC + 3;      // D#
+            case 'D': return baseC + 4;      // E
+            case 'F': return baseC + 5;      // F
+            case 'T': return baseC + 6;      // F#
+            case 'G': return baseC + 7;      // G
+            case 'Y': return baseC + 8;      // G#
+            case 'H': return baseC + 9;      // A
+            case 'U': return baseC + 10;     // A#
+            case 'J': return baseC + 11;     // B
+            case 'K': return baseC + 12;     // C (+1)
+            case 'O': return baseC + 13;     // C# (+1)
+            case 'L': return baseC + 14;     // D (+1)
+            case 'P': return baseC + 15;     // D# (+1)
+
+            // Octava Inferior (Fila Inferior ZXCVB)
+            case 'Z': return baseC - 12;     // C (-1)
+            case 'X': return baseC - 10;     // D (-1)
+            case 'C': return baseC - 8;      // E (-1)
+            case 'V': return baseC - 7;      // F (-1)
+            case 'B': return baseC - 5;      // G (-1)
+            case 'N': return baseC - 3;      // A (-1)
+            case 'M': return baseC - 1;      // B (-1)
+
+            // Octava Superior (Fila Superior Números / Q)
+            case 'Q': return baseC + 12;     // C (+1)
+            case '2': return baseC + 13;     // C# (+1)
+            case '3': return baseC + 15;     // D# (+1)
+            case 'R': return baseC + 17;     // F (+1)
+            case '5': return baseC + 18;     // F# (+1)
+            case '6': return baseC + 20;     // G# (+1)
+            case '7': return baseC + 22;     // A# (+1)
+            case 'I': return baseC + 23;     // B (+1)
             default: return -1;
         }
     }

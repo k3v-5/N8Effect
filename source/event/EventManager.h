@@ -3,6 +3,7 @@
 #include <vector>
 #include <memory>
 #include <algorithm>
+#include <atomic>
 #include "EventTypes.h"
 #include "EventCaptureBuffer.h"
 #include "EventPool.h"
@@ -118,6 +119,7 @@ public:
     // Renderiza todos los eventos activos hacia los buffers estéreo de salida (Regla 9 y 10, Punto 27)
     void render(float* outL, float* outR, uint32_t numSamples, float sourceLevel, int sourceSilenceOverride = -1) noexcept {
         if (outL == nullptr || outR == nullptr || numSamples == 0) return;
+        if (activeEvents_.empty()) return; // Bypass de reposo: cero eventos activos (Reglas 9, 10, 47)
 
         // Limpieza de buffers temporales
         std::fill_n(scratchL_.data(), numSamples, 0.0f);
@@ -131,17 +133,19 @@ public:
                 event->render(captureBuffer_, scratchL_.data(), scratchR_.data(), numSamples, sourceLevel, sourceSilenceOverride);
 
                 // Telemetría lock-free hacia la GUI (Reglas 9, 23, 26)
-                const auto& attrs = event->getAttributes();
-                EventTelemetryItem tItem;
-                tItem.pan = attrs.pan;
-                tItem.pitchRatio = attrs.pitchRatio;
-                tItem.energy = attrs.energy * attrs.gain;
-                tItem.distance = attrs.distance;
-                tItem.azimuth = attrs.azimuth;
-                tItem.type = attrs.type;
-                tItem.generation = static_cast<uint8_t>(attrs.generation);
-                tItem.isAlive = true;
-                telemetryBuffer_.push(tItem);
+                if (editorActive_.load(std::memory_order_relaxed)) {
+                    const auto& attrs = event->getAttributes();
+                    EventTelemetryItem tItem;
+                    tItem.pan = attrs.pan;
+                    tItem.pitchRatio = attrs.pitchRatio;
+                    tItem.energy = attrs.energy * attrs.gain;
+                    tItem.distance = attrs.distance;
+                    tItem.azimuth = attrs.azimuth;
+                    tItem.type = attrs.type;
+                    tItem.generation = static_cast<uint8_t>(attrs.generation);
+                    tItem.isAlive = true;
+                    telemetryBuffer_.push(tItem);
+                }
 
                 ++i;
             } else {
@@ -161,6 +165,9 @@ public:
         }
     }
 
+    void setEditorActive(bool active) noexcept { editorActive_.store(active, std::memory_order_relaxed); }
+    [[nodiscard]] bool isEditorActive() const noexcept { return editorActive_.load(std::memory_order_relaxed); }
+
     size_t getActiveEventCount() const noexcept { return activeEvents_.size(); }
     size_t getPoolCapacity() const noexcept { return eventPool_.getCapacity(); }
     const EventCaptureBuffer& getCaptureBuffer() const noexcept { return captureBuffer_; }
@@ -171,6 +178,8 @@ private:
     double sampleRate_{ 44100.0 };
     uint32_t maxBlockSize_{ 512 };
     uint32_t nextEventId_{ 1 };
+
+    std::atomic<bool> editorActive_{ false };
 
     EventCaptureBuffer captureBuffer_;
     EventPool eventPool_;

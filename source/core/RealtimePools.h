@@ -158,11 +158,12 @@ public:
     }
 
     void copyFrom(const float* const* src, uint32_t srcChannels, uint32_t numSamples) noexcept {
-        assert(numSamples <= maxSamples_);
-        uint32_t channelsToCopy = std::min(numChannels_, srcChannels);
+        if (src == nullptr || numSamples == 0 || numChannels_ == 0 || srcChannels == 0) return;
+        const uint32_t samplesToCopy = std::min(numSamples, maxSamples_);
+        const uint32_t channelsToCopy = std::min(numChannels_, srcChannels);
         for (uint32_t ch = 0; ch < channelsToCopy; ++ch) {
             if (src[ch] != nullptr) {
-                std::copy_n(src[ch], numSamples, channelPointers_[ch]);
+                std::copy_n(src[ch], samplesToCopy, channelPointers_[ch]);
             }
         }
     }
@@ -357,6 +358,7 @@ public:
         bufferL_.fill(0.0f);
         bufferR_.fill(0.0f);
         writeIndex_.store(0, std::memory_order_relaxed);
+        totalWritten_.store(0, std::memory_order_relaxed);
     }
 
     void writeBlock(const float* l, const float* r, size_t numSamples) noexcept {
@@ -368,6 +370,7 @@ public:
             bufferR_[idx] = (r != nullptr) ? r[i] : l[i];
         }
         writeIndex_.store((writePos + numSamples) & IndexMask, std::memory_order_release);
+        totalWritten_.fetch_add(numSamples, std::memory_order_release);
     }
 
     size_t getLatestSamples(float* destL, float* destR, size_t numSamplesToRead) const noexcept {
@@ -383,10 +386,15 @@ public:
         return count;
     }
 
+    uint64_t getTotalSamplesWritten() const noexcept {
+        return totalWritten_.load(std::memory_order_acquire);
+    }
+
 private:
     std::array<float, Capacity> bufferL_{};
     std::array<float, Capacity> bufferR_{};
     alignas(64) std::atomic<size_t> writeIndex_{ 0 };
+    alignas(64) std::atomic<uint64_t> totalWritten_{ 0 };
 };
 
 } // namespace audio_graph

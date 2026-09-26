@@ -117,6 +117,13 @@ enum class SourceDisappearanceBehavior : uint8_t {
     Freeze
 };
 
+// Modos de concurrencia y despacho de procesamiento (Milestone 1, Reglas 4, 9, 26, 47)
+enum class ConcurrencyMode : uint8_t {
+    SingleThreaded = 0,       // 'Monohilo Bajo CPU'
+    SmartMultithreaded = 1,   // 'Multihilo Inteligente' (default, <=4 single, >4 multi)
+    AlwaysMultithreaded = 2   // 'Multihilo Siempre Activo'
+};
+
 // Especificación de preparación independiente del host (Reglas 14 y 15)
 struct ProcessSpec {
     double sampleRate{ 44100.0 };

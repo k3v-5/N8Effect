@@ -248,7 +248,7 @@ private:
 
     // Estado para arrastre síncrono de nodos (Regla 48)
     bool hasDragged_{ false };
-    juce::Point<float> dragStartCanvasPos_;
+    juce::Point<float> dragStartWorldPos_;
     juce::Point<int> dragStartGroupPos_;
     std::unordered_map<NodeId, juce::Point<int>> initialNodePositions_;
 

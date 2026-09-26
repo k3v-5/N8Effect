@@ -58,8 +58,19 @@ public:
         energy_ = 0.0f;
     }
 
-    void process(const float* input, uint32_t numSamples) noexcept {
+    void process(const float* input, uint32_t numSamples, bool isSilent = false) noexcept {
         if (input == nullptr || numSamples == 0) return;
+
+        if (isSilent) {
+            // Bypass FFT y descriptores en silencio (Reglas 9 y 47)
+            const float alpha = 0.15f;
+            targetFlux_ = 0.0f;
+            flux_ += alpha * (0.0f - flux_);
+            energy_ = 0.0f;
+            flatness_ = 0.0f;
+            // Preservar centroid_ y targetCentroid_ para estabilidad de modulación
+            return;
+        }
 
         for (uint32_t s = 0; s < numSamples; ++s) {
             // Desplazar buffer temporal circular
@@ -86,6 +97,20 @@ public:
 private:
     void computeSpectralDescriptors() noexcept {
         const size_t numBins = fftSize_ / 2 + 1;
+
+        // Comprobación de silencio en el frame temporal (< -70 dBFS / 0.0003 RMS)
+        float frameEnergy = 0.0f;
+        for (size_t i = 0; i < fftSize_; ++i) {
+            frameEnergy += timeBuffer_[i] * timeBuffer_[i];
+        }
+        if (frameEnergy < static_cast<float>(fftSize_) * (0.0003f * 0.0003f)) {
+            targetFlux_ = 0.0f;
+            flux_ = 0.0f;
+            energy_ = 0.0f;
+            flatness_ = 0.0f;
+            // Mantener centroid_ y targetCentroid_
+            return;
+        }
 
         // 1. Aplicar ventana Hann y llenar buffer complejo
         for (size_t i = 0; i < fftSize_; ++i) {

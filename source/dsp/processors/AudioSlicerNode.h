@@ -5,6 +5,7 @@
 #include <cmath>
 #include <algorithm>
 #include <random>
+#include <numbers>
 #include "../../core/Types.h"
 #include "../../graph/AudioProcessorNode.h"
 #include "../../graph/NodeFactory.h"
@@ -258,6 +259,23 @@ public:
 
                 wetL = ringBuffer_[0][p0] + frac * (ringBuffer_[0][p1] - ringBuffer_[0][p0]);
                 wetR = ringBuffer_[1][p0] + frac * (ringBuffer_[1][p1] - ringBuffer_[1][p0]);
+
+                // Anti-click Hann windowing en los bordes del bucle de la rebanada (Reglas 34 y 35)
+                if (sliceIdx >= 0 && sliceLen > 16.0f) {
+                    const double sliceStart = static_cast<double>(sliceIdx) * sliceLen;
+                    const double posInSlice = playheadPos_ - sliceStart;
+                    const double edgeFade = std::min(128.0, static_cast<double>(sliceLen) * 0.05);
+                    float edgeEnv = 1.0f;
+                    if (posInSlice < edgeFade) {
+                        const float x = static_cast<float>(posInSlice / edgeFade);
+                        edgeEnv = 0.5f * (1.0f - std::cos(x * std::numbers::pi_v<float>));
+                    } else if (posInSlice > (static_cast<double>(sliceLen) - edgeFade)) {
+                        const float x = static_cast<float>((static_cast<double>(sliceLen) - posInSlice) / edgeFade);
+                        edgeEnv = 0.5f * (1.0f - std::cos(x * std::numbers::pi_v<float>));
+                    }
+                    wetL *= edgeEnv;
+                    wetR *= edgeEnv;
+                }
             }
 
             // Filtrado del wet

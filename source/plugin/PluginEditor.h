@@ -31,6 +31,9 @@ public:
     void paint(juce::Graphics&) override;
     void resized() override;
     void parentHierarchyChanged() override;
+    void visibilityChanged() override;
+    bool keyPressed(const juce::KeyPress& key) override;
+    bool keyStateChanged(bool isKeyDown) override;
 
     // ThemeManager::Listener
     void themeChanged(const ThemeColors& newTheme, ThemePreset preset) override;

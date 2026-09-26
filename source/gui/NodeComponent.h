@@ -483,6 +483,10 @@ public:
         }
     }
 
+    void setOnCanvasPanRequested(std::function<void(const juce::MouseEvent&, bool, bool)> cb) {
+        onCanvasPanRequested_ = std::move(cb);
+    }
+
     bool hitTestPin(juce::Point<float> canvasPos, PinId& outPinId, PinType& outPinType, PinDataType& outDataType, juce::Point<float>& outCenter, float tolerance = 16.0f) const {
         if (processor_ == nullptr) return false;
         const auto localPos = canvasPos - getPosition().toFloat();
@@ -624,7 +628,24 @@ public:
         }
     }
 
+    bool keyPressed(const juce::KeyPress& /*key*/) override {
+        return false; // Burbujear tecla hacia el grafo y teclado de prueba
+    }
+
+    bool keyStateChanged(bool /*isKeyDown*/) override {
+        return false;
+    }
+
     void mouseDown(const juce::MouseEvent& e) override {
+        // Paneo con botón central, Alt+clic, o Barra espaciadora mientras el ratón está sobre el nodo
+        if (e.mods.isMiddleButtonDown() || e.mods.isAltDown() || juce::KeyPress::isKeyCurrentlyDown(juce::KeyPress::spaceKey)) {
+            isPanningCanvas_ = true;
+            if (onCanvasPanRequested_) {
+                onCanvasPanRequested_(e, true, false);
+            }
+            return;
+        }
+
         // Clic en botón cerrar
         if (e.position.y < 30.0f && e.position.x > getWidth() - 28.0f) {
             if (onNodeDeleted_) {
@@ -676,6 +697,13 @@ public:
     }
 
     void mouseDrag(const juce::MouseEvent& e) override {
+        if (isPanningCanvas_) {
+            if (onCanvasPanRequested_) {
+                onCanvasPanRequested_(e, false, false);
+            }
+            return;
+        }
+
         if (isDraggingPin_) {
             auto canvasPos = (getParentComponent() != nullptr)
                 ? getParentComponent()->getLocalPoint(this, e.position).toFloat()
@@ -687,6 +715,13 @@ public:
         }
 
         dragger_.dragComponent(this, e, nullptr);
+        // Garantizar que los nodos permanezcan en coordenadas positivas accesibles
+        const int clampedX = std::max(15, getX());
+        const int clampedY = std::max(15, getY());
+        if (clampedX != getX() || clampedY != getY()) {
+            setTopLeftPosition(clampedX, clampedY);
+        }
+
         if (onNodeMoved_) {
             onNodeMoved_(id_, static_cast<float>(getX()), static_cast<float>(getY()));
         }
@@ -696,6 +731,14 @@ public:
     }
 
     void mouseUp(const juce::MouseEvent& e) override {
+        if (isPanningCanvas_) {
+            isPanningCanvas_ = false;
+            if (onCanvasPanRequested_) {
+                onCanvasPanRequested_(e, false, true);
+            }
+            return;
+        }
+
         if (isDraggingPin_) {
             isDraggingPin_ = false;
             auto canvasPos = (getParentComponent() != nullptr)
@@ -807,6 +850,8 @@ private:
     std::function<void(NodeId, ParameterId, float)> onModulationDepthChanged_;
     std::function<void(NodeId, ParameterId)> onModulationRouteRemoved_;
     std::function<void(NodeId, bool)> onBypassToggled_;
+    bool isPanningCanvas_{ false };
+    std::function<void(const juce::MouseEvent&, bool, bool)> onCanvasPanRequested_;
 };
 
 } // namespace audio_graph

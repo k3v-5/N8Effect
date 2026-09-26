@@ -108,6 +108,36 @@ else()
 endif()
 
 # ==============================================================================
+# Target de Stress Test y Desafio Adversarial de Concurrencia (Challenger 1)
+# ==============================================================================
+add_executable(N8Effect_ConcurrencyChallenge
+    tests/ConcurrencyChallenger1Test.cpp
+)
+target_include_directories(N8Effect_ConcurrencyChallenge PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/source
+)
+if (MSVC)
+    target_compile_options(N8Effect_ConcurrencyChallenge PRIVATE /W4 /permissive- /utf-8 /arch:AVX2)
+else()
+    target_compile_options(N8Effect_ConcurrencyChallenge PRIVATE -Wall -Wextra -Wpedantic -mavx2 -mfma)
+endif()
+
+# ==============================================================================
+# Target de Stress Test y Desafio Adversarial de Audio & Benchmark (Challenger 2)
+# ==============================================================================
+add_executable(N8Effect_AudioBenchmarkChallenge
+    tests/AudioBenchmarkChallengerTest.cpp
+)
+target_include_directories(N8Effect_AudioBenchmarkChallenge PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/source
+)
+if (MSVC)
+    target_compile_options(N8Effect_AudioBenchmarkChallenge PRIVATE /W4 /permissive- /utf-8 /arch:AVX2 /O2)
+else()
+    target_compile_options(N8Effect_AudioBenchmarkChallenge PRIVATE -Wall -Wextra -Wpedantic -mavx2 -mfma -O3)
+endif()
+
+# ==============================================================================
 # JUCE 8 Framework (Descarga y descompresión directa ZIP sin usar Git - Regla 0)
 # ==============================================================================
 include(FetchContent)

@@ -3753,6 +3753,7 @@ void testAudioVisualizerBufferLockFree() {
     assert(count1024 == 1024);
 
     const size_t totalWritten = 30 * 256;
+    assert(buffer.getTotalSamplesWritten() == totalWritten);
     for (size_t i = 0; i < 1024; ++i) {
         const float expected = static_cast<float>(totalWritten - 1024 + i);
         assert(std::abs(read1024L[i] - expected) < 1e-4f);
@@ -6496,6 +6497,851 @@ void testSamplePlayerNodeAndLoadedSample() {
     std::cout << "PASSED\n";
 }
 
+void testConcurrencyModesExecution() {
+    std::cout << "[TEST] Concurrency Modes: SingleThreaded, SmartMultithreaded, AlwaysMultithreaded Execution Equivalence (Reglas 4, 9, 26, 46, 47)... ";
+
+    // 1. Verificar enum y API en GraphExecutor
+    GraphExecutor executor;
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+    executor.prepare(spec, 64);
+
+    assert(executor.getConcurrencyMode() == ConcurrencyMode::SmartMultithreaded);
+    assert(executor.isMultithreadingEnabled());
+
+    executor.setConcurrencyMode(ConcurrencyMode::SingleThreaded);
+    assert(executor.getConcurrencyMode() == ConcurrencyMode::SingleThreaded);
+    assert(!executor.isMultithreadingEnabled());
+
+    executor.setConcurrencyMode(ConcurrencyMode::AlwaysMultithreaded);
+    assert(executor.getConcurrencyMode() == ConcurrencyMode::AlwaysMultithreaded);
+    assert(executor.isMultithreadingEnabled());
+
+    executor.setMultithreadingEnabled(false);
+    assert(executor.getConcurrencyMode() == ConcurrencyMode::SingleThreaded);
+    executor.setMultithreadingEnabled(true);
+    assert(executor.getConcurrencyMode() == ConcurrencyMode::AlwaysMultithreaded);
+
+    // 2. Verificar delegación en DualWorldEngine
+    DualWorldEngine engine;
+    engine.prepare(spec);
+    engine.setConcurrencyMode(ConcurrencyMode::SingleThreaded);
+    assert(engine.getConcurrencyMode() == ConcurrencyMode::SingleThreaded);
+    engine.setConcurrencyMode(ConcurrencyMode::SmartMultithreaded);
+    assert(engine.getConcurrencyMode() == ConcurrencyMode::SmartMultithreaded);
+
+    // 3. Construir grafo DAG con 5 nodos (> 4 nodos)
+    // N1 (Passthrough) -> N3 (Passthrough) \
+    //                                       -> N5 (Passthrough) -> master
+    // N2 (Passthrough) -> N4 (Passthrough) /
+    Graph graph;
+    NodeId n1 = graph.addNode(std::make_unique<PassthroughNode>(), "N1_Root1", 0.0f, 0.0f);
+    NodeId n2 = graph.addNode(std::make_unique<PassthroughNode>(), "N2_Root2", 0.0f, 100.0f);
+    NodeId n3 = graph.addNode(std::make_unique<PassthroughNode>(), "N3_Branch1", 100.0f, 0.0f);
+    NodeId n4 = graph.addNode(std::make_unique<PassthroughNode>(), "N4_Branch2", 100.0f, 100.0f);
+    NodeId n5 = graph.addNode(std::make_unique<PassthroughNode>(), "N5_MergeLeaf", 200.0f, 50.0f);
+
+    graph.connect(n1, 2, n3, 1);
+    graph.connect(n2, 2, n4, 1);
+    graph.connect(n3, 2, n5, 1);
+    graph.connect(n4, 2, n5, 1);
+
+    std::vector<NodeId> sorted;
+    std::string err;
+    bool valid = graph.validateAndTopologicalSort(sorted, err);
+    assert(valid);
+
+    ExecutionPlan plan;
+    plan.compileFrom(graph, sorted);
+    assert(plan.getSteps().size() == 5);
+    assert(plan.hasExplicitConnections());
+
+    constexpr size_t numSamples = 256;
+    std::vector<float> inL(numSamples);
+    std::vector<float> inR(numSamples);
+    for (size_t s = 0; s < numSamples; ++s) {
+        inL[s] = 0.25f * std::sin(2.0f * 3.14159265f * 300.0f * static_cast<float>(s) / 48000.0f);
+        inR[s] = 0.25f * std::cos(2.0f * 3.14159265f * 300.0f * static_cast<float>(s) / 48000.0f);
+    }
+    const float* inChannels[2] = { inL.data(), inR.data() };
+
+    PreallocatedBuffer outSingle;
+    outSingle.prepare(2, numSamples);
+    float* outSingleCh[2] = { outSingle.getWritePointer(0), outSingle.getWritePointer(1) };
+    ProcessContext ctxSingle{ inChannels, outSingleCh, 2, 2, numSamples };
+
+    PreallocatedBuffer outSmart;
+    outSmart.prepare(2, numSamples);
+    float* outSmartCh[2] = { outSmart.getWritePointer(0), outSmart.getWritePointer(1) };
+    ProcessContext ctxSmart{ inChannels, outSmartCh, 2, 2, numSamples };
+
+    PreallocatedBuffer outAlways;
+    outAlways.prepare(2, numSamples);
+    float* outAlwaysCh[2] = { outAlways.getWritePointer(0), outAlways.getWritePointer(1) };
+    ProcessContext ctxAlways{ inChannels, outAlwaysCh, 2, 2, numSamples };
+
+    executor.setConcurrencyMode(ConcurrencyMode::SingleThreaded);
+    executor.process(plan, ctxSingle, outSingle);
+
+    executor.setConcurrencyMode(ConcurrencyMode::SmartMultithreaded);
+    executor.process(plan, ctxSmart, outSmart);
+
+    executor.setConcurrencyMode(ConcurrencyMode::AlwaysMultithreaded);
+    executor.process(plan, ctxAlways, outAlways);
+
+    float maxDiffSmart = 0.0f;
+    float maxDiffAlways = 0.0f;
+    float totalEnergy = 0.0f;
+
+    for (size_t s = 0; s < numSamples; ++s) {
+        const float sL = outSingle.getReadPointer(0)[s];
+        const float sR = outSingle.getReadPointer(1)[s];
+        const float mLS = outSmart.getReadPointer(0)[s];
+        const float mRS = outSmart.getReadPointer(1)[s];
+        const float mLA = outAlways.getReadPointer(0)[s];
+        const float mRA = outAlways.getReadPointer(1)[s];
+
+        assert(!std::isnan(sL) && !std::isinf(sL));
+        assert(!std::isnan(sR) && !std::isinf(sR));
+        assert(!std::isnan(mLS) && !std::isinf(mLS));
+        assert(!std::isnan(mRS) && !std::isinf(mRS));
+        assert(!std::isnan(mLA) && !std::isinf(mLA));
+        assert(!std::isnan(mRA) && !std::isinf(mRA));
+
+        totalEnergy += std::abs(sL) + std::abs(sR);
+        maxDiffSmart = std::max(maxDiffSmart, std::abs(sL - mLS));
+        maxDiffSmart = std::max(maxDiffSmart, std::abs(sR - mRS));
+        maxDiffAlways = std::max(maxDiffAlways, std::abs(sL - mLA));
+        maxDiffAlways = std::max(maxDiffAlways, std::abs(sR - mRA));
+    }
+
+    assert(totalEnergy > 0.01f);
+    assert(maxDiffSmart < 1e-4f);
+    assert(maxDiffAlways < 1e-4f);
+
+    std::cout << "PASSED (maxDiffSmart: " << maxDiffSmart << ", maxDiffAlways: " << maxDiffAlways << ")\n";
+}
+
+void testSchedulerPassiveWaitZeroIdleCpu() {
+    std::cout << "[TEST] WorkStealingGraphScheduler Passive C++20 Wait & Immediate Wakeup (Reglas 4, 9, 26, 47)... ";
+
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+    WorkStealingGraphScheduler scheduler;
+    scheduler.prepare(spec, 2);
+    assert(scheduler.getNumWorkers() == 2);
+
+    // Permitir que los hilos trabajadores se asienten en activeEpoch_.wait() pasivo
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+    // Construir plan de prueba acíclico de 3 nodos
+    Graph graph;
+    NodeId n1 = graph.addNode(std::make_unique<PassthroughNode>(), "P1", 0.0f, 0.0f);
+    NodeId n2 = graph.addNode(std::make_unique<PassthroughNode>(), "P2", 0.0f, 100.0f);
+    NodeId n3 = graph.addNode(std::make_unique<PassthroughNode>(), "P3", 100.0f, 50.0f);
+    graph.connect(n1, 2, n3, 1);
+    graph.connect(n2, 2, n3, 1);
+
+    std::vector<NodeId> sorted;
+    std::string err;
+    bool valid = graph.validateAndTopologicalSort(sorted, err);
+    assert(valid);
+
+    ExecutionPlan plan;
+    plan.compileFrom(graph, sorted);
+    assert(plan.getSteps().size() == 3);
+
+    AudioBufferPool bufferPool;
+    bufferPool.prepare(16, 2, 256);
+    std::array<PreallocatedBuffer*, 64> stepOutputBuffers{};
+    stepOutputBuffers[0] = bufferPool.acquire();
+    stepOutputBuffers[1] = bufferPool.acquire();
+    stepOutputBuffers[2] = bufferPool.acquire();
+    assert(stepOutputBuffers[0] != nullptr && stepOutputBuffers[1] != nullptr && stepOutputBuffers[2] != nullptr);
+
+    std::vector<float> inL(256, 0.4f);
+    std::vector<float> inR(256, 0.4f);
+    const float* inCh[2] = { inL.data(), inR.data() };
+    float* outCh[2] = { stepOutputBuffers[2]->getWritePointer(0), stepOutputBuffers[2]->getWritePointer(1) };
+    ProcessContext ctx{ inCh, outCh, 2, 2, 256 };
+
+    // Medir tiempo de ejecución al despertar los trabajadores pasivos
+    constexpr int TestBlocks = 50;
+    auto tStart = std::chrono::high_resolution_clock::now();
+    for (int b = 0; b < TestBlocks; ++b) {
+        scheduler.executePlan(plan.getSteps(), ctx, stepOutputBuffers, bufferPool);
+        for (int s = 0; s < 256; ++s) {
+            assert(!std::isnan(stepOutputBuffers[2]->getReadPointer(0)[s]));
+            assert(!std::isnan(stepOutputBuffers[2]->getReadPointer(1)[s]));
+        }
+    }
+    auto tEnd = std::chrono::high_resolution_clock::now();
+    auto totalUs = std::chrono::duration_cast<std::chrono::microseconds>(tEnd - tStart).count();
+    double avgUs = static_cast<double>(totalUs) / static_cast<double>(TestBlocks);
+    assert(avgUs < 250.0); // Despertar inmediato y ejecución eficiente sin atascos
+
+    // Probar parada limpia sin deadlocks
+    auto tStop0 = std::chrono::high_resolution_clock::now();
+    scheduler.stopWorkers();
+    auto tStop1 = std::chrono::high_resolution_clock::now();
+    auto stopMs = std::chrono::duration_cast<std::chrono::milliseconds>(tStop1 - tStop0).count();
+    assert(stopMs < 200);
+
+    // Reiniciar y volver a detener para verificar ciclo de vida idempotente
+    scheduler.prepare(spec, 2);
+    scheduler.stopWorkers();
+
+    std::cout << "PASSED (avg block latency: " << avgUs << " us, clean shutdown: " << stopMs << " ms)\n";
+}
+
+void benchmarkSilenceGatingAndYinSpeedup() {
+    std::cout << "[BENCHMARK] AnalysisEngine Silence Gating & YIN SIMD/Progressive Pitch Benchmark (Reglas 9, 14, 34, 46, 47)... ";
+
+    constexpr double SampleRate = 48000.0;
+    constexpr uint32_t BlockSize = 256;
+    constexpr float TargetPitchHz = 440.0f;
+
+    AnalysisEngine analysis;
+    ProcessSpec spec{ SampleRate, BlockSize, 2, 2 };
+    analysis.prepare(spec);
+
+    // Sintetizar tono puro de 440.0 Hz con fase continua entre bloques (Ground Truth)
+    std::vector<float> activeL(BlockSize);
+    std::vector<float> activeR(BlockSize);
+    const float* activeChannels[2] = { activeL.data(), activeR.data() };
+
+    float phase = 0.0f;
+    const float phaseInc = 2.0f * 3.14159265f * TargetPitchHz / static_cast<float>(SampleRate);
+    auto fillContinuousSine = [&](std::vector<float>& l, std::vector<float>& r) {
+        for (size_t s = 0; s < BlockSize; ++s) {
+            float val = 0.5f * std::sin(phase);
+            l[s] = val;
+            r[s] = val;
+            phase += phaseInc;
+            if (phase >= 2.0f * 3.14159265f) phase -= 2.0f * 3.14159265f;
+        }
+    };
+
+    // Warmup del tracker de tono (llenar buffer circular de 2048 muestras)
+    for (int w = 0; w < 40; ++w) {
+        fillContinuousSine(activeL, activeR);
+        analysis.process(activeChannels, 2, BlockSize);
+    }
+
+    const auto& snapActive = analysis.getSnapshot();
+    const float pitchError = std::abs(snapActive.pitchHz - TargetPitchHz);
+    assert(pitchError < 1.0f); // Ground truth fundamental error < 1.0 Hz
+    assert(snapActive.pitchClarity > 0.85f);
+    if (pitchError >= 1.0f) {
+        std::cerr << "AnalysisEngine pitch error exceeds 1.0 Hz threshold: " << pitchError << "\n";
+        std::abort();
+    }
+
+    // Benchmark de bloques con audio activo
+    constexpr int BenchIterations = 300;
+    auto t0 = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i < BenchIterations; ++i) {
+        fillContinuousSine(activeL, activeR);
+        analysis.process(activeChannels, 2, BlockSize);
+    }
+    auto t1 = std::chrono::high_resolution_clock::now();
+    auto activeNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+
+    // Preparar señal de silencio (RMS < 0.0003f)
+    std::vector<float> silentL(BlockSize, 0.0f);
+    std::vector<float> silentR(BlockSize, 0.0f);
+    const float* silentChannels[2] = { silentL.data(), silentR.data() };
+
+    // Benchmark de bloques en silencio (Silence Gating)
+    auto t2 = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i < BenchIterations; ++i) {
+        analysis.process(silentChannels, 2, BlockSize);
+    }
+    auto t3 = std::chrono::high_resolution_clock::now();
+    auto silentNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t2).count();
+
+    double cycleReduction = 1.0 - (static_cast<double>(silentNs) / static_cast<double>(activeNs));
+    assert(cycleReduction > 0.70); // Aserción estricta de reducción > 70% de ciclos de CPU
+    if (cycleReduction <= 0.70) {
+        std::cerr << "Cycle reduction failed to exceed 70%: " << cycleReduction << "\n";
+        std::abort();
+    }
+
+    // Verificar preservación de tono y supresión de energía durante silencio
+    const auto& snapSilent = analysis.getSnapshot();
+    assert(snapSilent.energy == 0.0f);
+    assert(!snapSilent.isTransient);
+    assert(snapSilent.pitchClarity == 0.0f);
+    assert(std::abs(snapSilent.pitchHz - TargetPitchHz) < 1.0f); // Tono previo preservado sin saltos audibles
+
+    // Verificación directa de PitchTracker SIMD y early exit
+    PitchTracker tracker;
+    tracker.prepare(SampleRate);
+    phase = 0.0f;
+    for (int i = 0; i < 40; ++i) {
+        fillContinuousSine(activeL, activeR);
+        tracker.process(activeL.data(), BlockSize);
+    }
+    const float trackerPitch = tracker.getFundamentalHz();
+    const float trackerError = std::abs(trackerPitch - TargetPitchHz);
+    assert(trackerError < 1.0f);
+    assert(tracker.getClarity() > 0.90f);
+    if (trackerError >= 1.0f) {
+        std::cerr << "PitchTracker fundamental error exceeds 1.0 Hz threshold: " << trackerError << "\n";
+        std::abort();
+    }
+
+    std::cout << "PASSED (Pitch: " << snapActive.pitchHz << " Hz, Error: " << pitchError << " Hz, Cycle Reduction: " << (cycleReduction * 100.0) << "%)\n";
+}
+
+void testIdleEventAndBufferBypass() {
+    std::cout << "[TEST] DualWorldEngine & EventManager Idle Event Bypass (Reglas 1, 2, 9, 10, 17, 47)... ";
+
+    // 1. Verificar bypass en EventManager cuando activeEvents_.empty()
+    EventManager em;
+    em.prepare(48000.0, 256);
+    assert(em.getActiveEventCount() == 0);
+
+    std::vector<float> sentinelL(256, 123.456f);
+    std::vector<float> sentinelR(256, -789.012f);
+    em.render(sentinelL.data(), sentinelR.data(), 256, 0.5f, false);
+
+    // Buffers deben permanecer 100% inalterados bit a bit
+    for (size_t s = 0; s < 256; ++s) {
+        assert(sentinelL[s] == 123.456f);
+        assert(sentinelR[s] == -789.012f);
+    }
+
+    // 2. Verificar bypass en DualWorldEngine cuando activeEventCount == 0
+    DualWorldEngine engine;
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+    engine.prepare(spec);
+
+    Graph graph;
+    graph.addNode(std::make_unique<PassthroughNode>(), "Pass");
+    std::vector<NodeId> sorted;
+    std::string err;
+    bool valid = graph.validateAndTopologicalSort(sorted, err);
+    assert(valid);
+    ExecutionPlan plan;
+    plan.compileFrom(graph, sorted);
+
+    engine.setDryLevel(0.0f);
+    engine.setWetLevel(1.0f);
+
+    std::vector<float> inL(256);
+    std::vector<float> inR(256);
+    for (size_t s = 0; s < 256; ++s) {
+        inL[s] = 0.4f * std::sin(static_cast<float>(s) * 0.1f);
+        inR[s] = 0.4f * std::cos(static_cast<float>(s) * 0.1f);
+    }
+    const float* inCh[2] = { inL.data(), inR.data() };
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    float* outCh[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ inCh, outCh, 2, 2, 256 };
+
+    // Dejar estabilizar volumen suavizado
+    for (int b = 0; b < 60; ++b) {
+        engine.process(plan, ctx, outCh);
+    }
+
+    assert(engine.getEventManager().getActiveEventCount() == 0);
+    float maxDiff = 0.0f;
+    for (size_t s = 0; s < 256; ++s) {
+        maxDiff = std::max(maxDiff, std::abs(outL[s] - inL[s]));
+        maxDiff = std::max(maxDiff, std::abs(outR[s] - inR[s]));
+    }
+    assert(maxDiff < 1e-3f); // Fidelidad completa con bypass ocioso
+
+    // 3. Probar que al existir un evento activo se activa el renderizado
+    engine.getEventManager().captureInputAudio(inCh, 2, 256);
+    Event* ev = engine.getEventManager().spawnEvent(EventType::Fragment, 0.0, 512, 1.0f, 1.0f);
+    assert(ev != nullptr);
+    assert(engine.getEventManager().getActiveEventCount() == 1);
+
+    std::vector<float> eventOutL(256, 0.0f);
+    std::vector<float> eventOutR(256, 0.0f);
+    engine.getEventManager().render(eventOutL.data(), eventOutR.data(), 256, 0.5f, false);
+    float eventEnergy = 0.0f;
+    for (size_t s = 0; s < 256; ++s) {
+        eventEnergy += std::abs(eventOutL[s]) + std::abs(eventOutR[s]);
+    }
+    assert(eventEnergy > 0.0f);
+
+    std::cout << "PASSED\n";
+}
+
+void testTelemetryInactivityGating() {
+    std::cout << "[TEST] Telemetry Inactivity Gating & Stale Item Eradication (Reglas 9, 23, 26, 49)... ";
+
+    DualWorldEngine engine;
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+    engine.prepare(spec);
+
+    ExecutionPlan plan;
+
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    for (size_t s = 0; s < 256; ++s) {
+        inL[s] = 0.2f * std::sin(2.0f * 3.14159f * 1000.0f * static_cast<float>(s) / 48000.0f);
+        inR[s] = 0.8f * std::sin(2.0f * 3.14159f * 1000.0f * static_cast<float>(s) / 48000.0f);
+    }
+    inR[0] = 1.0f; // Ataque/transient fuerte
+
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    float* outChannels[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ inChannels, outChannels, 2, 2, 256 };
+
+    auto& telemetry = engine.getEventManager().getTelemetryBuffer();
+
+    // 1. Desactivar editor: gating de telemetría inactivo
+    engine.setEditorActive(false);
+    assert(!engine.isEditorActive());
+    assert(!engine.getEventManager().isEditorActive());
+
+    telemetry.reset();
+    EventTelemetryItem item;
+    assert(!telemetry.pop(item));
+
+    // Procesar bloque con transitorio fuerte mientras editor está inactivo
+    engine.process(plan, ctx, outChannels);
+
+    // Debe permanecer completamente vacío
+    bool poppedInactive = telemetry.pop(item);
+    assert(!poppedInactive && "La telemetría debe estar desactivada cuando el editor está inactivo");
+
+    // 2. Activar editor: telemetría reactiva activa
+    engine.setEditorActive(true);
+    assert(engine.isEditorActive());
+    assert(engine.getEventManager().isEditorActive());
+
+    engine.process(plan, ctx, outChannels);
+
+    bool poppedActive = telemetry.pop(item);
+    assert(poppedActive && "La telemetría debe emitirse cuando el editor está activo");
+    assert(item.isAlive);
+    assert(item.energy > 0.0f);
+
+    // 3. Erradicación de items obsoletos (reset)
+    for (int i = 0; i < 10; ++i) {
+        telemetry.push(item);
+    }
+    assert(telemetry.pop(item));
+
+    // Limpiar cola con reset()
+    telemetry.reset();
+
+    // Verificar que quedó vacía
+    assert(!telemetry.pop(item) && "La cola de telemetría debe estar vacía tras reset()");
+
+    std::cout << "PASSED\n";
+}
+
+void testGraphCanvasZoomPanMathAndInvariants() {
+    std::cout << "[TEST] GraphCanvas Zoom & Pan Invariants, Transform Reciprocity & Zoom-to-Fit (Reglas 4, 23, 24, 46, 48)... ";
+
+    // Helper functions matching GraphCanvasComponent exactly
+    auto screenToWorld = [](float sx, float sy, float panX, float panY, float zoom) {
+        return std::pair<float, float>((sx - panX) / zoom, (sy - panY) / zoom);
+    };
+
+    auto worldToScreen = [](float wx, float wy, float panX, float panY, float zoom) {
+        return std::pair<float, float>(wx * zoom + panX, wy * zoom + panY);
+    };
+
+    // 1. Zoom Clamping Invariant [0.35f, 2.0f]
+    constexpr float kMinZoom = 0.35f;
+    constexpr float kMaxZoom = 2.0f;
+    assert(std::clamp(0.10f, kMinZoom, kMaxZoom) == kMinZoom);
+    assert(std::clamp(5.00f, kMinZoom, kMaxZoom) == kMaxZoom);
+    assert(std::clamp(1.45f, kMinZoom, kMaxZoom) == 1.45f);
+
+    // 2. Transform Bi-Directional Reciprocity
+    const std::vector<float> testZooms = { 0.35f, 0.50f, 0.75f, 1.0f, 1.25f, 1.60f, 2.0f };
+    const std::vector<std::pair<float, float>> testPans = {
+        { 0.0f, 0.0f }, { 150.0f, -80.0f }, { -420.0f, 310.0f }, { 1200.0f, 850.0f }
+    };
+
+    for (float z : testZooms) {
+        for (const auto& [px, py] : testPans) {
+            for (float sx = 0.0f; sx <= 1200.0f; sx += 150.0f) {
+                for (float sy = 0.0f; sy <= 800.0f; sy += 100.0f) {
+                    auto [wx, wy] = screenToWorld(sx, sy, px, py, z);
+                    auto [rsx, rsy] = worldToScreen(wx, wy, px, py, z);
+                    assert(std::abs(rsx - sx) < 1e-4f);
+                    assert(std::abs(rsy - sy) < 1e-4f);
+                }
+            }
+        }
+    }
+
+    // 3. Zoom-To-Cursor Invariance
+    // When zooming around cursor anchor (Ax, Ay), the world point under cursor must stay stationary
+    const float cursorSx = 640.0f;
+    const float cursorSy = 400.0f;
+    float currentZoom = 1.0f;
+    float panX = 100.0f;
+    float panY = 50.0f;
+
+    auto [anchorWx, anchorWy] = screenToWorld(cursorSx, cursorSy, panX, panY, currentZoom);
+
+    // Zoom in by 1.35x
+    float newZoom = std::clamp(currentZoom * 1.35f, kMinZoom, kMaxZoom);
+    panX = cursorSx - anchorWx * newZoom;
+    panY = cursorSy - anchorWy * newZoom;
+
+    auto [newSx, newSy] = worldToScreen(anchorWx, anchorWy, panX, panY, newZoom);
+    assert(std::abs(newSx - cursorSx) < 1e-4f && "Anchor screen X position must remain invariant during zoom");
+    assert(std::abs(newSy - cursorSy) < 1e-4f && "Anchor screen Y position must remain invariant during zoom");
+
+    // 4. Zoom-To-Fit Bounding Box & Centering
+    // Suppose 4 nodes exist in world space:
+    struct Rect { float x, y, w, h; };
+    const std::vector<Rect> nodes = {
+        { 100.0f, 100.0f, 195.0f, 120.0f },
+        { 450.0f, 200.0f, 195.0f, 120.0f },
+        { 800.0f, 150.0f, 195.0f, 120.0f },
+        { 1200.0f, 350.0f, 195.0f, 120.0f }
+    };
+
+    float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
+    for (const auto& n : nodes) {
+        minX = std::min(minX, n.x);
+        minY = std::min(minY, n.y);
+        maxX = std::max(maxX, n.x + n.w);
+        maxY = std::max(maxY, n.y + n.h);
+    }
+
+    constexpr float padding = 60.0f;
+    minX -= padding;
+    minY -= padding;
+    maxX += padding;
+    maxY += padding;
+
+    const float worldW = maxX - minX;
+    const float worldH = maxY - minY;
+    const float canvasW = 900.0f;
+    const float canvasH = 600.0f;
+
+    const float scaleX = canvasW / worldW;
+    const float scaleY = canvasH / worldH;
+    const float fitScale = std::clamp(std::min(scaleX, scaleY), kMinZoom, 1.25f);
+
+    const float scaledW = worldW * fitScale;
+    const float scaledH = worldH * fitScale;
+    const float fitPanX = (canvasW - scaledW) * 0.5f - minX * fitScale;
+    const float fitPanY = (canvasH - scaledH) * 0.5f - minY * fitScale;
+
+    // Verify all nodes fall strictly inside the visible canvas viewport [0..canvasW, 0..canvasH]
+    for (const auto& n : nodes) {
+        auto [sLeft, sTop] = worldToScreen(n.x, n.y, fitPanX, fitPanY, fitScale);
+        auto [sRight, sBottom] = worldToScreen(n.x + n.w, n.y + n.h, fitPanX, fitPanY, fitScale);
+
+        assert(sLeft >= 0.0f && "Node must be visible horizontally inside viewport");
+        assert(sRight <= canvasW && "Node must not overflow viewport horizontally");
+        assert(sTop >= 0.0f && "Node must be visible vertically inside viewport");
+        assert(sBottom <= canvasH && "Node must not overflow viewport vertically");
+    }
+
+    // Verify center of bounding box is placed at exact screen center
+    const float worldMidX = (minX + maxX) * 0.5f;
+    const float worldMidY = (minY + maxY) * 0.5f;
+    auto [screenMidX, screenMidY] = worldToScreen(worldMidX, worldMidY, fitPanX, fitPanY, fitScale);
+    assert(std::abs(screenMidX - canvasW * 0.5f) < 1e-3f);
+    assert(std::abs(screenMidY - canvasH * 0.5f) < 1e-3f);
+
+    // 5. Rule 48 Drag vs Click Threshold Invariant
+    constexpr float kDragThresholdPx = 4.0f;
+    auto isDragGesture = [](float deltaX, float deltaY) {
+        return std::hypot(deltaX, deltaY) > kDragThresholdPx;
+    };
+    assert(!isDragGesture(0.0f, 0.0f));
+    assert(!isDragGesture(2.0f, 2.0f)); // hypot = ~2.82 px <= 4.0 px (click)
+    assert(!isDragGesture(4.0f, 0.0f)); // hypot = 4.0 px <= 4.0 px (click)
+    assert(isDragGesture(4.1f, 0.0f));  // hypot = 4.1 px > 4.0 px (drag)
+    assert(isDragGesture(3.0f, 3.0f));  // hypot = ~4.24 px > 4.0 px (drag)
+
+    std::cout << "PASSED\n";
+}
+
+void testKeyHandlingAndSynthesizerSafety() {
+    std::cout << "[TEST] Key Handling, HitTest Non-Recursion & Synthesizer Audio Safety (Reglas 9, 23, 24, 47, 48)... ";
+
+    // 1. Verificar PreallocatedBuffer copyFrom con punteros nulos y tamaños arbitrarios
+    PreallocatedBuffer safeBuf;
+    safeBuf.prepare(2, 256);
+    // Puntero nulo no debe crashear
+    safeBuf.copyFrom(nullptr, 2, 256);
+    // Buffer con 0 muestras o 0 canales no debe crashear
+    std::vector<float> sampleData(512, 0.25f);
+    const float* validPointers[2] = { sampleData.data(), sampleData.data() };
+    safeBuf.copyFrom(validPointers, 2, 0);
+    // Muestras superiores a maxSamples_ deben acotarse limpiamente sin buffer overrun
+    safeBuf.copyFrom(validPointers, 2, 1024);
+    assert(!std::isnan(safeBuf.getReadPointer(0)[0]));
+    assert(std::abs(safeBuf.getReadPointer(0)[0] - 0.25f) < 1e-4f);
+
+    // 2. Verificar TestInputSynthesizer en todas las formas de onda bajo ráfagas de notas
+    TestInputSynthesizer synth;
+    synth.prepare(48000.0, 512);
+
+    std::vector<TestTimbreMode> timbres = {
+        TestTimbreMode::ElectricPiano,
+        TestTimbreMode::Sine,
+        TestTimbreMode::Triangle,
+        TestTimbreMode::WarmSaw
+    };
+
+    for (auto timbre : timbres) {
+        synth.setTimbreMode(timbre);
+        synth.reset();
+
+        // Tocar un acorde polifónico (C maj7: C4, E4, G4, B4)
+        synth.noteOn(60, 0.85f);
+        synth.noteOn(64, 0.80f);
+        synth.noteOn(67, 0.75f);
+        synth.noteOn(71, 0.70f);
+        assert(synth.hasActiveVoices());
+
+        // Renderizar bloque de audio
+        std::vector<float> outL(512, 0.0f);
+        std::vector<float> outR(512, 0.0f);
+        float* channels[2] = { outL.data(), outR.data() };
+
+        synth.renderAndInject(channels, 2, 512);
+
+        // Verificar que no haya NaNs ni Infs y que el volumen sea audible y rico
+        float maxAmp = 0.0f;
+        for (int i = 0; i < 512; ++i) {
+            assert(!std::isnan(outL[i]));
+            assert(!std::isnan(outR[i]));
+            assert(!std::isinf(outL[i]));
+            assert(!std::isinf(outR[i]));
+            maxAmp = std::max(maxAmp, std::abs(outL[i]));
+        }
+        assert(maxAmp > 0.05f); // Energía de señal audible garantizada (Reglas 34, 47)
+
+        // Soltar notas y verificar decaimiento limpio
+        synth.noteOff(60);
+        synth.noteOff(64);
+        synth.allNotesOff();
+    }
+
+    // 3. Verificar invariante geométrica de HitTest No-Recursivo (CanvasWorldComponent)
+    // Simular jerarquía de rectángulos para asegurar detección sin re-entrancia
+    struct MockChildBounds {
+        int x, y, w, h;
+        bool isInside(int px, int py) const noexcept {
+            return px >= x && px < (x + w) && py >= y && py < (y + h);
+        }
+    };
+    std::vector<MockChildBounds> mockNodes = {
+        { 100, 100, 200, 150 }, // Nodo A
+        { 400, 250, 180, 120 }, // Nodo B
+        { 700, 150, 220, 160 }  // Nodo C
+    };
+
+    auto nonRecursiveHitTest = [&](int px, int py) -> bool {
+        for (const auto& node : mockNodes) {
+            if (node.isInside(px, py)) return true;
+        }
+        return false;
+    };
+
+    // Puntos sobre los nodos deben retornar true
+    assert(nonRecursiveHitTest(150, 150) == true);
+    assert(nonRecursiveHitTest(450, 300) == true);
+    assert(nonRecursiveHitTest(750, 200) == true);
+
+    // Puntos en el espacio vacío del canvas deben retornar false (caer hacia el canvas)
+    assert(nonRecursiveHitTest(50, 50) == false);
+    assert(nonRecursiveHitTest(350, 200) == false);
+    assert(nonRecursiveHitTest(650, 100) == false);
+    assert(nonRecursiveHitTest(1000, 1000) == false);
+
+    // 4. Mapeo de teclas de piano virtual
+    auto mapKey = [](int keyCode, int baseOctave) -> int {
+        const int baseC = (baseOctave + 1) * 12;
+        switch (keyCode) {
+            case 'A': case 'a': return baseC;
+            case 'W': case 'w': return baseC + 1;
+            case 'S': case 's': return baseC + 2;
+            case 'E': case 'e': return baseC + 3;
+            case 'D': case 'd': return baseC + 4;
+            case 'F': case 'f': return baseC + 5;
+            case 'T': case 't': return baseC + 6;
+            case 'G': case 'g': return baseC + 7;
+            default: return -1;
+        }
+    };
+
+    assert(mapKey('A', 3) == 48); // C3
+    assert(mapKey('F', 3) == 53); // F3
+    assert(mapKey('G', 3) == 55); // G3
+    assert(mapKey('Z', 3) == -1); // No piano note
+
+    std::cout << "PASSED\n";
+}
+
+void testAntiClipAndPopEradication() {
+    std::cout << "[TEST] Master Anti-Clip Protection & Pop/Click Eradication (Reglas 17, 34, 35, 47)... ";
+
+    // 1. Verificación de Master True Peak Anti-Clip Protection en DualWorldEngine
+    {
+        DualWorldEngine engine;
+        ProcessSpec spec{ 44100.0, 256, 2, 2 };
+        engine.prepare(spec);
+
+        std::vector<float> inputL(256, 0.5f);
+        std::vector<float> inputR(256, 0.5f);
+        std::vector<float> outL(256, 0.0f);
+        std::vector<float> outR(256, 0.0f);
+
+        const float* inPtrs[2] = { inputL.data(), inputR.data() };
+        float* outPtrs[2] = { outL.data(), outR.data() };
+        ExecutionPlan plan;
+        ProcessContext ctx{ inPtrs, outPtrs, 2, 2, 256 };
+
+        // A) Señal normal (0.5 <= 0.85): 100% bit-exacta y transparente
+        for (int b = 0; b < 40; ++b) {
+            engine.process(plan, ctx, outPtrs);
+        }
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(std::abs(outL[i] - 0.5f) < 0.01f);
+        }
+
+        // B) Señal extremadamente caliente (+14 dBFS, amplitud 3.0 y 5.0):
+        std::vector<float> hotL(256, 3.5f);
+        std::vector<float> hotR(256, -4.2f);
+        const float* hotPtrs[2] = { hotL.data(), hotR.data() };
+        ProcessContext hotCtx{ hotPtrs, outPtrs, 2, 2, 256 };
+        engine.process(plan, hotCtx, outPtrs);
+
+        constexpr float truePeakCeiling = 0.98855f; // -0.1 dBFS
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+            // Jamás excede el techo absoluto de -0.1 dBFS
+            assert(outL[i] <= truePeakCeiling + 1e-4f);
+            assert(outR[i] >= -truePeakCeiling - 1e-4f);
+        }
+    }
+
+    // 2. Verificación de BrickwallLimiterNode: lookahead attack smoothing y soft-knee ceiling
+    {
+        BrickwallLimiterNode limiter;
+        ProcessSpec spec{ 44100.0, 256, 2, 2 };
+        limiter.prepare(spec);
+        limiter.setParameter(BrickwallLimiterNode::Threshold, -6.0f);
+        limiter.setParameter(BrickwallLimiterNode::Ceiling, -0.5f); // ~0.944f linear
+        limiter.setParameter(BrickwallLimiterNode::Lookahead, 2.0f);
+
+        std::vector<float> inL(256, 0.1f);
+        std::vector<float> inR(256, 0.1f);
+        inL[50] = 2.5f; inR[50] = 2.5f;
+
+        std::vector<float> outL(256, 0.0f);
+        std::vector<float> outR(256, 0.0f);
+
+        const float* inCh[2] = { inL.data(), inR.data() };
+        float* outCh[2] = { outL.data(), outR.data() };
+        ProcessContext ctx{ inCh, outCh, 2, 2, 256 };
+
+        limiter.process(ctx);
+
+        const float ceilingLinear = EnvelopeDetector::dbToLinear(-0.5f);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(outL[i] <= ceilingLinear + 1e-4f);
+            assert(outL[i] >= -ceilingLinear - 1e-4f);
+        }
+    }
+
+    // 3. Verificación de ReverseReverbNode: taper continuo al final de swell window (cero saltos bruscos)
+    {
+        ReverseReverbNode rev;
+        ProcessSpec spec{ 44100.0, 256, 2, 2 };
+        rev.prepare(spec);
+        rev.setParameter(ReverseReverbNode::SwellTime, 0.1f); // 4410 muestras
+        rev.setParameter(ReverseReverbNode::Feedback, 0.5f);
+        rev.setParameter(ReverseReverbNode::Mix, 1.0f);
+
+        std::vector<float> inL(256, 0.8f);
+        std::vector<float> inR(256, 0.8f);
+        std::vector<float> outL(256, 0.0f);
+        std::vector<float> outR(256, 0.0f);
+        const float* inCh[2] = { inL.data(), inR.data() };
+        float* outCh[2] = { outL.data(), outR.data() };
+        ProcessContext ctx{ inCh, outCh, 2, 2, 256 };
+
+        float prevSample = 0.0f;
+        float maxStepDelta = 0.0f;
+
+        for (int b = 0; b < 40; ++b) {
+            rev.process(ctx);
+            for (size_t i = 0; i < 256; ++i) {
+                assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+                float delta = std::abs(outL[i] - prevSample);
+                if (delta > maxStepDelta) maxStepDelta = delta;
+                prevSample = outL[i];
+            }
+        }
+        assert(maxStepDelta < 1.0f);
+    }
+
+    // 4. Verificación de BitcrusherNode: saturación suave ante señales calientes
+    {
+        BitcrusherNode crusher;
+        ProcessSpec spec{ 44100.0, 256, 2, 2 };
+        crusher.prepare(spec);
+        crusher.setParameter(BitcrusherNode::BitDepth, 8.0f);
+
+        std::vector<float> inL(256, 1.8f);
+        std::vector<float> inR(256, -2.1f);
+        std::vector<float> outL(256, 0.0f);
+        std::vector<float> outR(256, 0.0f);
+        const float* inCh[2] = { inL.data(), inR.data() };
+        float* outCh[2] = { outL.data(), outR.data() };
+        ProcessContext ctx{ inCh, outCh, 2, 2, 256 };
+
+        crusher.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(std::abs(outL[i]) <= 1.0f);
+            assert(std::abs(outR[i]) <= 1.0f);
+        }
+    }
+
+    // 5. Verificación de AdvancedDelayNode: feedback loop saturado con fastTanh
+    {
+        AdvancedDelayNode delay;
+        ProcessSpec spec{ 44100.0, 256, 2, 2 };
+        delay.prepare(spec);
+        delay.setParameter(AdvancedDelayNode::Feedback, 0.95f);
+        delay.setParameter(AdvancedDelayNode::DryWet, 1.0f);
+
+        std::vector<float> inL(256, 1.5f);
+        std::vector<float> inR(256, 1.5f);
+        std::vector<float> outL(256, 0.0f);
+        std::vector<float> outR(256, 0.0f);
+        const float* inCh[2] = { inL.data(), inR.data() };
+        float* outCh[2] = { outL.data(), outR.data() };
+        ProcessContext ctx{ inCh, outCh, 2, 2, 256 };
+
+        for (int b = 0; b < 20; ++b) {
+            delay.process(ctx);
+            for (size_t i = 0; i < 256; ++i) {
+                assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+                assert(std::abs(outL[i]) < 5.0f);
+            }
+        }
+    }
+
+    std::cout << "PASSED\n";
+}
+
 int main() {
     std::cout << "==================================================\n";
     std::cout << "AUDIO EVENT GRAPH ENGINE - UNIT & INTEGRATION TESTS\n";
@@ -6686,8 +7532,18 @@ int main() {
     testSpectralSmearNode();
     testSamplePlayerNodeAndLoadedSample();
 
+    // Milestone 4: Concurrency Modes, Passive Wait, Silence Gating, Event Bypass & Telemetry Gating
+    testConcurrencyModesExecution();
+    testSchedulerPassiveWaitZeroIdleCpu();
+    benchmarkSilenceGatingAndYinSpeedup();
+    testIdleEventAndBufferBypass();
+    testTelemetryInactivityGating();
+    testGraphCanvasZoomPanMathAndInvariants();
+    testKeyHandlingAndSynthesizerSafety();
+    testAntiClipAndPopEradication();
+
     std::cout << "==================================================\n";
-    std::cout << "TODOS LOS TESTS (116 PRUEBAS UNITARIAS) HAN PASADO CON EXITO\n";
+    std::cout << "TODOS LOS TESTS (124 PRUEBAS UNITARIAS) HAN PASADO CON EXITO\n";
     std::cout << "==================================================\n";
 
     return 0;

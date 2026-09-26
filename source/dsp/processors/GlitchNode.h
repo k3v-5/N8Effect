@@ -115,8 +115,12 @@ public:
                         env = static_cast<float>(activeGateLen - sliceSampleCounter_) / static_cast<float>(fadeLen);
                     }
 
-                    wetL = bufferL_[readIdx] * env;
-                    wetR = bufferR_[readIdx] * env;
+                    // Crossfade limpio entre señal directa y glitch buffer sin pops de discontinuidad (Reglas 34 y 35)
+                    wetL = bufferL_[readIdx] * env + dryL * (1.0f - env);
+                    wetR = bufferR_[readIdx] * env + dryR * (1.0f - env);
+                } else {
+                    wetL = dryL;
+                    wetR = dryR;
                 }
             } else {
                 wetL = dryL;

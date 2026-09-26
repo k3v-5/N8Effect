@@ -157,7 +157,6 @@ public:
                     currentSpeed_ = std::min(1.0f, currentSpeed_ + spinRateDelta);
                 } else {
                     currentSpeed_ = 1.0f;
-                    readIndex_ = static_cast<double>(writeIndex_);
                 }
             }
 

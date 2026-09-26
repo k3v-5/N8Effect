@@ -169,7 +169,7 @@ struct SynthVoice {
             phase -= std::floor(phase);
         }
 
-        return osc * currentLevel * velocity * 0.35f;
+        return osc * currentLevel * velocity * 0.65f;
     }
 };
 

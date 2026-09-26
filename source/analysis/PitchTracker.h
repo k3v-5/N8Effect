@@ -5,12 +5,16 @@
 #include <algorithm>
 #include <cstdint>
 
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
+
 namespace audio_graph {
 
 /**
  * @brief Seguidor de Tono / Pitch Tracker en Tiempo Real (Reglas 1, 7, 9, 34, 46, 47).
- * Utiliza el algoritmo YIN / Función de Diferencia Acumulativa Normalizada (CMDF)
- * con interpolación parabólica sub-sample para estimación continua y precisa de la frecuencia fundamental.
+ * Utiliza el algoritmo YIN / Función de Diferencia Acumulativa Media Normalizada (CMNDF)
+ * con aceleración SIMD AVX2 FMA, terminación temprana y refinamiento parabólico sub-sample.
  */
 class PitchTracker {
 public:
@@ -21,7 +25,7 @@ public:
     void prepare(double sampleRate) {
         sampleRate_ = (sampleRate > 0.0) ? sampleRate : 44100.0;
 
-        buffer_.assign(WindowSize * 2, 0.0f);
+        buffer_.assign(WindowSize * 3, 0.0f);
         yinBuffer_.assign(WindowSize, 0.0f);
         writeIndex_ = 0;
         bufferedSamples_ = 0;
@@ -46,10 +50,12 @@ public:
     void process(const float* input, uint32_t numSamples) noexcept {
         if (input == nullptr || numSamples == 0) return;
 
-        // Escribir en el buffer circular
+        // Escribir en el buffer circular con triple espejo para lectura contigua sin saltos
         for (uint32_t s = 0; s < numSamples; ++s) {
-            buffer_[writeIndex_] = input[s];
-            buffer_[writeIndex_ + WindowSize] = input[s]; // Buffer duplicado para lectura contigua sin saltos
+            const float val = input[s];
+            buffer_[writeIndex_] = val;
+            buffer_[writeIndex_ + WindowSize] = val;
+            buffer_[writeIndex_ + WindowSize * 2] = val;
             writeIndex_ = (writeIndex_ + 1) % WindowSize;
         }
 
@@ -80,55 +86,151 @@ public:
     }
 
 private:
+    static inline float computeDifferenceForLag(const float* window, size_t tau, size_t W) noexcept {
+#if defined(__AVX2__)
+        const float* p0 = window;
+        const float* pTau = window + tau;
+
+        __m256 acc0 = _mm256_setzero_ps();
+        __m256 acc1 = _mm256_setzero_ps();
+        __m256 acc2 = _mm256_setzero_ps();
+        __m256 acc3 = _mm256_setzero_ps();
+
+        for (size_t j = 0; j < W; j += 32) {
+            __m256 w0 = _mm256_loadu_ps(p0 + j);
+            __m256 wt0 = _mm256_loadu_ps(pTau + j);
+            __m256 d0 = _mm256_sub_ps(w0, wt0);
+#if defined(__FMA__) || (defined(_MSC_VER) && defined(__AVX2__))
+            acc0 = _mm256_fmadd_ps(d0, d0, acc0);
+#else
+            acc0 = _mm256_add_ps(acc0, _mm256_mul_ps(d0, d0));
+#endif
+
+            __m256 w1 = _mm256_loadu_ps(p0 + j + 8);
+            __m256 wt1 = _mm256_loadu_ps(pTau + j + 8);
+            __m256 d1 = _mm256_sub_ps(w1, wt1);
+#if defined(__FMA__) || (defined(_MSC_VER) && defined(__AVX2__))
+            acc1 = _mm256_fmadd_ps(d1, d1, acc1);
+#else
+            acc1 = _mm256_add_ps(acc1, _mm256_mul_ps(d1, d1));
+#endif
+
+            __m256 w2 = _mm256_loadu_ps(p0 + j + 16);
+            __m256 wt2 = _mm256_loadu_ps(pTau + j + 16);
+            __m256 d2 = _mm256_sub_ps(w2, wt2);
+#if defined(__FMA__) || (defined(_MSC_VER) && defined(__AVX2__))
+            acc2 = _mm256_fmadd_ps(d2, d2, acc2);
+#else
+            acc2 = _mm256_add_ps(acc2, _mm256_mul_ps(d2, d2));
+#endif
+
+            __m256 w3 = _mm256_loadu_ps(p0 + j + 24);
+            __m256 wt3 = _mm256_loadu_ps(pTau + j + 24);
+            __m256 d3 = _mm256_sub_ps(w3, wt3);
+#if defined(__FMA__) || (defined(_MSC_VER) && defined(__AVX2__))
+            acc3 = _mm256_fmadd_ps(d3, d3, acc3);
+#else
+            acc3 = _mm256_add_ps(acc3, _mm256_mul_ps(d3, d3));
+#endif
+        }
+
+        __m256 sum01 = _mm256_add_ps(acc0, acc1);
+        __m256 sum23 = _mm256_add_ps(acc2, acc3);
+        __m256 total = _mm256_add_ps(sum01, sum23);
+
+        __m128 lo = _mm256_castps256_ps128(total);
+        __m128 hi = _mm256_extractf128_ps(total, 1);
+        __m128 sum4 = _mm_add_ps(lo, hi);
+        __m128 sum2 = _mm_add_ps(sum4, _mm_movehl_ps(sum4, sum4));
+        __m128 sum1 = _mm_add_ss(sum2, _mm_shuffle_ps(sum2, sum2, 1));
+        return _mm_cvtss_f32(sum1);
+#else
+        const float* p0 = window;
+        const float* pTau = window + tau;
+        float sum0 = 0.0f, sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f;
+        for (size_t j = 0; j < W; j += 4) {
+            const float d0 = p0[j] - pTau[j];
+            const float d1 = p0[j + 1] - pTau[j + 1];
+            const float d2 = p0[j + 2] - pTau[j + 2];
+            const float d3 = p0[j + 3] - pTau[j + 3];
+            sum0 += d0 * d0;
+            sum1 += d1 * d1;
+            sum2 += d2 * d2;
+            sum3 += d3 * d3;
+        }
+        return (sum0 + sum1) + (sum2 + sum3);
+#endif
+    }
+
     void estimatePitch() noexcept {
         const float* window = buffer_.data() + writeIndex_;
         const size_t W = WindowSize / 2;
 
-        // Paso 1: Función de Diferencia YIN: d(tau) = sum((x[j] - x[j+tau])^2)
-        yinBuffer_[0] = 1.0f;
-        for (size_t tau = minLag_; tau <= maxLag_; ++tau) {
-            float diffSum = 0.0f;
-            for (size_t j = 0; j < W; ++j) {
-                const float delta = window[j] - window[j + tau];
-                diffSum += delta * delta;
-            }
-            yinBuffer_[tau] = diffSum;
+        // Comprobación de silencio rápida en la ventana de análisis (< -70 dBFS / 0.0003 RMS)
+        float windowEnergy = 0.0f;
+        for (size_t j = 0; j < W; ++j) {
+            windowEnergy += window[j] * window[j];
+        }
+        if (windowEnergy < static_cast<float>(W) * (0.0003f * 0.0003f)) {
+            clarity_ = 0.0f;
+            return;
         }
 
-        // Paso 2: Diferencia acumulativa media normalizada
-        float runningSum = 0.0f;
-        for (size_t tau = minLag_; tau <= maxLag_; ++tau) {
-            runningSum += yinBuffer_[tau];
-            if (runningSum > 1e-6f) {
-                yinBuffer_[tau] *= static_cast<float>(tau) / runningSum;
-            } else {
-                yinBuffer_[tau] = 1.0f;
-            }
-        }
-
-        // Paso 3: Detección del primer mínimo local por debajo del umbral YIN (0.15)
         const float threshold = 0.15f;
         size_t bestTau = 0;
+        float minVal = 100.0f;
+        size_t minValTau = 0;
+        float runningSum = 0.0f;
 
+        yinBuffer_[0] = 1.0f;
+
+        // Búsqueda progresiva YIN con CMNDF y terminación temprana (Reglas 34 y 47)
         for (size_t tau = minLag_; tau <= maxLag_; ++tau) {
-            if (yinBuffer_[tau] < threshold) {
-                while (tau + 1 <= maxLag_ && yinBuffer_[tau + 1] < yinBuffer_[tau]) {
-                    ++tau;
+            const float diffSum = computeDifferenceForLag(window, tau, W);
+            runningSum += diffSum;
+            const float cmndf = (runningSum > 1e-6f)
+                ? (diffSum * static_cast<float>(tau) / runningSum)
+                : 1.0f;
+            yinBuffer_[tau] = cmndf;
+
+            if (cmndf < minVal) {
+                minVal = cmndf;
+                minValTau = tau;
+            }
+
+            // Terminación temprana: si CMNDF cae bajo el umbral YIN (0.15),
+            // continuar avanzando mientras descienda para localizar el mínimo local del valle
+            if (cmndf < threshold) {
+                while (tau + 1 <= maxLag_) {
+                    const size_t nextTau = tau + 1;
+                    const float nextDiff = computeDifferenceForLag(window, nextTau, W);
+                    runningSum += nextDiff;
+                    const float nextCmndf = (runningSum > 1e-6f)
+                        ? (nextDiff * static_cast<float>(nextTau) / runningSum)
+                        : 1.0f;
+                    yinBuffer_[nextTau] = nextCmndf;
+
+                    if (nextCmndf < minVal) {
+                        minVal = nextCmndf;
+                        minValTau = nextTau;
+                    }
+
+                    if (nextCmndf < yinBuffer_[tau]) {
+                        tau = nextTau;
+                    } else {
+                        // El valle comenzó a ascender: el mínimo local está en tau.
+                        // yinBuffer_[tau + 1] ya está calculado en yinBuffer_[nextTau] para la interpolación.
+                        break;
+                    }
                 }
                 bestTau = tau;
                 break;
             }
         }
 
-        // Si no se encontró por debajo del umbral, buscar el mínimo global absoluto
-        if (bestTau == 0) {
-            float minVal = 100.0f;
-            for (size_t tau = minLag_; tau <= maxLag_; ++tau) {
-                if (yinBuffer_[tau] < minVal) {
-                    minVal = yinBuffer_[tau];
-                    bestTau = tau;
-                }
-            }
+        // Si no se encontró ningún punto por debajo de threshold, usar el mínimo absoluto
+        if (bestTau == 0 && minValTau >= minLag_) {
+            bestTau = minValTau;
         }
 
         if (bestTau >= minLag_ && bestTau <= maxLag_) {

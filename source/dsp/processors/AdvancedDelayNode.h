@@ -8,6 +8,7 @@
 #include "../../graph/NodeFactory.h"
 #include "../core/DelayLine.h"
 #include "../core/BiquadFilter.h"
+#include "../core/FastMath.h"
 
 namespace audio_graph {
 
@@ -74,9 +75,13 @@ public:
             delayedL = dampFilter_[0].processSample(delayedL);
             delayedR = dampFilter_[1].processSample(delayedR);
 
-            // Modos Normal vs Ping-Pong
+            // Modos Normal vs Ping-Pong con saturación suave analógica de cinta en el lazo
             float fbInL = pingPong ? (inL + delayedR * fb) : (inL + delayedL * fb);
             float fbInR = pingPong ? (inR + delayedL * fb) : (inR + delayedR * fb);
+
+            // Saturación suave anti-runaway / anti-pop (Reglas 11, 12, 34 y 47)
+            fbInL = FastMath::fastTanh(fbInL);
+            fbInR = FastMath::fastTanh(fbInR);
 
             delayL_.write(fbInL);
             delayR_.write(fbInR);

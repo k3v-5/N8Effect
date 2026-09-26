@@ -157,6 +157,7 @@ public:
         if (running_.load(std::memory_order_relaxed)) {
             running_.store(false, std::memory_order_release);
             activeEpoch_.fetch_add(1, std::memory_order_release);
+            activeEpoch_.notify_all();
 
             for (auto& t : workerThreads_) {
                 if (t.joinable()) {
@@ -186,13 +187,13 @@ public:
 
         // 1. Inicializar contadores atómicos de dependencias
         for (size_t i = 0; i < totalSteps; ++i) {
-            const size_t inDeps = steps[i].predecessorStepIndices.size();
+            size_t inDeps = steps[i].predecessorStepIndices.size();
+            if (steps[i].sidechainStepIndex >= 0) inDeps++;
+            if (steps[i].audioRateModStepIndex >= 0) inDeps++;
             pendingDeps_[i].store(static_cast<int32_t>(inDeps), std::memory_order_relaxed);
         }
 
         stepsRemaining_.store(static_cast<int32_t>(totalSteps), std::memory_order_release);
-        const uint64_t epoch = activeEpoch_.fetch_add(1, std::memory_order_release) + 1;
-        (void)epoch;
 
         // 2. Empujar todos los nodos raíz (sin dependencias pendientes) a la cola local del audio thread (Worker 0)
         for (size_t i = 0; i < totalSteps; ++i) {
@@ -201,10 +202,14 @@ public:
             }
         }
 
-        // 3. El hilo de audio participa activamente como Worker 0
+        // 3. Notificar a los trabajadores dormidos en espera pasiva (Milestone 1, Reglas 9 y 47)
+        activeEpoch_.fetch_add(1, std::memory_order_release);
+        activeEpoch_.notify_all();
+
+        // 4. El hilo de audio participa activamente como Worker 0
         runWorkerTask(0);
 
-        // 4. Espera activa lock-free determinista hasta que todas las tareas concluyan
+        // 5. Espera activa lock-free determinista hasta que todas las tareas concluyan
         while (stepsRemaining_.load(std::memory_order_acquire) > 0) {
             runWorkerTask(0);
 #if defined(_MSC_VER) || defined(__x86_64__) || defined(__i386__)
@@ -217,7 +222,7 @@ public:
 
 private:
     void workerLoop(uint32_t workerId) {
-        uint64_t lastSeenEpoch = 0;
+        uint64_t lastSeenEpoch = activeEpoch_.load(std::memory_order_acquire);
 
         while (running_.load(std::memory_order_relaxed)) {
             const uint64_t currentEpoch = activeEpoch_.load(std::memory_order_acquire);
@@ -227,18 +232,21 @@ private:
             }
 
             if (stepsRemaining_.load(std::memory_order_acquire) > 0) {
-                runWorkerTask(workerId);
-            } else {
+                if (!runWorkerTask(workerId)) {
 #if defined(_MSC_VER) || defined(__x86_64__) || defined(__i386__)
-                _mm_pause();
+                    _mm_pause();
 #else
-                std::this_thread::yield();
+                    std::this_thread::yield();
 #endif
+                }
+            } else {
+                // Sincronización pasiva de coste cero en kernel: suspende el hilo sin consumir CPU (Milestone 1, Regla 47)
+                activeEpoch_.wait(lastSeenEpoch, std::memory_order_relaxed);
             }
         }
     }
 
-    void runWorkerTask(uint32_t workerId) {
+    bool runWorkerTask(uint32_t workerId) {
         uint32_t stepIdx = 0;
         bool hasTask = queues_[workerId].pop(stepIdx);
 
@@ -254,7 +262,7 @@ private:
             }
         }
 
-        if (!hasTask) return;
+        if (!hasTask) return false;
 
         // Ejecutar el paso de procesamiento
         executeSingleStep(stepIdx);
@@ -266,13 +274,17 @@ private:
         for (size_t s = 0; s < totalSteps_; ++s) {
             const auto& candidateSuccessor = (*currentSteps_)[s];
             const auto& preds = candidateSuccessor.predecessorStepIndices;
-            if (std::find(preds.begin(), preds.end(), stepIdx) != preds.end()) {
+            const bool isDep = (std::find(preds.begin(), preds.end(), stepIdx) != preds.end())
+                            || (candidateSuccessor.sidechainStepIndex == static_cast<int>(stepIdx))
+                            || (candidateSuccessor.audioRateModStepIndex == static_cast<int>(stepIdx));
+            if (isDep) {
                 if (pendingDeps_[s].fetch_sub(1, std::memory_order_acq_rel) == 1) {
                     // Todas las dependencias resueltas: despachar inmediatamente a la cola local
                     queues_[workerId].push(static_cast<uint32_t>(s));
                 }
             }
         }
+        return true;
     }
 
     void executeSingleStep(uint32_t stepIdx) {
@@ -326,12 +338,28 @@ private:
             }
         }
 
-        // Sidechain y modulación
-        const float* scL = (step.sidechainStepIndex >= 0 && static_cast<size_t>(step.sidechainStepIndex) < MaxSteps && (*currentBuffers_)[step.sidechainStepIndex] != nullptr)
-            ? (*currentBuffers_)[step.sidechainStepIndex]->getReadPointer(0) : inL;
-        const float* scR = (step.sidechainStepIndex >= 0 && static_cast<size_t>(step.sidechainStepIndex) < MaxSteps && (*currentBuffers_)[step.sidechainStepIndex] != nullptr && (*currentBuffers_)[step.sidechainStepIndex]->getNumChannels() > 1)
-            ? (*currentBuffers_)[step.sidechainStepIndex]->getReadPointer(1) : scL;
+        // Resolver canales de Sidechain (Regla 6 y 13)
+        const float* scL = nullptr;
+        const float* scR = nullptr;
+        if (step.sidechainStepIndex >= 0 && static_cast<size_t>(step.sidechainStepIndex) < MaxSteps && (*currentBuffers_)[step.sidechainStepIndex] != nullptr) {
+            const auto* scBuf = (*currentBuffers_)[step.sidechainStepIndex];
+            scL = scBuf->getReadPointer(0);
+            scR = (scBuf->getNumChannels() > 1) ? scBuf->getReadPointer(1) : scL;
+        } else {
+            scL = inL;
+            scR = inR;
+        }
         const float* scPointers[2] = { scL, scR };
+
+        // Resolver canales de Audio-Rate Modulation (Módulo 3)
+        const float* armL = nullptr;
+        const float* armR = nullptr;
+        if (step.audioRateModStepIndex >= 0 && static_cast<size_t>(step.audioRateModStepIndex) < MaxSteps && (*currentBuffers_)[step.audioRateModStepIndex] != nullptr) {
+            const auto* armBuf = (*currentBuffers_)[step.audioRateModStepIndex];
+            armL = armBuf->getReadPointer(0);
+            armR = (armBuf->getNumChannels() > 1) ? armBuf->getReadPointer(1) : armL;
+        }
+        const float* armPointers[2] = { armL, armR };
 
         const float* inPointers[2] = { inL, inR };
         float* outPointers[2] = { outBuf->getWritePointer(0), (numChannels > 1) ? outBuf->getWritePointer(1) : nullptr };
@@ -340,8 +368,11 @@ private:
         stepContext.inputChannels = inPointers;
         stepContext.outputChannels = outPointers;
         stepContext.sidechainChannels = scPointers;
+        stepContext.audioRateModChannels = (armL != nullptr) ? armPointers : nullptr;
         stepContext.numInputChannels = (inL != nullptr) ? (inR != nullptr ? 2 : 1) : 0;
         stepContext.numOutputChannels = numChannels;
+        stepContext.numSidechainChannels = (scL != nullptr) ? (scR != nullptr ? 2 : 1) : 0;
+        stepContext.numAudioRateModChannels = (armL != nullptr) ? (armR != nullptr ? 2 : 1) : 0;
 
         if (step.isBypassed) {
             if (inL != nullptr && outPointers[0] != nullptr) {

@@ -8,6 +8,7 @@
 #include "Graph.h"
 #include "ExecutionStep.h"
 #include "WorkStealingGraphScheduler.h"
+#include "../core/Types.h"
 #include "../core/RealtimePools.h"
 #include "../dsp/core/DenormalGuards.h"
 
@@ -189,7 +190,7 @@ public:
             stepOutputBuffers[i] = outBuf;
         }
 
-        if (multithreadingEnabled_ && totalSteps > 2) {
+        if (shouldUseMultithreading(totalSteps)) {
             // Despacho concurrente multihilo Lock-Free (Reglas 4, 9, 10, 26, 47)
             scheduler_.executePlan(steps, mainContext, stepOutputBuffers, bufferPool_);
         } else {
@@ -346,16 +347,42 @@ public:
     NodeId getProbeNodeId() const noexcept { return probeNodeId_.load(std::memory_order_relaxed); }
     void setProbeVisualizer(AudioVisualizerBuffer* viz) noexcept { probeVisualizer_ = viz; }
 
-    void setMultithreadingEnabled(bool enabled) noexcept { multithreadingEnabled_ = enabled; }
-    bool isMultithreadingEnabled() const noexcept { return multithreadingEnabled_; }
+    void setConcurrencyMode(ConcurrencyMode mode) noexcept {
+        concurrencyMode_.store(mode, std::memory_order_release);
+    }
+
+    ConcurrencyMode getConcurrencyMode() const noexcept {
+        return concurrencyMode_.load(std::memory_order_acquire);
+    }
+
+    void setMultithreadingEnabled(bool enabled) noexcept {
+        setConcurrencyMode(enabled ? ConcurrencyMode::AlwaysMultithreaded : ConcurrencyMode::SingleThreaded);
+    }
+
+    bool isMultithreadingEnabled() const noexcept {
+        return getConcurrencyMode() != ConcurrencyMode::SingleThreaded;
+    }
+
     WorkStealingGraphScheduler& getScheduler() noexcept { return scheduler_; }
     const WorkStealingGraphScheduler& getScheduler() const noexcept { return scheduler_; }
 
 private:
+    bool shouldUseMultithreading(size_t totalSteps) const noexcept {
+        switch (concurrencyMode_.load(std::memory_order_relaxed)) {
+            case ConcurrencyMode::SingleThreaded:
+                return false;
+            case ConcurrencyMode::SmartMultithreaded:
+                return totalSteps > 4; // Umbral: > 4 nodos activa multithreading
+            case ConcurrencyMode::AlwaysMultithreaded:
+                return totalSteps > 1; // 2 o más nodos activa multithreading
+        }
+        return false;
+    }
+
     ProcessSpec spec_;
     AudioBufferPool bufferPool_;
     WorkStealingGraphScheduler scheduler_;
-    bool multithreadingEnabled_{ false };
+    std::atomic<ConcurrencyMode> concurrencyMode_{ ConcurrencyMode::SmartMultithreaded };
     std::atomic<NodeId> probeNodeId_{ InvalidNodeId };
     AudioVisualizerBuffer* probeVisualizer_{ nullptr };
 };
