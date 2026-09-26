@@ -11,6 +11,7 @@
 #include "GraphExecutor.h"
 #include "NodeFactory.h"
 #include "../dsp/core/DenormalGuards.h"
+#include "../preset/GraphSerializer.h"
 
 namespace audio_graph {
 
@@ -78,6 +79,24 @@ public:
     }
 
     const ExecutionPlan& getInnerExecutionPlan() const noexcept { return innerPlan_; }
+
+    // Exportación e importación de subgrafos independientes como macro-módulos (Regla 6, 16, 21, 22)
+    std::string exportSubGraphJson(std::string_view moduleName = "SubGraph Module") const {
+        PresetMetadata meta;
+        meta.name = std::string(moduleName);
+        meta.category = "SubGraph Module";
+        return GraphSerializer::serialize(innerGraph_, meta);
+    }
+
+    bool importSubGraphJson(std::string_view json, std::string& outErrorMessage) {
+        PresetMetadata meta;
+        std::array<float, 8> dummyMacros{};
+        bool ok = GraphSerializer::deserialize(json, innerGraph_, meta, dummyMacros, outErrorMessage);
+        if (ok) {
+            return compileInnerGraph(outErrorMessage);
+        }
+        return false;
+    }
 
     void process(ProcessContext& context) override {
         ScopedDenormalGuard denormalGuard; // Reglas 34 y 47

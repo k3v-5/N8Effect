@@ -10,6 +10,7 @@
 #include "../../graph/NodeFactory.h"
 #include "../core/DenormalGuards.h"
 #include "../core/FastMath.h"
+#include "../core/AcousticBodyResonator.h"
 
 namespace audio_graph {
 
@@ -25,7 +26,10 @@ public:
         Decay = 3,        // Duración de decaimiento en segundos (0.1s a 5.0s)
         PickPosition = 4, // Posición de ataque en la cuerda (0.05 a 0.95)
         AudioTrigger = 5, // 0: Resonador Continuo, 1: Disparo por Golpes de Audio
-        Mix = 6           // Dry / Wet
+        Mix = 6,          // Dry / Wet
+        BodySize = 7,     // Escala de tamaño del cuerpo acústico (0.5 a 2.0)
+        BodyDecay = 8,    // Resonancia / Q de la madera (0.1 a 3.0)
+        BodyMix = 9       // Nivel de caja acústica (0.0 a 1.0)
     };
 
     KarplusStrongNode() {
@@ -38,6 +42,9 @@ public:
         params_[3] = { PickPosition, "Pick Pos", 0.25f, 0.05f, 0.95f, true };
         params_[4] = { AudioTrigger, "Trigger Mode", 1.0f, 0.0f, 1.0f, false };
         params_[5] = { Mix, "Mix", 1.0f, 0.0f, 1.0f, true };
+        params_[6] = { BodySize, "Body Size", 1.0f, 0.5f, 2.0f, true };
+        params_[7] = { BodyDecay, "Body Decay", 1.0f, 0.1f, 3.0f, true };
+        params_[8] = { BodyMix, "Body Mix", 0.4f, 0.0f, 1.0f, true };
     }
 
     void prepare(const ProcessSpec& spec) override {
@@ -53,6 +60,9 @@ public:
         envFollower_ = 0.0f;
         burstCounter_ = 0;
 
+        bodyResonator_.prepare(spec.sampleRate);
+        bodyResonator_.setParameters(targetBodySize_, targetBodyDecay_, targetBodyMix_);
+
         reset();
     }
 
@@ -62,6 +72,7 @@ public:
         prevFeedbackSample_.fill(0.0f);
         envFollower_ = 0.0f;
         burstCounter_ = 0;
+        bodyResonator_.reset();
     }
 
     void setParameter(ParameterId id, float value) override {
@@ -72,6 +83,18 @@ public:
             case PickPosition: targetPick_ = std::clamp(value, 0.05f, 0.95f); break;
             case AudioTrigger: targetTriggerMode_ = (value >= 0.5f); break;
             case Mix:          targetMix_ = std::clamp(value, 0.0f, 1.0f); break;
+            case BodySize:
+                targetBodySize_ = std::clamp(value, 0.5f, 2.0f);
+                bodyResonator_.setParameters(targetBodySize_, targetBodyDecay_, targetBodyMix_);
+                break;
+            case BodyDecay:
+                targetBodyDecay_ = std::clamp(value, 0.1f, 3.0f);
+                bodyResonator_.setParameters(targetBodySize_, targetBodyDecay_, targetBodyMix_);
+                break;
+            case BodyMix:
+                targetBodyMix_ = std::clamp(value, 0.0f, 1.0f);
+                bodyResonator_.setParameters(targetBodySize_, targetBodyDecay_, targetBodyMix_);
+                break;
             default: break;
         }
     }
@@ -84,6 +107,9 @@ public:
             case PickPosition: return targetPick_;
             case AudioTrigger: return targetTriggerMode_ ? 1.0f : 0.0f;
             case Mix:          return targetMix_;
+            case BodySize:     return targetBodySize_;
+            case BodyDecay:    return targetBodyDecay_;
+            case BodyMix:      return targetBodyMix_;
             default:           return 0.0f;
         }
     }
@@ -105,7 +131,7 @@ public:
         const float* inL = (context.numInputChannels > 0) ? context.inputChannels[0] : nullptr;
         const float* inR = (context.numInputChannels > 1) ? context.inputChannels[1] : inL;
         float* outL = (numChannels > 0) ? context.outputChannels[0] : nullptr;
-        float* outR = (numChannels > 1) ? context.outputChannels[1] : outL;
+        float* outR = (numChannels > 1) ? context.outputChannels[1] : nullptr;
 
         const double sampleRate = spec_.sampleRate > 0.0 ? spec_.sampleRate : 44100.0;
         const double fundamental = std::clamp(static_cast<double>(targetPitch_), 25.0, sampleRate * 0.45);
@@ -170,8 +196,10 @@ public:
 
             writeIdx_ = (writeIdx_ + 1) % maxDelaySamples_;
 
-            const float wetL = delayOutL * 1.4f;
-            const float wetR = delayOutR * 1.4f;
+            const float rawWetL = delayOutL * 1.4f;
+            const float rawWetR = delayOutR * 1.4f;
+            float wetL = 0.0f, wetR = 0.0f;
+            bodyResonator_.processSample(rawWetL, rawWetR, wetL, wetR);
 
             if (outL) outL[s] = (1.0f - mix) * rawInL + mix * wetL;
             if (outR) outR[s] = (1.0f - mix) * rawInR + mix * wetR;
@@ -227,9 +255,14 @@ private:
     float targetPick_{ 0.25f };
     bool targetTriggerMode_{ true };
     float targetMix_{ 1.0f };
+    float targetBodySize_{ 1.0f };
+    float targetBodyDecay_{ 1.0f };
+    float targetBodyMix_{ 0.4f };
+
+    AcousticBodyResonator bodyResonator_;
 
     std::array<PinDescriptor, 2> pins_;
-    std::array<ParameterInfo, 6> params_;
+    std::array<ParameterInfo, 9> params_;
 };
 
 inline AutoRegisterNode<KarplusStrongNode> registerKarplus(NodeType::KarplusStrong, "karplus_strong", "Resonance");

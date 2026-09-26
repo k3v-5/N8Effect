@@ -172,10 +172,10 @@ public:
         categoryCombo_.addItem("TODAS LAS CATEGORIAS", 1);
         categoryCombo_.addItem("DYNAMICS (6)", 2);
         categoryCombo_.addItem("FILTERS & EQ (3)", 3);
-        categoryCombo_.addItem("TIME & SPACE (6)", 4);
+        categoryCombo_.addItem("TIME & SPACE (7)", 4);
         categoryCombo_.addItem("DRIVE & LO-FI (3)", 5);
-        categoryCombo_.addItem("MODULATION (7)", 6);
-        categoryCombo_.addItem("SPECTRAL & GLITCH (6)", 7);
+        categoryCombo_.addItem("MODULATION (8)", 6);
+        categoryCombo_.addItem("SPECTRAL & GLITCH (7)", 7);
         categoryCombo_.addItem("SYNTH & MIDI (6)", 8);
         categoryCombo_.addItem("ROUTING & UTIL (8)", 9);
         categoryCombo_.setSelectedId(1, juce::dontSendNotification);
@@ -247,6 +247,7 @@ private:
             { NodeType::FormantFilter, "Formant Filter", "Vowel Vocal Shaper", 2, juce::Colour(0xffff8800) },
 
             // TIME & SPACE (3)
+            { NodeType::ShimmerReverb, "Shimmer Reverb", "Harmonic FDN Reverb", 3, juce::Colour(0xff00e5ff) },
             { NodeType::AdvancedDelay, "Stereo Delay", "Ping-Pong Tape", 3, juce::Colour(0xff00e5ff) },
             { NodeType::Delay, "Simple Delay", "Digital Feedback", 3, juce::Colour(0xff00e5ff) },
             { NodeType::Reverb, "FDN Reverb", "8-Delay Matrix Space", 3, juce::Colour(0xff00e5ff) },
@@ -260,6 +261,7 @@ private:
             { NodeType::HarmonicExciter, "Harmonic Exciter", "Even/Odd Air & Sub", 4, juce::Colour(0xffff3355) },
 
             // MODULATION (5)
+            { NodeType::Refraction, "Poly Refraction", "8-Voice Unison Prism", 5, juce::Colour(0xffbf55ec) },
             { NodeType::Phaser, "Phaser", "6-Stage Analog Allpass", 5, juce::Colour(0xffbf55ec) },
             { NodeType::Chorus, "Chorus", "4-Voice Dimension Spread", 5, juce::Colour(0xffbf55ec) },
             { NodeType::Flanger, "Flanger", "Comb Resonance Sweep", 5, juce::Colour(0xffbf55ec) },
@@ -269,6 +271,7 @@ private:
             { NodeType::PitchShifter, "Pitch Shifter", "Dual Crossfade Pitch", 5, juce::Colour(0xffbf55ec) },
 
             // SPECTRAL & GLITCH (6)
+            { NodeType::SpectralSmear, "Spectral Smear", "STFT Liquid Diffusion", 6, juce::Colour(0xffffd700) },
             { NodeType::Granular, "Granular Engine", "128-Grain Cloud Texture", 6, juce::Colour(0xffffd700) },
             { NodeType::AudioSlicer, "Audio Slicer", "Buffer Slice & Frozen Grain", 6, juce::Colour(0xffffd700) },
             { NodeType::Spectral, "Spectral Freeze", "FFT Phase Lock", 6, juce::Colour(0xffffd700) },

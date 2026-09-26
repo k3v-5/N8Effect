@@ -174,9 +174,17 @@ void GraphCanvasComponent::rebuildFromGraph() {
 
             if (findPinAtCanvasPos(canvasPos, candidateNode, candidatePin, candidateType, candidateDataType, candidateCenter, 20.0f)) {
                 if (candidateNode != dragSourceNode_) {
-                    currentMousePt_ = candidateCenter; // Snapping magnético
+                    currentMousePt_ = candidateCenter; // Snapping magnetico
                     snappedTargetNode_ = candidateNode;
                     snappedTargetPin_ = candidatePin;
+
+                    // Validacion predictiva de ciclo e incompatibilidad de tipo (Reglas 4, 15, 28)
+                    const NodeId effSrc = (dragSourcePinType_ == PinType::AudioOutput || dragSourcePinType_ == PinType::EventOutput) ? dragSourceNode_ : candidateNode;
+                    const NodeId effDest = (effSrc == dragSourceNode_) ? candidateNode : dragSourceNode_;
+                    const bool cycle = processor_.getGraph().wouldCreateCycle(effSrc, effDest);
+                    const bool typeConflict = (dragSourcePinType_ == candidateType) || (dragDataType_ != candidateDataType);
+                    isDragWireInvalid_ = cycle || typeConflict;
+
                     for (auto& n : nodeComponents_) {
                         n->setHighlightedPin(n->getNodeId() == candidateNode ? candidatePin : InvalidPinId);
                     }
@@ -184,6 +192,7 @@ void GraphCanvasComponent::rebuildFromGraph() {
             } else {
                 snappedTargetNode_ = InvalidNodeId;
                 snappedTargetPin_ = InvalidPinId;
+                isDragWireInvalid_ = false;
                 for (auto& n : nodeComponents_) {
                     n->setHighlightedPin(InvalidPinId);
                 }
@@ -197,6 +206,15 @@ void GraphCanvasComponent::rebuildFromGraph() {
             }
             isDraggingWire_ = false;
 
+            if (isDragWireInvalid_) {
+                // Rechazo visual y funcional inmediato: no crea la conexion invalida (Reglas 15, 28)
+                snappedTargetNode_ = InvalidNodeId;
+                snappedTargetPin_ = InvalidPinId;
+                isDragWireInvalid_ = false;
+                repaint();
+                return;
+            }
+
             NodeId destNode = snappedTargetNode_;
             PinId destPin = snappedTargetPin_;
             PinType destPinType = PinType::AudioInput;
@@ -208,7 +226,7 @@ void GraphCanvasComponent::rebuildFromGraph() {
             }
 
             if (destNode != InvalidNodeId && destNode != srcNode) {
-                // Conexión bidireccional automática: out -> in o in -> out
+                // Conexion bidireccional automatica: out -> in o in -> out
                 if (srcPinType == PinType::AudioOutput || srcPinType == PinType::EventOutput) {
                     processor_.connectNodes(srcNode, srcPin, destNode, destPin);
                 } else {
@@ -221,6 +239,7 @@ void GraphCanvasComponent::rebuildFromGraph() {
 
             snappedTargetNode_ = InvalidNodeId;
             snappedTargetPin_ = InvalidPinId;
+            isDragWireInvalid_ = false;
             repaint();
         });
 
@@ -357,14 +376,33 @@ void GraphCanvasComponent::handleNodeDropped(NodeId draggedNodeId, juce::Rectang
     }
 }
 
-void GraphCanvasComponent::selectNode(NodeId id) {
+void GraphCanvasComponent::selectNode(NodeId id, bool additive) {
+    if (!additive) {
+        selectedNodeIds_.clear();
+    }
+    if (id != InvalidNodeId) {
+        selectedNodeIds_.insert(id);
+    }
     selectedNodeId_ = id;
     for (auto& c : nodeComponents_) {
-        c->setSelected(c->getNodeId() == id);
+        c->setSelected(selectedNodeIds_.contains(c->getNodeId()));
     }
     if (onNodeSelected_) {
         onNodeSelected_(id);
     }
+    repaint();
+}
+
+void GraphCanvasComponent::clearSelection() {
+    selectedNodeIds_.clear();
+    selectedNodeId_ = InvalidNodeId;
+    for (auto& c : nodeComponents_) {
+        c->setSelected(false);
+    }
+    if (onNodeSelected_) {
+        onNodeSelected_(InvalidNodeId);
+    }
+    repaint();
 }
 
 void GraphCanvasComponent::addNodeAtPosition(NodeType type, float x, float y) {
@@ -438,12 +476,25 @@ void GraphCanvasComponent::paint(juce::Graphics& g) {
         }
     }
 
-    // 5. Renderizar cable temporal en arrastre activo
+    // 5. Renderizar cable temporal en arrastre activo (con rechazo en rojo si es inválido, Regla 15)
     if (isDraggingWire_) {
-        WireRenderer::drawWire(g, dragStartPt_, currentMousePt_, dragDataType_, true, true);
+        WireRenderer::drawWire(g, dragStartPt_, currentMousePt_, dragDataType_, true, true, isDragWireInvalid_);
     }
 
-    // 6. Renderizar previsualización fantasma al arrastrar módulos desde la paleta
+    // 6. Selección elástica múltiple (Marquee / Rubberband Box, Regla 16)
+    if (isMarqueeSelecting_) {
+        g.setColour(juce::Colour(0x2200E5FF));
+        g.fillRect(marqueeRect_);
+        g.setColour(juce::Colour(0xAA00E5FF));
+        juce::PathStrokeType stroke(1.2f);
+        float dashes[] = { 4.0f, 4.0f };
+        juce::Path p;
+        p.addRectangle(marqueeRect_);
+        stroke.createDashedStroke(p, p, dashes, 2);
+        g.strokePath(p, stroke);
+    }
+
+    // 7. Renderizar previsualización fantasma al arrastrar módulos desde la paleta
     if (isShowingDragGhost_) {
         juce::Rectangle<float> ghostBox(ghostPos_.x - 90.0f, ghostPos_.y - 40.0f, 180.0f, 80.0f);
         g.setColour(juce::Colours::white.withAlpha(0.15f));
@@ -469,32 +520,67 @@ void GraphCanvasComponent::mouseDown(const juce::MouseEvent& e) {
     }
 
     if (e.mods.isRightButtonDown()) {
-        if (selectedNodeId_ != InvalidNodeId) {
-            juce::PopupMenu canvasMenu;
-            canvasMenu.addItem(1, "Group Selected Node", true, false);
+        juce::PopupMenu canvasMenu;
+        if (!selectedNodeIds_.empty() || selectedNodeId_ != InvalidNodeId) {
+            canvasMenu.addItem(1, "Collapse into Container (Ctrl+G)", true, false);
+            canvasMenu.addItem(2, "Group Selected Nodes (Chassis)", true, false);
             canvasMenu.addSeparator();
-            canvasMenu.addItem(2, "Deselect", true, false);
-            canvasMenu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
-                [this](int res) {
-                    if (res == 1 && selectedNodeId_ != InvalidNodeId) {
-                        createGroup({ selectedNodeId_ }, "Group");
-                    } else if (res == 2) {
-                        selectNode(InvalidNodeId);
-                    }
-                });
-            return;
+            canvasMenu.addItem(3, "Export Selected SubGraph (.n8module)", true, false);
+            canvasMenu.addSeparator();
+            canvasMenu.addItem(4, "Deselect All", true, false);
+        } else {
+            canvasMenu.addItem(5, "Import SubGraph Module (.n8module)", true, false);
         }
 
-        isPanning_ = true;
-        panStartOffset_ = e.position;
-    } else {
-        selectNode(InvalidNodeId);
+        canvasMenu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+            [this](int res) {
+                if (res == 1) {
+                    collapseSelectedNodesIntoContainer();
+                } else if (res == 2) {
+                    std::vector<NodeId> nids(selectedNodeIds_.begin(), selectedNodeIds_.end());
+                    if (nids.empty() && selectedNodeId_ != InvalidNodeId) nids.push_back(selectedNodeId_);
+                    createGroup(nids, "Group");
+                } else if (res == 3) {
+                    exportSelectedSubGraphModule();
+                } else if (res == 4) {
+                    clearSelection();
+                } else if (res == 5) {
+                    importSubGraphModule();
+                }
+            });
+        return;
     }
+
+    // Clic izquierdo en el fondo: selección elástica
+    if (!e.mods.isShiftDown() && !e.mods.isCtrlDown() && !e.mods.isCommandDown()) {
+        clearSelection();
+    }
+    isMarqueeSelecting_ = true;
+    marqueeStartPt_ = e.position;
+    marqueeRect_ = juce::Rectangle<float>(e.position, e.position);
+    repaint();
 }
 
 void GraphCanvasComponent::mouseDrag(const juce::MouseEvent& e) {
     if (isDraggingWire_) {
         currentMousePt_ = e.position;
+        repaint();
+    } else if (isMarqueeSelecting_) {
+        const float x = std::min(marqueeStartPt_.x, e.position.x);
+        const float y = std::min(marqueeStartPt_.y, e.position.y);
+        const float w = std::abs(e.position.x - marqueeStartPt_.x);
+        const float h = std::abs(e.position.y - marqueeStartPt_.y);
+        marqueeRect_ = juce::Rectangle<float>(x, y, w, h);
+
+        for (auto& comp : nodeComponents_) {
+            if (comp != nullptr) {
+                if (marqueeRect_.intersects(comp->getBounds().toFloat())) {
+                    selectedNodeIds_.insert(comp->getNodeId());
+                    comp->setSelected(true);
+                    selectedNodeId_ = comp->getNodeId();
+                }
+            }
+        }
         repaint();
     }
 }
@@ -505,9 +591,145 @@ void GraphCanvasComponent::mouseUp(const juce::MouseEvent& /*e*/) {
         for (auto& n : nodeComponents_) {
             n->setHighlightedPin(InvalidPinId);
         }
-        repaint();
     }
+    isMarqueeSelecting_ = false;
     isPanning_ = false;
+    repaint();
+}
+
+bool GraphCanvasComponent::keyPressed(const juce::KeyPress& key) {
+    if (key.getKeyCode() == 'G' && (key.getModifiers().isCtrlDown() || key.getModifiers().isCommandDown())) {
+        collapseSelectedNodesIntoContainer();
+        return true;
+    }
+    return Component::keyPressed(key);
+}
+
+void GraphCanvasComponent::collapseSelectedNodesIntoContainer() {
+    std::vector<NodeId> targetIds(selectedNodeIds_.begin(), selectedNodeIds_.end());
+    if (targetIds.empty() && selectedNodeId_ != InvalidNodeId) {
+        targetIds.push_back(selectedNodeId_);
+    }
+    if (targetIds.empty()) return;
+
+    auto& graph = processor_.getGraph();
+
+    // 1. Calcular centroide de los nodos seleccionados
+    float sumX = 0.0f;
+    float sumY = 0.0f;
+    int count = 0;
+    for (NodeId id : targetIds) {
+        if (auto* inst = graph.getNode(id)) {
+            sumX += inst->posX;
+            sumY += inst->posY;
+            count++;
+        }
+    }
+    if (count == 0) return;
+    const float centerX = sumX / static_cast<float>(count);
+    const float centerY = sumY / static_cast<float>(count);
+
+    // 2. Instanciar nuevo ContainerNode en la posición centroide
+    auto containerProc = std::make_unique<ContainerNode>();
+    ContainerNode* containerPtr = containerProc.get();
+    NodeId containerId = graph.addNode(std::move(containerProc), "Macro Container", centerX, centerY);
+    if (containerId == InvalidNodeId) return;
+
+    std::unordered_set<NodeId> targetSet(targetIds.begin(), targetIds.end());
+    std::unordered_map<NodeId, NodeId> oldToInnerMap;
+
+    // 3. Mover procesadores y configuración al subgrafo interno
+    for (NodeId oldId : targetIds) {
+        auto* oldInst = graph.getNode(oldId);
+        if (oldInst && oldInst->processor) {
+            float relX = oldInst->posX - centerX + 120.0f;
+            float relY = oldInst->posY - centerY + 80.0f;
+            NodeId innerId = containerPtr->getInnerGraph().addNode(std::move(oldInst->processor), oldInst->name, relX, relY);
+            oldToInnerMap[oldId] = innerId;
+        }
+    }
+
+    // 4. Mapear conexiones internas y externas
+    const auto oldConns = graph.getConnections(); // Copia inmutable de conexiones
+    for (const auto& c : oldConns) {
+        const bool srcIn = targetSet.contains(c.sourceNodeId);
+        const bool destIn = targetSet.contains(c.destNodeId);
+
+        if (srcIn && destIn) {
+            // Cable interno: mover al subgrafo
+            containerPtr->getInnerGraph().connect(oldToInnerMap[c.sourceNodeId], c.sourcePinId,
+                                                  oldToInnerMap[c.destNodeId], c.destPinId);
+        } else if (!srcIn && destIn) {
+            // Cable entrante desde el exterior: enrutar al pin de entrada del contenedor
+            graph.connect(c.sourceNodeId, c.sourcePinId, containerId, 1);
+        } else if (srcIn && !destIn) {
+            // Cable saliente hacia el exterior: enrutar desde el pin de salida del contenedor
+            graph.connect(containerId, 2, c.destNodeId, c.destPinId);
+        }
+    }
+
+    // 5. Eliminar nodos originales del grafo principal
+    for (NodeId oldId : targetIds) {
+        graph.removeNode(oldId);
+    }
+
+    // 6. Compilar el subgrafo interno
+    std::string err;
+    containerPtr->compileInnerGraph(err);
+
+    // 7. Actualizar selección y refrescar interfaz
+    clearSelection();
+    selectedNodeId_ = containerId;
+    selectedNodeIds_.insert(containerId);
+    processor_.recompilePlan();
+    rebuildFromGraph();
+}
+
+void GraphCanvasComponent::exportSelectedSubGraphModule() {
+    NodeId targetId = selectedNodeId_;
+    if (targetId == InvalidNodeId && !selectedNodeIds_.empty()) {
+        targetId = *selectedNodeIds_.begin();
+    }
+    if (targetId == InvalidNodeId) return;
+
+    auto* node = processor_.getGraph().getNode(targetId);
+    if (!node || node->type != NodeType::Container) return;
+
+    auto* container = dynamic_cast<ContainerNode*>(node->processor.get());
+    if (!container) return;
+
+    const std::string json = container->exportSubGraphJson(node->name);
+    auto moduleDir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                         .getChildFile("N8Audio")
+                         .getChildFile("Modules");
+    moduleDir.createDirectory();
+    auto file = moduleDir.getChildFile(node->name + ".n8module");
+    file.replaceWithText(juce::String(json));
+}
+
+void GraphCanvasComponent::importSubGraphModule() {
+    auto moduleDir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                         .getChildFile("N8Audio")
+                         .getChildFile("Modules");
+    if (!moduleDir.isDirectory()) return;
+
+    auto files = moduleDir.findChildFiles(juce::File::findFiles, false, "*.n8module");
+    if (files.isEmpty()) return;
+
+    const juce::String json = files[0].loadFileAsString();
+    if (json.isEmpty()) return;
+
+    auto containerProc = std::make_unique<ContainerNode>();
+    ContainerNode* containerPtr = containerProc.get();
+    std::string err;
+    if (containerPtr->importSubGraphJson(json.toStdString(), err)) {
+        const float x = static_cast<float>(getWidth() / 2 - 90);
+        const float y = static_cast<float>(getHeight() / 2 - 40);
+        NodeId newId = processor_.getGraph().addNode(std::move(containerProc), files[0].getFileNameWithoutExtension().toStdString(), x, y);
+        selectedNodeId_ = newId;
+        processor_.recompilePlan();
+        rebuildFromGraph();
+    }
 }
 
 // Implementación de juce::DragAndDropTarget

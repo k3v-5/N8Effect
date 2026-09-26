@@ -67,6 +67,9 @@ enum class NodeType : uint32_t {
     Convolution = 47,
     Oversampler = 48,
     AudioSlicer = 49,
+    ShimmerReverb = 50,
+    Refraction = 51,
+    SpectralSmear = 52,
     Custom = 100
 };
 

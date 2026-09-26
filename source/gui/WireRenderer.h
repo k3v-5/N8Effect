@@ -32,7 +32,8 @@ public:
                          juce::Point<float> end,
                          PinDataType dataType,
                          bool isHovered = false,
-                         bool isDashed = false) {
+                         bool isDashed = false,
+                         bool isInvalid = false) {
         juce::Path path;
         path.startNewSubPath(start);
 
@@ -42,37 +43,49 @@ public:
 
         path.cubicTo(c1, c2, end);
 
-        // Halo / resplandor exterior según tema cuando se pasa el ratón por encima
-        if (isHovered) {
-            g.setColour(ThemeManager::getInstance().getColors().wireGlowColor);
-            g.strokePath(path, juce::PathStrokeType(5.0f));
-        }
+        if (isInvalid) {
+            // Rechazo visual en rojo brillante (#FF2040) con halo de advertencia (Reglas 4, 15, 24, 28)
+            g.setColour(juce::Colour(0x66FF2040));
+            g.strokePath(path, juce::PathStrokeType(6.0f));
 
-        // Trazado de línea según tema
-        g.setColour(isHovered ? ThemeManager::getInstance().getColors().accentPrimary : getPinColour(dataType));
-
-        const bool shouldDash = isDashed || (dataType == PinDataType::EventMessage);
-        const bool shouldDot = (dataType == PinDataType::ModulationScalar);
-
-        if (shouldDash) {
-            juce::PathStrokeType stroke(isHovered ? 2.0f : 1.5f);
-            float dashes[] = { 6.0f, 4.0f };
-            stroke.createDashedStroke(path, path, dashes, 2);
-            g.strokePath(path, stroke);
-        } else if (shouldDot) {
-            juce::PathStrokeType stroke(isHovered ? 2.0f : 1.5f);
-            float dashes[] = { 2.5f, 3.5f };
+            g.setColour(juce::Colour(0xFFFF2040));
+            juce::PathStrokeType stroke(2.5f);
+            float dashes[] = { 8.0f, 4.0f };
             stroke.createDashedStroke(path, path, dashes, 2);
             g.strokePath(path, stroke);
         } else {
-            g.strokePath(path, juce::PathStrokeType(isHovered ? 2.2f : 1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            // Halo / resplandor exterior según tema cuando se pasa el ratón por encima
+            if (isHovered) {
+                g.setColour(ThemeManager::getInstance().getColors().wireGlowColor);
+                g.strokePath(path, juce::PathStrokeType(5.0f));
+            }
+
+            // Trazado de línea según tema
+            g.setColour(isHovered ? ThemeManager::getInstance().getColors().accentPrimary : getPinColour(dataType));
+
+            const bool shouldDash = isDashed || (dataType == PinDataType::EventMessage);
+            const bool shouldDot = (dataType == PinDataType::ModulationScalar);
+
+            if (shouldDash) {
+                juce::PathStrokeType stroke(isHovered ? 2.0f : 1.5f);
+                float dashes[] = { 6.0f, 4.0f };
+                stroke.createDashedStroke(path, path, dashes, 2);
+                g.strokePath(path, stroke);
+            } else if (shouldDot) {
+                juce::PathStrokeType stroke(isHovered ? 2.0f : 1.5f);
+                float dashes[] = { 2.5f, 3.5f };
+                stroke.createDashedStroke(path, path, dashes, 2);
+                g.strokePath(path, stroke);
+            } else {
+                g.strokePath(path, juce::PathStrokeType(isHovered ? 2.2f : 1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            }
         }
 
-        // Puntos terminales en conectores: círculo negro con contorno blanco nítido y punto central
+        // Puntos terminales en conectores
         auto drawTerminal = [&](float x, float y) {
-            g.setColour(juce::Colour(0xff000000));
+            g.setColour(isInvalid ? juce::Colour(0xFFFF2040) : juce::Colour(0xff000000));
             g.fillEllipse(x - 4.0f, y - 4.0f, 8.0f, 8.0f);
-            g.setColour(juce::Colours::white);
+            g.setColour(isInvalid ? juce::Colour(0xFFFF8090) : juce::Colours::white);
             g.drawEllipse(x - 4.0f, y - 4.0f, 8.0f, 8.0f, 1.2f);
             g.fillEllipse(x - 1.5f, y - 1.5f, 3.0f, 3.0f);
         };

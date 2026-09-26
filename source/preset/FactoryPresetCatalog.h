@@ -18,7 +18,7 @@ struct FactoryPresetEntry {
  */
 inline std::vector<FactoryPresetEntry> createFactoryPresetCatalog() {
     std::vector<FactoryPresetEntry> catalog;
-    catalog.reserve(70);
+    catalog.reserve(80);
 
     // =========================================================================
     // CATEGORÍA 1: Modulación Psicoacústica
@@ -3952,6 +3952,269 @@ inline std::vector<FactoryPresetEntry> createFactoryPresetCatalog() {
       "destNode": 3,
       "destPin": 1
     }
+  ]
+})json"
+    });
+
+    // =========================================================================
+    // ARTURIA-KILLER FLAGSHIP SUITE (Presets 71 - 80)
+    // =========================================================================
+    // 1. Crystalline Shimmer Cloud (Espacios Infinitos & Shimmer)
+    catalog.push_back({
+        "Crystalline Shimmer Cloud",
+        "Espacios Infinitos & Shimmer",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Crystalline Shimmer Cloud",
+  "author": "N8Audio",
+  "category": "Espacios Infinitos & Shimmer",
+  "description": "Nube de granos flotantes combinada con reverberacion shimmer armonica cristalina +12st y decodificador Mid/Side",
+  "dryLevel": 0.4,
+  "wetLevel": 0.95,
+  "macros": [0.75, 0.65, 0.8, 0.5, 0.5, 0.5, 0.5, 0.0],
+  "nodes": [
+    { "id": 1, "name": "Granular Cloud", "type": 7, "x": 40.0, "y": 60.0, "params": { "1": 75.0, "2": 35.0, "3": 25.0, "4": 0.0, "5": 0.3, "6": 0.8, "7": 0.85 } },
+    { "id": 2, "name": "Shimmer Reverb", "type": 50, "x": 260.0, "y": 60.0, "params": { "1": 6.5, "2": 7500.0, "3": 0.65, "4": 0.0, "5": 1.5, "6": 0.7 } },
+    { "id": 3, "name": "Mid/Side Decoder", "type": 25, "x": 480.0, "y": 60.0, "params": { "1": 1.4, "2": 120.0, "3": 0.0 } }
+  ],
+  "connections": [
+    { "id": 1, "srcNode": 1, "srcPin": 2, "destNode": 2, "destPin": 1 },
+    { "id": 2, "srcNode": 2, "srcPin": 2, "destNode": 3, "destPin": 1 }
+  ]
+})json"
+    });
+
+    // 2. Glitch Stutter Kaleidoscope (Glitch & Deconstrucción Rítmica)
+    catalog.push_back({
+        "Glitch Stutter Kaleidoscope",
+        "Glitch & Deconstrucción Rítmica",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Glitch Stutter Kaleidoscope",
+  "author": "N8Audio",
+  "category": "Glitch & Deconstrucción Rítmica",
+  "description": "Deconstruccion ritmica sincopada mediante AudioSlicer y Glitch, seguido de dispersion ping-pong y saturacion de cinta",
+  "dryLevel": 0.35,
+  "wetLevel": 0.9,
+  "macros": [0.9, 0.7, 0.6, 0.8, 0.5, 0.5, 0.5, 0.0],
+  "nodes": [
+    { "id": 1, "name": "Audio Slicer", "type": 49, "x": 40.0, "y": 60.0, "params": { "1": 0.0, "2": 8.0, "3": -1.0, "4": 1.0, "5": 0.0, "6": 60.0, "7": 4.0, "8": 0.3, "9": 0.0, "10": 12000.0, "11": 0.9 } },
+    { "id": 2, "name": "Glitch Slicer", "type": 14, "x": 250.0, "y": 60.0, "params": { "1": 2.0, "2": 0.4, "3": 0.5, "4": 0.8, "5": 0.75 } },
+    { "id": 3, "name": "Ping-Pong Delay", "type": 28, "x": 460.0, "y": 60.0, "params": { "1": 180.0, "2": 270.0, "3": 0.45, "4": 6000.0, "5": 1.0, "6": 0.5 } },
+    { "id": 4, "name": "Tape Saturation", "type": 21, "x": 670.0, "y": 60.0, "params": { "1": 3.2, "2": 1.0, "3": 0.3, "4": 0.8, "5": 0.85 } }
+  ],
+  "connections": [
+    { "id": 1, "srcNode": 1, "srcPin": 2, "destNode": 2, "destPin": 1 },
+    { "id": 2, "srcNode": 2, "srcPin": 2, "destNode": 3, "destPin": 1 },
+    { "id": 3, "srcNode": 3, "srcPin": 2, "destNode": 4, "destPin": 1 }
+  ]
+})json"
+    });
+
+    // 3. Sub-Atomic Texture Cloud (Micro-Muestreo Granular)
+    catalog.push_back({
+        "Sub-Atomic Texture Cloud",
+        "Micro-Muestreo Granular",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Sub-Atomic Texture Cloud",
+  "author": "N8Audio",
+  "category": "Micro-Muestreo Granular",
+  "description": "Micro-granos sub-atomicos de 15ms filtrados por formantes vocalicos y disueltos en difusion liquida espectral",
+  "dryLevel": 0.45,
+  "wetLevel": 0.9,
+  "macros": [0.85, 0.75, 0.7, 0.6, 0.5, 0.5, 0.5, 0.0],
+  "nodes": [
+    { "id": 1, "name": "Granular Texture", "type": 7, "x": 40.0, "y": 60.0, "params": { "1": 15.0, "2": 55.0, "3": 40.0, "4": 0.0, "5": 1.2, "6": 0.9, "7": 0.9, "10": 2.0 } },
+    { "id": 2, "name": "Formant Filter", "type": 31, "x": 260.0, "y": 60.0, "params": { "1": 0.45, "2": 4.5, "3": 1.1, "4": 0.4, "5": 0.8 } },
+    { "id": 3, "name": "Spectral Smear", "type": 52, "x": 480.0, "y": 60.0, "params": { "1": 3.5, "2": 0.85, "3": 0.9, "4": -0.2, "5": 0.75 } }
+  ],
+  "connections": [
+    { "id": 1, "srcNode": 1, "srcPin": 2, "destNode": 2, "destPin": 1 },
+    { "id": 2, "srcNode": 2, "srcPin": 2, "destNode": 3, "destPin": 1 }
+  ]
+})json"
+    });
+
+    // 4. Stochastic Reverse Resonator (Resonadores Modales & Afinación)
+    catalog.push_back({
+        "Stochastic Reverse Resonator",
+        "Resonadores Modales & Afinación",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Stochastic Reverse Resonator",
+  "author": "N8Audio",
+  "category": "Resonadores Modales & Afinación",
+  "description": "Granos estocasticos invertidos que excitan un banco de resonadores modales decantando en reverb FDN",
+  "dryLevel": 0.5,
+  "wetLevel": 0.85,
+  "macros": [0.7, 0.8, 0.6, 0.5, 0.5, 0.5, 0.5, 0.0],
+  "nodes": [
+    { "id": 1, "name": "Reverse Granular", "type": 7, "x": 40.0, "y": 60.0, "params": { "1": 120.0, "2": 20.0, "3": 60.0, "4": -12.0, "5": 0.0, "6": 0.7, "7": 0.8, "10": 1.0 } },
+    { "id": 2, "name": "Modal Resonators", "type": 13, "x": 260.0, "y": 60.0, "params": { "1": 220.0, "2": 2.2, "3": 0.4, "4": 0.2, "5": 0.75 } },
+    { "id": 3, "name": "FDN Reverb", "type": 6, "x": 480.0, "y": 60.0, "params": { "1": 0.85, "2": 4.5, "3": 5500.0, "4": 25.0, "5": 0.5 } }
+  ],
+  "connections": [
+    { "id": 1, "srcNode": 1, "srcPin": 2, "destNode": 2, "destPin": 1 },
+    { "id": 2, "srcNode": 2, "srcPin": 2, "destNode": 3, "destPin": 1 }
+  ]
+})json"
+    });
+
+    // 5. Hypersonic Cybernetic Slicer (Dinámica Agresiva & OTT)
+    catalog.push_back({
+        "Hypersonic Cybernetic Slicer",
+        "Dinámica Agresiva & OTT",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Hypersonic Cybernetic Slicer",
+  "author": "N8Audio",
+  "category": "Dinámica Agresiva & OTT",
+  "description": "Segmentacion agresiva en semicorcheas con wavefolding, compresion multibanda OTT y limitador true peak",
+  "dryLevel": 0.2,
+  "wetLevel": 1.0,
+  "macros": [0.95, 0.85, 0.7, 0.6, 0.5, 0.5, 0.5, 0.0],
+  "nodes": [
+    { "id": 1, "name": "Hyper Slicer", "type": 49, "x": 40.0, "y": 60.0, "params": { "1": 0.0, "2": 16.0, "3": -1.0, "4": 1.0, "5": 0.0, "6": 40.0, "7": 6.0, "8": 0.4, "9": 0.0, "10": 16000.0, "11": 1.0 } },
+    { "id": 2, "name": "Wavefold Drive", "type": 8, "x": 250.0, "y": 60.0, "params": { "1": 5.5, "2": 2.0, "3": 6500.0, "4": 0.8 } },
+    { "id": 3, "name": "Multiband OTT", "type": 15, "x": 460.0, "y": 60.0, "params": { "1": 180.0, "2": 3000.0, "3": 1.3, "4": 1.1, "5": 1.2, "6": 0.9 } },
+    { "id": 4, "name": "Brickwall Peak", "type": 39, "x": 670.0, "y": 60.0, "params": { "1": -1.0, "2": -0.2, "3": 40.0, "4": 2.0, "5": 1.0 } }
+  ],
+  "connections": [
+    { "id": 1, "srcNode": 1, "srcPin": 2, "destNode": 2, "destPin": 1 },
+    { "id": 2, "srcNode": 2, "srcPin": 2, "destNode": 3, "destPin": 1 },
+    { "id": 3, "srcNode": 3, "srcPin": 2, "destNode": 4, "destPin": 1 }
+  ]
+})json"
+    });
+
+    // 6. Orbital Euclidean Pulsar (Paneo 3D & Espacialización)
+    catalog.push_back({
+        "Orbital Euclidean Pulsar",
+        "Paneo 3D & Espacialización",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Orbital Euclidean Pulsar",
+  "author": "N8Audio",
+  "category": "Paneo 3D & Espacialización",
+  "description": "Paneo orbital 3D con chorus multifasico, retardo escalonado ping-pong y textura bitcrush vintage",
+  "dryLevel": 0.45,
+  "wetLevel": 0.9,
+  "macros": [0.75, 0.6, 0.8, 0.7, 0.5, 0.5, 0.5, 0.0],
+  "nodes": [
+    { "id": 1, "name": "3D Panner", "type": 26, "x": 40.0, "y": 60.0, "params": { "1": 45.0, "2": 15.0, "3": 2.0, "4": 1.0 } },
+    { "id": 2, "name": "Stereo Chorus", "type": 17, "x": 250.0, "y": 60.0, "params": { "1": 0.8, "2": 0.65, "3": 0.3, "4": 4.0, "5": 0.75 } },
+    { "id": 3, "name": "Space Delay", "type": 28, "x": 460.0, "y": 60.0, "params": { "1": 240.0, "2": 360.0, "3": 0.5, "4": 7000.0, "5": 1.0, "6": 0.55 } },
+    { "id": 4, "name": "Lo-Fi Decimator", "type": 40, "x": 670.0, "y": 60.0, "params": { "1": 12.0, "2": 2.0, "3": 0.02, "4": 0.2, "5": 0.0, "6": 0.4 } }
+  ],
+  "connections": [
+    { "id": 1, "srcNode": 1, "srcPin": 2, "destNode": 2, "destPin": 1 },
+    { "id": 2, "srcNode": 2, "srcPin": 2, "destNode": 3, "destPin": 1 },
+    { "id": 3, "srcNode": 3, "srcPin": 2, "destNode": 4, "destPin": 1 }
+  ]
+})json"
+    });
+
+    // 7. Dynamic Motion Morph (Modulación Psicoacústica)
+    catalog.push_back({
+        "Dynamic Motion Morph",
+        "Modulación Psicoacústica",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Dynamic Motion Morph",
+  "author": "N8Audio",
+  "category": "Modulación Psicoacústica",
+  "description": "Escultura dinamica con realce de transitorios, barrido bipolar en peine con flanger y ecualizacion quirurgica",
+  "dryLevel": 0.35,
+  "wetLevel": 0.95,
+  "macros": [0.85, 0.7, 0.75, 0.5, 0.5, 0.5, 0.5, 0.0],
+  "nodes": [
+    { "id": 1, "name": "Transient Punch", "type": 33, "x": 40.0, "y": 60.0, "params": { "1": 0.45, "2": -0.3, "3": 1.2, "4": 1.0, "5": 2.0, "6": 1.0 } },
+    { "id": 2, "name": "Comb Flanger", "type": 18, "x": 250.0, "y": 60.0, "params": { "1": 0.35, "2": 0.85, "3": 2.5, "4": 0.75, "5": 0.7 } },
+    { "id": 3, "name": "Parametric Tone", "type": 27, "x": 460.0, "y": 60.0, "params": { "1": 90.0, "2": 2.0, "3": 2200.0, "4": 2.0, "5": 4.0, "6": 8500.0, "7": -2.0 } },
+    { "id": 4, "name": "VCA Compressor", "type": 9, "x": 670.0, "y": 60.0, "params": { "1": -16.0, "2": 4.0, "3": 8.0, "4": 80.0, "5": 3.0, "6": 4.0 } }
+  ],
+  "connections": [
+    { "id": 1, "srcNode": 1, "srcPin": 2, "destNode": 2, "destPin": 1 },
+    { "id": 2, "srcNode": 2, "srcPin": 2, "destNode": 3, "destPin": 1 },
+    { "id": 3, "srcNode": 3, "srcPin": 2, "destNode": 4, "destPin": 1 }
+  ]
+})json"
+    });
+
+    // 8. Celestial Refracted Cathedral (Espacios Infinitos & Shimmer)
+    catalog.push_back({
+        "Celestial Refracted Cathedral",
+        "Espacios Infinitos & Shimmer",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Celestial Refracted Cathedral",
+  "author": "N8Audio",
+  "category": "Espacios Infinitos & Shimmer",
+  "description": "Desdoblamiento en 8 voces unisono refractadas inyectadas en una reverberacion shimmer masiva de 12 segundos y apertura estéreo ultra-amplia",
+  "dryLevel": 0.3,
+  "wetLevel": 1.0,
+  "macros": [0.9, 0.85, 0.8, 0.6, 0.5, 0.5, 0.5, 0.0],
+  "nodes": [
+    { "id": 1, "name": "8-Voice Refraction", "type": 51, "x": 40.0, "y": 60.0, "params": { "1": 8.0, "2": 22.0, "3": 25.0, "4": 0.95, "5": 0.8, "6": 2.5, "7": 0.85 } },
+    { "id": 2, "name": "Shimmer Reverb", "type": 50, "x": 260.0, "y": 60.0, "params": { "1": 12.0, "2": 6000.0, "3": 0.7, "4": 0.0, "5": 1.6, "6": 0.75 } },
+    { "id": 3, "name": "M/S Decoder", "type": 25, "x": 480.0, "y": 60.0, "params": { "1": 1.5, "2": 140.0, "3": 0.0 } }
+  ],
+  "connections": [
+    { "id": 1, "srcNode": 1, "srcPin": 2, "destNode": 2, "destPin": 1 },
+    { "id": 2, "srcNode": 2, "srcPin": 2, "destNode": 3, "destPin": 1 }
+  ]
+})json"
+    });
+
+    // 9. Liquid Spectral Smear Pad (Espectral & Drones Congelados)
+    catalog.push_back({
+        "Liquid Spectral Smear Pad",
+        "Espectral & Drones Congelados",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Liquid Spectral Smear Pad",
+  "author": "N8Audio",
+  "category": "Espectral & Drones Congelados",
+  "description": "Desvanecimiento timbrico liquido infinito mediante STFT FFT de alta densidad con difusion de fase y chorus envolvente",
+  "dryLevel": 0.35,
+  "wetLevel": 0.95,
+  "macros": [0.8, 0.9, 0.7, 0.5, 0.5, 0.5, 0.5, 0.0],
+  "nodes": [
+    { "id": 1, "name": "Spectral Smear", "type": 52, "x": 40.0, "y": 60.0, "params": { "1": 6.0, "2": 0.92, "3": 0.95, "4": -0.15, "5": 0.9 } },
+    { "id": 2, "name": "Dimension Chorus", "type": 17, "x": 250.0, "y": 60.0, "params": { "1": 0.6, "2": 0.5, "3": 0.2, "4": 4.0, "5": 0.6 } },
+    { "id": 3, "name": "Deep Space Reverb", "type": 6, "x": 460.0, "y": 60.0, "params": { "1": 0.95, "2": 8.0, "3": 4500.0, "4": 35.0, "5": 0.65 } }
+  ],
+  "connections": [
+    { "id": 1, "srcNode": 1, "srcPin": 2, "destNode": 2, "destPin": 1 },
+    { "id": 2, "srcNode": 2, "srcPin": 2, "destNode": 3, "destPin": 1 }
+  ]
+})json"
+    });
+
+    // 10. Prismatic Ambient Halo (Ecos Cinematográficos & Paisajes)
+    catalog.push_back({
+        "Prismatic Ambient Halo",
+        "Ecos Cinematográficos & Paisajes",
+        R"json({
+  "schemaVersion": 1,
+  "name": "Prismatic Ambient Halo",
+  "author": "N8Audio",
+  "category": "Ecos Cinematográficos & Paisajes",
+  "description": "Prisma acustico de 6 voces refractadas con lloro de cinta vintage y shimmer en quinta justa +7st en espacio binaural 3D",
+  "dryLevel": 0.4,
+  "wetLevel": 0.9,
+  "macros": [0.85, 0.8, 0.75, 0.65, 0.5, 0.5, 0.5, 0.0],
+  "nodes": [
+    { "id": 1, "name": "Prism Refraction", "type": 51, "x": 40.0, "y": 60.0, "params": { "1": 6.0, "2": 16.0, "3": 18.0, "4": 0.85, "5": 0.5, "6": 1.8, "7": 0.8 } },
+    { "id": 2, "name": "Tape Flutter", "type": 21, "x": 250.0, "y": 60.0, "params": { "1": 2.8, "2": 0.0, "3": 0.65, "4": 0.75, "5": 0.75 } },
+    { "id": 3, "name": "Shimmer Reverb", "type": 50, "x": 460.0, "y": 60.0, "params": { "1": 9.0, "2": 7000.0, "3": 0.6, "4": 1.0, "5": 1.4, "6": 0.65 } },
+    { "id": 4, "name": "Spatializer 3D", "type": 26, "x": 670.0, "y": 60.0, "params": { "1": -30.0, "2": 20.0, "3": 2.5, "4": 1.0 } }
+  ],
+  "connections": [
+    { "id": 1, "srcNode": 1, "srcPin": 2, "destNode": 2, "destPin": 1 },
+    { "id": 2, "srcNode": 2, "srcPin": 2, "destNode": 3, "destPin": 1 },
+    { "id": 3, "srcNode": 3, "srcPin": 2, "destNode": 4, "destPin": 1 }
   ]
 })json"
     });

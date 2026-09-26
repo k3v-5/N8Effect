@@ -30,9 +30,18 @@ public:
     void deleteNode(NodeId id);
     void disconnectPin(NodeId nodeId, PinId pinId);
     void deleteConnection(ConnectionId cid);
-    void selectNode(NodeId id);
+    void selectNode(NodeId id, bool additive = false);
+    void clearSelection();
+    bool isNodeSelected(NodeId id) const noexcept { return selectedNodeIds_.contains(id); }
+    const std::unordered_set<NodeId>& getSelectedNodeIds() const noexcept { return selectedNodeIds_; }
     NodeId getSelectedNodeId() const noexcept { return selectedNodeId_; }
     void setOnNodeSelected(std::function<void(NodeId)> cb) { onNodeSelected_ = std::move(cb); }
+
+    // Colapso y exportación de subgrafos jerárquicos (Reglas 6, 16, 21, 22)
+    void collapseSelectedNodesIntoContainer();
+    void exportSelectedSubGraphModule();
+    void importSubGraphModule();
+    bool keyPressed(const juce::KeyPress& key) override;
 
     // Gestión de Nodos y Cajas de Grupo (Regla R2)
     NodeComponent* findNodeComponent(NodeId id) const;
@@ -75,10 +84,12 @@ private:
     std::vector<std::unique_ptr<NodeComponent>> nodeComponents_;
     std::vector<std::unique_ptr<NodeGroupComponent>> nodeGroups_;
     NodeId selectedNodeId_{ InvalidNodeId };
+    std::unordered_set<NodeId> selectedNodeIds_;
     std::function<void(NodeId)> onNodeSelected_;
 
     // Estado de arrastre y snapping de cables
     bool isDraggingWire_{ false };
+    bool isDragWireInvalid_{ false };
     NodeId dragSourceNode_{ InvalidNodeId };
     PinId dragSourcePin_{ InvalidPinId };
     PinType dragSourcePinType_{ PinType::AudioOutput };
@@ -87,6 +98,11 @@ private:
     juce::Point<float> currentMousePt_;
     NodeId snappedTargetNode_{ InvalidNodeId };
     PinId snappedTargetPin_{ InvalidPinId };
+
+    // Selección elástica múltiple (Marquee / Rubberband)
+    bool isMarqueeSelecting_{ false };
+    juce::Point<float> marqueeStartPt_;
+    juce::Rectangle<float> marqueeRect_;
 
     // Paneo del canvas
     juce::Point<float> canvasOffset_{ 0.0f, 0.0f };

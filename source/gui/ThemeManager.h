@@ -12,7 +12,9 @@ enum class ThemePreset {
     Cyberpunk = 0,
     VintageConsole,
     CleanStudio,
-    PhosphorCRT
+    PhosphorCRT,
+    HighContrastDark,
+    HighContrastLight
 };
 
 /**
@@ -56,10 +58,12 @@ public:
 
     static juce::String getPresetName(ThemePreset preset) noexcept {
         switch (preset) {
-            case ThemePreset::Cyberpunk:      return "CYBERPUNK";
-            case ThemePreset::VintageConsole: return "VINTAGE CONSOLE";
-            case ThemePreset::CleanStudio:    return "CLEAN STUDIO";
-            case ThemePreset::PhosphorCRT:    return "PHOSPHOR CRT";
+            case ThemePreset::Cyberpunk:         return "CYBERPUNK";
+            case ThemePreset::VintageConsole:    return "VINTAGE CONSOLE";
+            case ThemePreset::CleanStudio:       return "CLEAN STUDIO";
+            case ThemePreset::PhosphorCRT:       return "PHOSPHOR CRT";
+            case ThemePreset::HighContrastDark:  return "HIGH CONTRAST DARK (WCAG AAA)";
+            case ThemePreset::HighContrastLight: return "HIGH CONTRAST LIGHT (WCAG AAA)";
         }
         return "CYBERPUNK";
     }
@@ -137,6 +141,42 @@ public:
                 c.ledBypassed      = juce::Colour(0x33004400);
                 c.wireGlowColor    = juce::Colour(0x6633ff33);
                 c.waveformLcdColor = juce::Colour(0xff33ff33);
+                break;
+
+            case ThemePreset::HighContrastDark:
+                // OLED Black + Pure White text (21:1 WCAG AAA) + Electric Yellow and Cyan Wires
+                c.backgroundDark   = juce::Colour(0xff000000); // 100% OLED Black
+                c.headerDark       = juce::Colour(0xff0a0a0a);
+                c.panelSurface     = juce::Colour(0xff121212);
+                c.cardSurface      = juce::Colour(0xff1a1a1a);
+                c.accentPrimary    = juce::Colour(0xffffff00); // Electric Yellow
+                c.accentSecondary  = juce::Colour(0xff00ffff); // Electric Cyan
+                c.borderMuted      = juce::Colour(0xffffffff); // Solid 100% White border
+                c.borderFocused    = juce::Colour(0xffffff00);
+                c.textPrimary      = juce::Colour(0xffffffff); // 100% White (21:1 contrast)
+                c.textSecondary    = juce::Colour(0xffe0e0e0);
+                c.ledActive        = juce::Colour(0xff00ff00); // Pure Green
+                c.ledBypassed      = juce::Colour(0xff555555);
+                c.wireGlowColor    = juce::Colour(0x88ffff00);
+                c.waveformLcdColor = juce::Colour(0xffffff00);
+                break;
+
+            case ThemePreset::HighContrastLight:
+                // Stark White + Solid Black text (21:1 WCAG AAA) + Deep Blue and Red
+                c.backgroundDark   = juce::Colour(0xffffffff); // Pure White
+                c.headerDark       = juce::Colour(0xfff0f0f0);
+                c.panelSurface     = juce::Colour(0xffe6e6e6);
+                c.cardSurface      = juce::Colour(0xffdcdcdc);
+                c.accentPrimary    = juce::Colour(0xff0000ee); // Vivid Deep Blue
+                c.accentSecondary  = juce::Colour(0xffcc0000); // Deep Crimson
+                c.borderMuted      = juce::Colour(0xff000000); // Solid Black border
+                c.borderFocused    = juce::Colour(0xff0000ee);
+                c.textPrimary      = juce::Colour(0xff000000); // Pure Black (21:1 contrast)
+                c.textSecondary    = juce::Colour(0xff222222);
+                c.ledActive        = juce::Colour(0xff008800);
+                c.ledBypassed      = juce::Colour(0xff888888);
+                c.wireGlowColor    = juce::Colour(0x550000ee);
+                c.waveformLcdColor = juce::Colour(0xff0000aa);
                 break;
         }
         return c;

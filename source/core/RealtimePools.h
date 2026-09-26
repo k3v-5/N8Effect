@@ -6,6 +6,9 @@
 #include <memory>
 #include <cstdint>
 #include <cassert>
+#include <limits>
+#include <new>
+#include <cstdlib>
 #include <immintrin.h>
 #include "Types.h"
 
@@ -40,18 +43,111 @@ private:
 };
 
 /**
- * @brief Buffer de audio plano de tamaño fijo prealocado (Regla 9 y 10)
+ * @brief Asignador de memoria alineada estricta (alignas(Alignment)) para AVX2/AVX-512 y caché L1 (Reglas 11 y 47)
+ */
+template <typename T, size_t Alignment = 64>
+struct AlignedAllocator {
+    using value_type = T;
+    using size_type = std::size_t;
+    using difference_type = std::ptrdiff_t;
+    using pointer = T*;
+    using const_pointer = const T*;
+
+    template <typename U>
+    struct rebind {
+        using other = AlignedAllocator<U, Alignment>;
+    };
+
+    AlignedAllocator() noexcept = default;
+    template <typename U> AlignedAllocator(const AlignedAllocator<U, Alignment>&) noexcept {}
+
+    T* allocate(size_t n) {
+        if (n == 0) return nullptr;
+        if (n > (std::numeric_limits<size_t>::max() / sizeof(T)))
+            throw std::bad_array_new_length();
+        size_t bytes = n * sizeof(T);
+#if defined(_MSC_VER)
+        void* p = _aligned_malloc(bytes, Alignment);
+        if (!p) throw std::bad_alloc();
+        return static_cast<T*>(p);
+#else
+        void* p = nullptr;
+        if (posix_memalign(&p, Alignment, bytes) != 0 || !p)
+            throw std::bad_alloc();
+        return static_cast<T*>(p);
+#endif
+    }
+
+    void deallocate(T* p, size_t) noexcept {
+        if (p) {
+#if defined(_MSC_VER)
+            _aligned_free(p);
+#else
+            free(p);
+#endif
+        }
+    }
+
+    template <typename U>
+    bool operator==(const AlignedAllocator<U, Alignment>&) const noexcept { return true; }
+    template <typename U>
+    bool operator!=(const AlignedAllocator<U, Alignment>&) const noexcept { return false; }
+};
+
+/**
+ * @brief Buffer de audio plano de tamaño fijo prealocado con alineación estricta a 64 bytes (Reglas 9, 10, 11 y 47)
  */
 class PreallocatedBuffer {
 public:
+    PreallocatedBuffer() = default;
+
+    PreallocatedBuffer(const PreallocatedBuffer& other) {
+        copyFromInternal(other);
+    }
+
+    PreallocatedBuffer& operator=(const PreallocatedBuffer& other) {
+        if (this != &other) {
+            copyFromInternal(other);
+        }
+        return *this;
+    }
+
+    PreallocatedBuffer(PreallocatedBuffer&& other) noexcept
+        : numChannels_(other.numChannels_)
+        , maxSamples_(other.maxSamples_)
+        , channelStride_(other.channelStride_)
+        , storage_(std::move(other.storage_))
+        , channelPointers_(std::move(other.channelPointers_))
+    {
+        updateChannelPointers();
+        other.numChannels_ = 0;
+        other.maxSamples_ = 0;
+        other.channelStride_ = 0;
+    }
+
+    PreallocatedBuffer& operator=(PreallocatedBuffer&& other) noexcept {
+        if (this != &other) {
+            numChannels_ = other.numChannels_;
+            maxSamples_ = other.maxSamples_;
+            channelStride_ = other.channelStride_;
+            storage_ = std::move(other.storage_);
+            channelPointers_ = std::move(other.channelPointers_);
+            updateChannelPointers();
+            other.numChannels_ = 0;
+            other.maxSamples_ = 0;
+            other.channelStride_ = 0;
+        }
+        return *this;
+    }
+
     void prepare(uint32_t numChannels, uint32_t maxSamples) {
         numChannels_ = numChannels;
         maxSamples_ = maxSamples;
-        storage_.resize(static_cast<size_t>(numChannels) * maxSamples, 0.0f);
+        // Cada canal alineado a múltiplos de 16 floats (64 bytes) para AVX-512 / AVX2 (Regla 11 y 47)
+        channelStride_ = (maxSamples + 15) & ~15;
+        storage_.assign(static_cast<size_t>(numChannels) * channelStride_, 0.0f);
         channelPointers_.resize(numChannels);
-        for (uint32_t ch = 0; ch < numChannels; ++ch) {
-            channelPointers_[ch] = storage_.data() + (static_cast<size_t>(ch) * maxSamples);
-        }
+        updateChannelPointers();
     }
 
     void clear(uint32_t numSamples) noexcept {
@@ -91,11 +187,28 @@ public:
 
     uint32_t getNumChannels() const noexcept { return numChannels_; }
     uint32_t getMaxSamples() const noexcept { return maxSamples_; }
+    size_t getChannelStride() const noexcept { return channelStride_; }
 
 private:
+    void updateChannelPointers() noexcept {
+        for (uint32_t ch = 0; ch < numChannels_; ++ch) {
+            channelPointers_[ch] = storage_.data() + (static_cast<size_t>(ch) * channelStride_);
+        }
+    }
+
+    void copyFromInternal(const PreallocatedBuffer& other) {
+        numChannels_ = other.numChannels_;
+        maxSamples_ = other.maxSamples_;
+        channelStride_ = other.channelStride_;
+        storage_ = other.storage_;
+        channelPointers_.resize(numChannels_);
+        updateChannelPointers();
+    }
+
     uint32_t numChannels_{ 0 };
     uint32_t maxSamples_{ 0 };
-    std::vector<float> storage_;
+    size_t channelStride_{ 0 };
+    std::vector<float, AlignedAllocator<float, 64>> storage_;
     std::vector<float*> channelPointers_;
 };
 
@@ -106,6 +219,21 @@ private:
 class AudioBufferPool {
 public:
     AudioBufferPool() = default;
+    AudioBufferPool(const AudioBufferPool&) = delete;
+    AudioBufferPool& operator=(const AudioBufferPool&) = delete;
+    AudioBufferPool(AudioBufferPool&& other) noexcept {
+        buffers_ = std::move(other.buffers_);
+        availableIndices_ = std::move(other.availableIndices_);
+        nextAvailable_.store(other.nextAvailable_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
+    AudioBufferPool& operator=(AudioBufferPool&& other) noexcept {
+        if (this != &other) {
+            buffers_ = std::move(other.buffers_);
+            availableIndices_ = std::move(other.availableIndices_);
+            nextAvailable_.store(other.nextAvailable_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        }
+        return *this;
+    }
 
     void prepare(uint32_t poolSize, uint32_t numChannels, uint32_t maxBlockSize) {
         buffers_.clear();
@@ -118,17 +246,19 @@ public:
             buffers_[i].prepare(numChannels, maxBlockSize);
             availableIndices_[i] = i;
         }
-        nextAvailable_ = poolSize;
+        nextAvailable_.store(poolSize, std::memory_order_release);
     }
 
-    // Adquiere un buffer del pool en tiempo real sin alocaciones
+    // Adquiere un buffer del pool en tiempo real sin alocaciones de forma thread-safe y lock-free (Reglas 9, 10, 47)
     PreallocatedBuffer* acquire() noexcept {
-        if (nextAvailable_ == 0) {
-            return nullptr; // Pool agotado (CPU/Memory Protection)
+        uint32_t current = nextAvailable_.load(std::memory_order_relaxed);
+        while (current > 0) {
+            if (nextAvailable_.compare_exchange_weak(current, current - 1, std::memory_order_acquire, std::memory_order_relaxed)) {
+                uint32_t index = availableIndices_[current - 1];
+                return &buffers_[index];
+            }
         }
-        --nextAvailable_;
-        uint32_t index = availableIndices_[nextAvailable_];
-        return &buffers_[index];
+        return nullptr; // Pool agotado (CPU/Memory Protection)
     }
 
     // Libera un buffer al pool en tiempo real
@@ -137,9 +267,13 @@ public:
         
         for (size_t i = 0; i < buffers_.size(); ++i) {
             if (&buffers_[i] == buffer) {
-                assert(nextAvailable_ < availableIndices_.size());
-                availableIndices_[nextAvailable_] = static_cast<uint32_t>(i);
-                ++nextAvailable_;
+                uint32_t cur = nextAvailable_.load(std::memory_order_relaxed);
+                while (cur < availableIndices_.size()) {
+                    if (nextAvailable_.compare_exchange_weak(cur, cur + 1, std::memory_order_release, std::memory_order_relaxed)) {
+                        availableIndices_[cur] = static_cast<uint32_t>(i);
+                        return;
+                    }
+                }
                 return;
             }
         }
@@ -147,19 +281,20 @@ public:
 
     // Resetea todos los buffers asignados al pool
     void releaseAll() noexcept {
-        nextAvailable_ = static_cast<uint32_t>(buffers_.size());
-        for (uint32_t i = 0; i < nextAvailable_; ++i) {
+        const uint32_t total = static_cast<uint32_t>(buffers_.size());
+        for (uint32_t i = 0; i < total; ++i) {
             availableIndices_[i] = i;
         }
+        nextAvailable_.store(total, std::memory_order_release);
     }
 
-    uint32_t getAvailableCount() const noexcept { return nextAvailable_; }
+    uint32_t getAvailableCount() const noexcept { return nextAvailable_.load(std::memory_order_relaxed); }
     uint32_t getTotalCapacity() const noexcept { return static_cast<uint32_t>(buffers_.size()); }
 
 private:
     std::vector<PreallocatedBuffer> buffers_;
     std::vector<uint32_t> availableIndices_;
-    uint32_t nextAvailable_{ 0 };
+    std::atomic<uint32_t> nextAvailable_{ 0 };
 };
 
 /**

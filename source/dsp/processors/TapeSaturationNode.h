@@ -11,6 +11,7 @@
 #include "../core/DenormalGuards.h"
 #include "../core/FastMath.h"
 #include "../core/BiquadFilter.h"
+#include "../core/MagneticHysteresis.h"
 
 namespace audio_graph {
 
@@ -24,7 +25,8 @@ public:
         TapeSpeed = 2, // 0: 7.5 ips, 1: 15 ips, 2: 30 ips
         WowFlutter = 3,
         Warmth = 4,
-        Mix = 5
+        Mix = 5,
+        Hysteresis = 6 // Intensidad de memoria magnética Jiles-Atherton (0.0 a 1.0)
     };
 
     TapeSaturationNode() {
@@ -36,6 +38,7 @@ public:
         params_[2] = { WowFlutter, "Flutter", 0.25f, 0.0f, 1.0f, true };
         params_[3] = { Warmth, "Warmth", 0.5f, 0.0f, 1.0f, true };
         params_[4] = { Mix, "Mix", 1.0f, 0.0f, 1.0f, true };
+        params_[5] = { Hysteresis, "Hysteresis", 0.5f, 0.0f, 1.0f, true };
     }
 
     void prepare(const ProcessSpec& spec) override {
@@ -49,6 +52,7 @@ public:
         flutterPhase2_ = 0.0f;
 
         updateFilters();
+        updateHysteresis();
         reset();
     }
 
@@ -58,6 +62,7 @@ public:
         headBumpFilter_[1].reset();
         rolloffFilter_[0].reset();
         rolloffFilter_[1].reset();
+        hysteresisModel_.reset();
         writeIndex_ = 0;
         flutterPhase1_ = 0.0f;
         flutterPhase2_ = 0.0f;
@@ -70,7 +75,6 @@ public:
 
         updateFilters();
 
-        const float drive = targetDrive_;
         const float flutterAmount = targetWowFlutter_;
         const float mix = targetMix_;
 
@@ -99,9 +103,8 @@ public:
                 // 2. Head bump de graves magnéticos (60-90 Hz)
                 signal = headBumpFilter_[ch].processSample(signal);
 
-                // 3. Saturación analógica de cinta (asimetría y compresión suave sin transcendentales)
-                signal *= drive;
-                signal = FastMath::fastTubeSaturation(signal * 0.6f);
+                // 3. Saturación analógica de cinta con histéresis magnética no lineal (Reglas 5, 8, 34)
+                signal = hysteresisModel_.processChannel(ch, signal);
 
                 // 4. Pérdida de altas frecuencias en entrehierro (Tape gap loss rolloff)
                 signal = rolloffFilter_[ch].processSample(signal);
@@ -119,11 +122,27 @@ public:
 
     void setParameter(ParameterId id, float value) override {
         switch (id) {
-            case Drive: targetDrive_ = std::clamp(value, 1.0f, 10.0f); break;
-            case TapeSpeed: targetSpeed_ = std::clamp(static_cast<int>(std::round(value)), 0, 2); break;
-            case WowFlutter: targetWowFlutter_ = std::clamp(value, 0.0f, 1.0f); break;
-            case Warmth: targetWarmth_ = std::clamp(value, 0.0f, 1.0f); break;
-            case Mix: targetMix_ = std::clamp(value, 0.0f, 1.0f); break;
+            case Drive:
+                targetDrive_ = std::clamp(value, 1.0f, 10.0f);
+                updateHysteresis();
+                break;
+            case TapeSpeed:
+                targetSpeed_ = std::clamp(static_cast<int>(std::round(value)), 0, 2);
+                updateHysteresis();
+                break;
+            case WowFlutter:
+                targetWowFlutter_ = std::clamp(value, 0.0f, 1.0f);
+                break;
+            case Warmth:
+                targetWarmth_ = std::clamp(value, 0.0f, 1.0f);
+                break;
+            case Mix:
+                targetMix_ = std::clamp(value, 0.0f, 1.0f);
+                break;
+            case Hysteresis:
+                targetHysteresis_ = std::clamp(value, 0.0f, 1.0f);
+                updateHysteresis();
+                break;
         }
     }
 
@@ -134,6 +153,7 @@ public:
             case WowFlutter: return targetWowFlutter_;
             case Warmth: return targetWarmth_;
             case Mix: return targetMix_;
+            case Hysteresis: return targetHysteresis_;
             default: return 0.0f;
         }
     }
@@ -168,6 +188,11 @@ private:
         }
     }
 
+    void updateHysteresis() noexcept {
+        const float speedFactor = (targetSpeed_ == 0) ? 0.5f : ((targetSpeed_ == 1) ? 1.0f : 1.5f);
+        hysteresisModel_.setParameters(targetDrive_, targetHysteresis_, speedFactor);
+    }
+
     float readInterpolated(size_t ch, float delaySamples) const noexcept {
         const float readPos = static_cast<float>(writeIndex_) - delaySamples;
         float wrappedPos = std::fmod(readPos, static_cast<float>(maxDelaySamples_));
@@ -189,15 +214,17 @@ private:
 
     std::array<BiquadFilter, 2> headBumpFilter_;
     std::array<BiquadFilter, 2> rolloffFilter_;
+    MagneticHysteresis hysteresisModel_;
 
     float targetDrive_{ 2.0f };
     int targetSpeed_{ 1 };
     float targetWowFlutter_{ 0.25f };
     float targetWarmth_{ 0.5f };
     float targetMix_{ 1.0f };
+    float targetHysteresis_{ 0.5f };
 
     std::array<PinDescriptor, 2> pins_;
-    std::array<ParameterInfo, 5> params_;
+    std::array<ParameterInfo, 6> params_;
 };
 
 inline AutoRegisterNode<TapeSaturationNode> registerTape(NodeType::Tape, "tape", "Distortion");

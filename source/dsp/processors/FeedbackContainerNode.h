@@ -51,8 +51,13 @@ public:
         delayLine_[0].prepare(maxDelaySamples);
         delayLine_[1].prepare(maxDelaySamples);
 
-        forwardBuffer_.prepare(spec.numOutputChannels, spec.maximumBlockSize);
-        innerBuffer_.prepare(spec.numOutputChannels, spec.maximumBlockSize);
+        const uint32_t bufferChannels = std::max(2u, static_cast<uint32_t>(spec.numOutputChannels));
+        forwardBuffer_.prepare(bufferChannels, spec.maximumBlockSize);
+        innerBuffer_.prepare(bufferChannels, spec.maximumBlockSize);
+
+        const double sr = spec.sampleRate > 0.0 ? spec.sampleRate : 44100.0;
+        agcAttackCoeff_ = static_cast<float>(1.0 - std::exp(-1.0 / (0.010 * sr)));  // 10 ms attack
+        agcReleaseCoeff_ = static_cast<float>(1.0 - std::exp(-1.0 / (0.200 * sr))); // 200 ms release
 
         updateFilters();
         reset();
@@ -75,6 +80,8 @@ public:
         dcBlocker_[1].reset();
         rmsEnvelope_[0] = 0.0f;
         rmsEnvelope_[1] = 0.0f;
+        agcGain_[0] = 1.0f;
+        agcGain_[1] = 1.0f;
         currentFeedback_ = targetFeedback_;
         currentMix_ = targetMix_;
         currentDelayMs_ = targetDelayMs_;
@@ -98,7 +105,7 @@ public:
         ScopedDenormalGuard denormalGuard; // Reglas 34 y 47
         const float alpha = 0.005f;        // Anti-click smoothing (Regla 35)
 
-        // Factor de decaimiento del detector RMS de envolvente
+        // Factor de integración del detector RMS de envolvente
         const float rmsAttack = 0.05f;
         const float rmsRelease = 0.001f;
 
@@ -113,7 +120,7 @@ public:
 
             const float delaySamples = (currentDelayMs_ * 0.001f) * static_cast<float>(spec_.sampleRate);
 
-            // 1. Leer muestras retroalimentadas desde las líneas de retardo
+            // 1. Leer muestras retroalimentadas desde las líneas de retardo (moduladas por el AGC dinámico)
             const float fbReadL = delayLine_[0].readCubic(delaySamples);
             const float fbReadR = delayLine_[1].readCubic(delaySamples);
 
@@ -122,9 +129,9 @@ public:
             const float inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr)
                 ? context.inputChannels[1][s] : inL;
 
-            // Inyección al camino de avance
-            forwardL[s] = inL + fbReadL * currentFeedback_;
-            forwardR[s] = inR + fbReadR * currentFeedback_;
+            // Inyección al camino de avance con limitación adaptativa AGC (Punto 6)
+            forwardL[s] = inL + fbReadL * (currentFeedback_ * agcGain_[0]);
+            forwardR[s] = inR + fbReadR * (currentFeedback_ * agcGain_[1]);
         }
 
         // Si hay procesador interno en el lazo, procesar en bloque (Regla 6)
@@ -146,20 +153,20 @@ public:
             wetSrcR = innerBuffer_.getReadPointer(1);
         }
 
-        // 2. Procesar señal de realimentación: Damping + DC Blocker + Anti-Runaway + Padé tanh (Reglas 11, 12, 47)
+        // 2. Procesar señal de realimentación: Damping + DC Blocker + Dynamic AGC + Padé tanh (Reglas 11, 12, 47)
         for (uint32_t s = 0; s < context.numSamples; ++s) {
             float sampleL = wetSrcL[s];
             float sampleR = wetSrcR[s];
 
-            // Damping acústico pasa-bajos
+            // Damping acústico pasa-bajos suave
             sampleL = dampingFilter_[0].processSample(sampleL);
             sampleR = dampingFilter_[1].processSample(sampleR);
 
-            // Bloqueo de componente continua (DC Blocker)
+            // Bloqueo de componente continua (DC Blocker) suave
             sampleL = dcBlocker_[0].processSample(sampleL);
             sampleR = dcBlocker_[1].processSample(sampleR);
 
-            // Detección de energía RMS para protección anti-runaway (Regla 11 y 12)
+            // Detección de energía RMS para protección anti-runaway y AGC dinámico suave (Reglas 11, 12, 34 y 35)
             const float energyL = sampleL * sampleL;
             const float energyR = sampleR * sampleR;
 
@@ -169,18 +176,19 @@ public:
             const float currentRmsL = std::sqrt(rmsEnvelope_[0]);
             const float currentRmsR = std::sqrt(rmsEnvelope_[1]);
 
-            // Atenuación automática si la energía supera el umbral de seguridad
-            if (currentRmsL > targetThreshold_) {
-                const float excessL = currentRmsL - targetThreshold_;
-                const float duckFactorL = targetThreshold_ / (targetThreshold_ + 4.0f * excessL);
-                sampleL *= duckFactorL;
-            }
+            // AGC analógico dinámico continuo: modulación suave del loop gain (Punto 6)
+            const float targetAgcL = (currentRmsL > targetThreshold_)
+                ? (targetThreshold_ / (targetThreshold_ + 2.0f * (currentRmsL - targetThreshold_)))
+                : 1.0f;
+            const float targetAgcR = (currentRmsR > targetThreshold_)
+                ? (targetThreshold_ / (targetThreshold_ + 2.0f * (currentRmsR - targetThreshold_)))
+                : 1.0f;
 
-            if (currentRmsR > targetThreshold_) {
-                const float excessR = currentRmsR - targetThreshold_;
-                const float duckFactorR = targetThreshold_ / (targetThreshold_ + 4.0f * excessR);
-                sampleR *= duckFactorR;
-            }
+            agcGain_[0] += (targetAgcL < agcGain_[0] ? agcAttackCoeff_ : agcReleaseCoeff_) * (targetAgcL - agcGain_[0]);
+            agcGain_[1] += (targetAgcR < agcGain_[1] ? agcAttackCoeff_ : agcReleaseCoeff_) * (targetAgcR - agcGain_[1]);
+
+            sampleL *= agcGain_[0];
+            sampleR *= agcGain_[1];
 
             // Saturador no lineal sigmoidal Padé: garantiza rango estricto [-1.0f, +1.0f] (Regla 47)
             const float satL = FastMath::fastTanh(sampleL);
@@ -236,10 +244,10 @@ public:
 private:
     void updateFilters() {
         if (spec_.sampleRate > 0) {
-            dampingFilter_[0].setCoefficients(BiquadFilter::Type::Lowpass, spec_.sampleRate, targetDamping_, 0.707f);
-            dampingFilter_[1].setCoefficients(BiquadFilter::Type::Lowpass, spec_.sampleRate, targetDamping_, 0.707f);
-            dcBlocker_[0].setCoefficients(BiquadFilter::Type::Highpass, spec_.sampleRate, 35.0f, 0.707f);
-            dcBlocker_[1].setCoefficients(BiquadFilter::Type::Highpass, spec_.sampleRate, 35.0f, 0.707f);
+            dampingFilter_[0].setLowpassSmooth(spec_.sampleRate, targetDamping_, 0.707f, 128);
+            dampingFilter_[1].setLowpassSmooth(spec_.sampleRate, targetDamping_, 0.707f, 128);
+            dcBlocker_[0].setHighpassSmooth(spec_.sampleRate, 35.0f, 0.707f, 128);
+            dcBlocker_[1].setHighpassSmooth(spec_.sampleRate, 35.0f, 0.707f, 128);
         }
     }
 
@@ -261,6 +269,9 @@ private:
     float currentMix_{ 0.5f };
 
     float rmsEnvelope_[2]{ 0.0f, 0.0f };
+    float agcGain_[2]{ 1.0f, 1.0f };
+    float agcAttackCoeff_{ 0.05f };
+    float agcReleaseCoeff_{ 0.001f };
 
     std::array<PinDescriptor, 2> pins_;
     std::array<ParameterInfo, 5> params_;

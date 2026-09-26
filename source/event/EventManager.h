@@ -115,8 +115,8 @@ public:
         return child;
     }
 
-    // Renderiza todos los eventos activos hacia los buffers estéreo de salida (Regla 9 y 10)
-    void render(float* outL, float* outR, uint32_t numSamples, float sourceLevel) noexcept {
+    // Renderiza todos los eventos activos hacia los buffers estéreo de salida (Regla 9 y 10, Punto 27)
+    void render(float* outL, float* outR, uint32_t numSamples, float sourceLevel, int sourceSilenceOverride = -1) noexcept {
         if (outL == nullptr || outR == nullptr || numSamples == 0) return;
 
         // Limpieza de buffers temporales
@@ -128,7 +128,7 @@ public:
             Event* event = activeEvents_[i];
 
             if (event != nullptr && event->isActive()) {
-                event->render(captureBuffer_, scratchL_.data(), scratchR_.data(), numSamples, sourceLevel);
+                event->render(captureBuffer_, scratchL_.data(), scratchR_.data(), numSamples, sourceLevel, sourceSilenceOverride);
 
                 // Telemetría lock-free hacia la GUI (Reglas 9, 23, 26)
                 const auto& attrs = event->getAttributes();

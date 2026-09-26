@@ -111,6 +111,10 @@ public:
         }
     }
 
+    void mouseUp(const juce::MouseEvent& /*e*/) override {
+        hasDragged_ = false;
+    }
+
     void paint(juce::Graphics& g) override {
         auto bounds = getLocalBounds().toFloat();
 

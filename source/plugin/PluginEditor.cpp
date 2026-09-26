@@ -314,10 +314,19 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
     configModal_.setVisible(false);
     addChildComponent(configModal_);
 
+    // Inicializar Aceleración por Hardware GPU con OpenGL 3.3+ (Reglas 13, 21, 23)
+    openGLContext_ = std::make_unique<juce::OpenGLContext>();
+    openGLContext_->setSwapInterval(1); // Sincronizado a VSync (60 FPS estables)
+    openGLContext_->attachTo(*this);
+
     startTimerHz(30); // 30 fps para actualizaciones de telemetría sin locks
 }
 
 N8AudioProcessorEditor::~N8AudioProcessorEditor() {
+    if (openGLContext_ != nullptr) {
+        openGLContext_->detach();
+        openGLContext_.reset();
+    }
     ThemeManager::getInstance().removeListener(this);
     stopTimer();
     setLookAndFeel(nullptr);

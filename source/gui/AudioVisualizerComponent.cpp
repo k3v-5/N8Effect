@@ -106,6 +106,32 @@ void AudioVisualizerComponent::updateTelemetry() {
         }
     }
 
+    // 5. Telemetría de Nube Granular Activa (Reglas 9, 23, 26, 49)
+    bool granularFound = false;
+    for (const auto& [nodeId, instance] : processor_.getGraph().getNodes()) {
+        if (instance && instance->type == NodeType::Granular && instance->processor != nullptr) {
+            auto* granNode = static_cast<GranularNode*>(instance->processor.get());
+            std::span<GranularNode::GrainCloudPoint> span(grainCloudParticles_.data(), grainCloudParticles_.size());
+            grainCloudCount_ = granNode->copyActiveGrainsSnapshot(span);
+            granularFound = true;
+            break;
+        }
+    }
+    if (!granularFound) {
+        grainCloudCount_ = 0;
+    }
+
+    // Rotación de barrido y desvanecimiento continuo CRT phosphor para Grain Cloud (Regla 49)
+    grainScanAngle_ += 0.05f;
+    if (grainScanAngle_ > 2.0f * std::numbers::pi_v<float>) {
+        grainScanAngle_ -= 2.0f * std::numbers::pi_v<float>;
+    }
+    if (readSamples == 0 || grainCloudCount_ == 0) {
+        grainCloudDecay_ *= 0.88f;
+    } else {
+        grainCloudDecay_ = 1.0f;
+    }
+
     repaint();
 }
 
@@ -148,6 +174,9 @@ void AudioVisualizerComponent::paint(juce::Graphics& g) {
             break;
         case DisplayMode::Waterfall:
             drawWaterfall(g, vizArea);
+            break;
+        case DisplayMode::GrainCloud:
+            drawGrainCloud(g, vizArea);
             break;
     }
 }
@@ -439,7 +468,34 @@ void AudioVisualizerComponent::drawRadar(juce::Graphics& g, juce::Rectangle<floa
         }
     }
 
-    // 6. Badge de estado en tiempo real
+    // 6. Manipulador espacial interactivo (Punto 23 - Radar 3D Interactivo con Mouse Drag)
+    {
+        const float angle = interactiveAzimuth_ * (0.5f * std::numbers::pi_v<float>);
+        const float distNorm = std::clamp(interactiveDistance_ / 10.0f, 0.05f, 1.0f);
+        const float r = maxRadius * distNorm;
+        const float hx = centreX + std::sin(angle) * r;
+        const float hy = centreY - std::cos(angle) * r;
+
+        // Halo ámbar/amarillo
+        g.setColour(juce::Colour(0xffffbb00).withAlpha(isDraggingRadar_ ? 0.45f : 0.25f));
+        g.fillEllipse(hx - 10.0f, hy - 10.0f, 20.0f, 20.0f);
+
+        // Anillo exterior y retícula
+        g.setColour(juce::Colour(0xffffdd00));
+        g.drawEllipse(hx - 7.0f, hy - 7.0f, 14.0f, 14.0f, 1.5f);
+        g.drawLine(hx - 10.0f, hy, hx + 10.0f, hy, 1.0f);
+        g.drawLine(hx, hy - 10.0f, hx, hy + 10.0f, 1.0f);
+        g.fillEllipse(hx - 2.5f, hy - 2.5f, 5.0f, 5.0f);
+
+        // Etiqueta con coordenadas
+        g.setFont(juce::FontOptions(8.0f, juce::Font::bold));
+        g.setColour(juce::Colour(0xffffffff));
+        char coordBuf[32];
+        snprintf(coordBuf, sizeof(coordBuf), "AZ:%.2f DIST:%.1fm", interactiveAzimuth_, interactiveDistance_);
+        g.drawText(coordBuf, static_cast<int>(hx - 40.0f), static_cast<int>(hy + 9.0f), 80, 10, juce::Justification::centred);
+    }
+
+    // 7. Badge de estado en tiempo real
     g.setFont(juce::FontOptions(9.0f, juce::Font::bold));
     juce::String statusStr = (activeParticleCount > 0)
         ? "RADAR 3D ONLINE • " + juce::String(activeParticleCount) + " EVENTS"
@@ -541,11 +597,157 @@ void AudioVisualizerComponent::drawWaterfall(juce::Graphics& g, juce::Rectangle<
     g.drawText("WATERFALL 3D SONOGRAM • 36 SLICES", bounds.reduced(8.0f).removeFromTop(14.0f), juce::Justification::topLeft, false);
 }
 
+void AudioVisualizerComponent::mouseDown(const juce::MouseEvent& e) {
+    if (mode_ != DisplayMode::Radar) return;
+
+    auto bounds = getLocalBounds().toFloat().reduced(6.0f);
+    bounds.removeFromTop(24.0f);
+    const float centreX = bounds.getCentreX();
+    const float centreY = bounds.getCentreY();
+    const float maxRadius = std::min(bounds.getWidth(), bounds.getHeight()) * 0.44f;
+
+    const float dx = e.position.x - centreX;
+    const float dy = e.position.y - centreY;
+    const float dist = std::sqrt(dx * dx + dy * dy);
+
+    if (dist <= maxRadius * 1.08f) {
+        isDraggingRadar_ = true;
+        hasDragged_ = false;
+        const float distNorm = std::clamp(dist / maxRadius, 0.05f, 1.0f);
+        interactiveDistance_ = distNorm * 10.0f;
+        const float angle = std::atan2(dx, -dy);
+        interactiveAzimuth_ = std::clamp(angle / (0.5f * std::numbers::pi_v<float>), -1.0f, 1.0f);
+
+        if (onRadarSpatialNodeMoved) {
+            onRadarSpatialNodeMoved(interactiveAzimuth_, interactiveDistance_);
+        }
+        repaint();
+    }
+}
+
+void AudioVisualizerComponent::mouseDrag(const juce::MouseEvent& e) {
+    if (!isDraggingRadar_ || mode_ != DisplayMode::Radar) return;
+
+    hasDragged_ = true;
+    auto bounds = getLocalBounds().toFloat().reduced(6.0f);
+    bounds.removeFromTop(24.0f);
+    const float centreX = bounds.getCentreX();
+    const float centreY = bounds.getCentreY();
+    const float maxRadius = std::min(bounds.getWidth(), bounds.getHeight()) * 0.44f;
+
+    const float dx = e.position.x - centreX;
+    const float dy = e.position.y - centreY;
+    const float dist = std::sqrt(dx * dx + dy * dy);
+
+    const float distNorm = std::clamp(dist / maxRadius, 0.05f, 1.0f);
+    interactiveDistance_ = distNorm * 10.0f;
+    const float angle = std::atan2(dx, -dy);
+    interactiveAzimuth_ = std::clamp(angle / (0.5f * std::numbers::pi_v<float>), -1.0f, 1.0f);
+
+    if (onRadarSpatialNodeMoved) {
+        onRadarSpatialNodeMoved(interactiveAzimuth_, interactiveDistance_);
+    }
+    repaint();
+}
+
+void AudioVisualizerComponent::mouseUp(const juce::MouseEvent& /*e*/) {
+    isDraggingRadar_ = false;
+    hasDragged_ = false;
+}
+
+void AudioVisualizerComponent::drawGrainCloud(juce::Graphics& g, juce::Rectangle<float> bounds) {
+    if (bounds.getWidth() <= 10.0f || bounds.getHeight() <= 10.0f) return;
+
+    // Marco del visualizador de nube granular
+    g.setColour(juce::Colour(0xff080b12));
+    g.fillRoundedRectangle(bounds, 3.0f);
+    g.setColour(juce::Colour(0xff182234));
+    g.drawRoundedRectangle(bounds, 3.0f, 1.0f);
+
+    const float midY = bounds.getCentreY();
+    const float halfH = bounds.getHeight() * 0.45f;
+    const float w = bounds.getWidth();
+    const float h = bounds.getHeight();
+    const float x = bounds.getX();
+    const float y = bounds.getY();
+
+    // 1. Cuadrícula de referencia polar/cartesiana tenue
+    g.setColour(juce::Colours::white.withAlpha(0.08f));
+    g.drawHorizontalLine(static_cast<int>(midY), x, x + w);
+    g.drawHorizontalLine(static_cast<int>(midY - halfH * 0.5f), x, x + w);
+    g.drawHorizontalLine(static_cast<int>(midY + halfH * 0.5f), x, x + w);
+
+    for (int col = 1; col < 8; ++col) {
+        float cx = x + static_cast<float>(col) * w / 8.0f;
+        g.drawVerticalLine(static_cast<int>(cx), y, y + h);
+    }
+
+    // 2. Haz de barrido continuo (Continuous Sweep Invariant - Regla 49)
+    const float sweepNorm = 0.5f * (1.0f + std::sin(grainScanAngle_));
+    const float sweepX = x + sweepNorm * w;
+    juce::ColourGradient beamGrad(juce::Colour(0x2200d4ff), sweepX, midY,
+                                 juce::Colour(0x0000d4ff), sweepX - 25.0f, midY, false);
+    g.setGradientFill(beamGrad);
+    g.fillRect(sweepX - 25.0f, y, 25.0f, h);
+    g.setColour(juce::Colour(0xff00d4ff).withAlpha(0.5f));
+    g.drawVerticalLine(static_cast<int>(sweepX), y, y + h);
+
+    // 3. Renderizado de Nube de Partículas de Granos Activos
+    const float decayAlpha = std::clamp(grainCloudDecay_, 0.0f, 1.0f);
+    size_t renderedGrains = 0;
+
+    for (size_t i = 0; i < grainCloudCount_; ++i) {
+        const auto& pt = grainCloudParticles_[i];
+        if (!pt.active || pt.envelope <= 0.001f) continue;
+        renderedGrains++;
+
+        const float gx = x + pt.normPosition * w;
+        // Posición vertical logarítmica según transposición de tono (-24 a +24 semitonos)
+        const float pitchOct = std::log2(std::clamp(pt.pitchRatio, 0.25f, 4.0f));
+        const float gy = midY - pitchOct * halfH * 0.55f;
+
+        // Tricromía continua reactiva: Cian (L) -> Esmeralda (C) -> Ámbar (R)
+        juce::Colour grainCol;
+        if (pt.pan < 0.5f) {
+            float t = pt.pan / 0.5f;
+            grainCol = juce::Colour(0xff00d4ff).interpolatedWith(juce::Colour(0xff00ff88), t);
+        } else {
+            float t = (pt.pan - 0.5f) / 0.5f;
+            grainCol = juce::Colour(0xff00ff88).interpolatedWith(juce::Colour(0xffffaa00), t);
+        }
+
+        const float alpha = std::clamp(pt.envelope * decayAlpha, 0.0f, 1.0f);
+        const float rad = 2.5f + pt.envelope * 5.0f;
+
+        // Halo difuso de resplandor
+        g.setColour(grainCol.withAlpha(alpha * 0.35f));
+        g.fillEllipse(gx - rad * 1.6f, gy - rad * 1.6f, rad * 3.2f, rad * 3.2f);
+
+        // Núcleo de color
+        g.setColour(grainCol.withAlpha(alpha * 0.85f));
+        g.fillEllipse(gx - rad, gy - rad, rad * 2.0f, rad * 2.0f);
+
+        // Centro blanco brillante
+        g.setColour(juce::Colours::white.withAlpha(alpha * 0.95f));
+        g.fillEllipse(gx - rad * 0.4f, gy - rad * 0.4f, rad * 0.8f, rad * 0.8f);
+    }
+
+    // 4. HUD informativo
+    g.setFont(juce::FontOptions(8.5f, juce::Font::bold));
+    g.setColour(juce::Colours::white.withAlpha(0.65f));
+    juce::String hud = "GRAIN CLOUD • " + juce::String(static_cast<int>(renderedGrains)) + " ACTIVE PARTICLES";
+    g.drawText(hud, bounds.reduced(8.0f).removeFromTop(14.0f), juce::Justification::topLeft, false);
+
+    g.setFont(juce::FontOptions(7.5f));
+    g.setColour(juce::Colours::white.withAlpha(0.35f));
+    g.drawText("X: POS (0..100%) | Y: PITCH (-24..+24 ST) | COLOR: STEREO PAN", bounds.reduced(8.0f).removeFromBottom(12.0f), juce::Justification::bottomLeft, false);
+}
+
 void AudioVisualizerComponent::resized() {
     auto area = getLocalBounds().reduced(6, 4);
     auto header = area.removeFromTop(20);
 
-    const int btnWidth = 56;
+    const int btnWidth = 50;
     specBtn_.setBounds(header.removeFromLeft(btnWidth));
     header.removeFromLeft(2);
     scopeBtn_.setBounds(header.removeFromLeft(btnWidth));
@@ -556,9 +758,11 @@ void AudioVisualizerComponent::resized() {
     header.removeFromLeft(2);
     radarBtn_.setBounds(header.removeFromLeft(btnWidth));
     header.removeFromLeft(2);
-    waterfallBtn_.setBounds(header.removeFromLeft(btnWidth + 14));
+    waterfallBtn_.setBounds(header.removeFromLeft(btnWidth + 10));
+    header.removeFromLeft(2);
+    cloudBtn_.setBounds(header.removeFromLeft(btnWidth + 12));
 
-    sourceToggleBtn_.setBounds(header.removeFromRight(92));
+    sourceToggleBtn_.setBounds(header.removeFromRight(88));
 }
 
 } // namespace audio_graph

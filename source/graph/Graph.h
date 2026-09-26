@@ -420,6 +420,47 @@ public:
         return true;
     }
 
+    /**
+     * @brief Valida predictivamente si agregar una conexion dirigida (srcNode -> destNode)
+     * crearia un ciclo en el grafo DAG (Reglas 4, 15, 28, 29).
+     * Busqueda en anchura (BFS) rapida desde destNode para comprobar si puede alcanzar srcNode.
+     */
+    bool wouldCreateCycle(NodeId srcNode, NodeId destNode) const noexcept {
+        if (srcNode == destNode || srcNode == InvalidNodeId || destNode == InvalidNodeId) {
+            return true;
+        }
+        if (!hasNode(srcNode) || !hasNode(destNode)) {
+            return true;
+        }
+
+        std::vector<NodeId> queue;
+        queue.reserve(nodes_.size());
+        queue.push_back(destNode);
+
+        std::unordered_set<NodeId> visited;
+        visited.reserve(nodes_.size());
+        visited.insert(destNode);
+
+        size_t head = 0;
+        while (head < queue.size()) {
+            NodeId current = queue[head++];
+            if (current == srcNode) {
+                return true;
+            }
+
+            for (const auto& conn : connections_) {
+                if (conn.sourceNodeId == current) {
+                    if (!visited.contains(conn.destNodeId)) {
+                        visited.insert(conn.destNodeId);
+                        queue.push_back(conn.destNodeId);
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
 private:
     NodeId nextNodeId_{ 0 };
     ConnectionId nextConnectionId_{ 0 };

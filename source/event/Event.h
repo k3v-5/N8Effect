@@ -45,14 +45,14 @@ public:
         }
     }
 
-    // Renderiza muestras de audio del evento y gestiona su ciclo de vida (Reglas 2, 3, 9)
-    void render(const EventCaptureBuffer& capture, float* outL, float* outR, uint32_t numSamples, float sourceLevel) noexcept {
+    // Renderiza muestras de audio del evento y gestiona su ciclo de vida (Reglas 2, 3, 9, 27)
+    void render(const EventCaptureBuffer& capture, float* outL, float* outR, uint32_t numSamples, float sourceLevel, int sourceSilenceOverride = -1) noexcept {
         if (!isActive_ || attrs_.state == EventLifecycle::Killed || attrs_.state == EventLifecycle::Destroyed) {
             return;
         }
 
-        // Evaluar dependencia de la fuente (Regla 3: Source Following)
-        const bool sourceIsSilent = (sourceLevel < 1e-4f);
+        // Evaluar dependencia de la fuente con histéresis adaptativa (Regla 3: Source Following, Punto 27)
+        const bool sourceIsSilent = (sourceSilenceOverride >= 0) ? (sourceSilenceOverride != 0) : (sourceLevel < 1e-4f);
         if (sourceIsSilent && attrs_.sourceFollow > 0.05f) {
             handleSourceDisappearance();
         }

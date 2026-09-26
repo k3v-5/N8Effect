@@ -48,3 +48,6 @@
 #include "processors/ConvolutionNode.h"
 #include "processors/OversamplerNode.h"
 #include "processors/AudioSlicerNode.h"
+#include "processors/ShimmerReverbNode.h"
+#include "processors/RefractionNode.h"
+#include "processors/SpectralSmearNode.h"

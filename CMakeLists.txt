@@ -18,16 +18,22 @@ add_executable(N8Effect_Tests
     source/graph/NodeFactory.h
     source/graph/Graph.h
     source/graph/GraphExecutor.h
+    source/graph/WorkStealingGraphScheduler.h
     source/dsp/PassthroughNode.h
     source/dsp/SimpleFilterNode.h
     source/dsp/SimpleDelayNode.h
     source/dsp/core/DelayLine.h
     source/dsp/core/BiquadFilter.h
+    source/dsp/core/AcousticBodyResonator.h
+    source/dsp/core/MagneticHysteresis.h
+    source/graph/CRTPProcessorNode.h
+    source/graph/StaticSerialChain.h
     source/dsp/core/EnvelopeDetector.h
     source/dsp/core/SaturationFunctions.h
     source/dsp/core/FastMath.h
     source/dsp/core/DenormalGuards.h
     source/dsp/core/FFTEngine.h
+    source/dsp/core/PhaseVocoder.h
     source/dsp/core/SpatialPannerCore.h
     source/dsp/processors/CompressorNode.h
     source/dsp/processors/ParametricEQNode.h
@@ -36,6 +42,9 @@ add_executable(N8Effect_Tests
     source/dsp/processors/ReverbNode.h
     source/dsp/processors/PitchShifterNode.h
     source/dsp/processors/SpectralProcessorNode.h
+    source/dsp/processors/ShimmerReverbNode.h
+    source/dsp/processors/RefractionNode.h
+    source/dsp/processors/SpectralSmearNode.h
     source/dsp/core/GrainPool.h
     source/dsp/core/LinkwitzRileyFilter.h
     source/dsp/processors/GranularNode.h
@@ -93,9 +102,9 @@ target_include_directories(N8Effect_Tests PRIVATE
 )
 
 if (MSVC)
-    target_compile_options(N8Effect_Tests PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(N8Effect_Tests PRIVATE /W4 /permissive- /utf-8 /arch:AVX2)
 else()
-    target_compile_options(N8Effect_Tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(N8Effect_Tests PRIVATE -Wall -Wextra -Wpedantic -mavx2 -mfma)
 endif()
 
 # ==============================================================================
@@ -137,16 +146,22 @@ target_sources(N8Effect PRIVATE
     source/graph/NodeFactory.h
     source/graph/Graph.h
     source/graph/GraphExecutor.h
+    source/graph/WorkStealingGraphScheduler.h
     source/dsp/PassthroughNode.h
     source/dsp/SimpleFilterNode.h
     source/dsp/SimpleDelayNode.h
     source/dsp/core/DelayLine.h
     source/dsp/core/BiquadFilter.h
+    source/dsp/core/AcousticBodyResonator.h
+    source/dsp/core/MagneticHysteresis.h
+    source/graph/CRTPProcessorNode.h
+    source/graph/StaticSerialChain.h
     source/dsp/core/EnvelopeDetector.h
     source/dsp/core/SaturationFunctions.h
     source/dsp/core/FastMath.h
     source/dsp/core/DenormalGuards.h
     source/dsp/core/FFTEngine.h
+    source/dsp/core/PhaseVocoder.h
     source/dsp/core/SpatialPannerCore.h
     source/dsp/processors/CompressorNode.h
     source/dsp/processors/ParametricEQNode.h
@@ -155,6 +170,9 @@ target_sources(N8Effect PRIVATE
     source/dsp/processors/ReverbNode.h
     source/dsp/processors/PitchShifterNode.h
     source/dsp/processors/SpectralProcessorNode.h
+    source/dsp/processors/ShimmerReverbNode.h
+    source/dsp/processors/RefractionNode.h
+    source/dsp/processors/SpectralSmearNode.h
     source/dsp/core/GrainPool.h
     source/dsp/core/LinkwitzRileyFilter.h
     source/dsp/processors/GranularNode.h
@@ -260,13 +278,14 @@ target_link_libraries(N8Effect PRIVATE
     juce::juce_audio_processors
     juce::juce_dsp
     juce::juce_gui_basics
+    juce::juce_opengl
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags
 )
 
 if (MSVC)
-    target_compile_options(N8Effect PRIVATE /utf-8)
+    target_compile_options(N8Effect PRIVATE /utf-8 /arch:AVX2)
 endif()
 
 # ==============================================================================

@@ -132,7 +132,7 @@ public:
                 carSample = 0.5f * (rawInL + rawInR);
             } else {
                 // 1. Determinar señal moduladora (voz/ritmo de entrada)
-                modSample = 0.5f * (rawInL + rawInR);
+                modSample = (mode == 3) ? rawInL : 0.5f * (rawInL + rawInR);
 
                 // 2. Generar o tomar señal portadora (Carrier)
                 switch (mode) {

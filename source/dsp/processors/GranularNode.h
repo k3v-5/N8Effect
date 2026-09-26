@@ -25,7 +25,9 @@ public:
         PanSpray = 6,
         DryWet = 7,
         ScrubPosition = 8,
-        Freeze = 9
+        Freeze = 9,
+        SpawnMode = 10,
+        SpectralSensitivity = 11
     };
 
     GranularNode() {
@@ -41,6 +43,8 @@ public:
         params_[6] = { DryWet, "Mix", 0.5f, 0.0f, 1.0f, true };
         params_[7] = { ScrubPosition, "Scrub Pos", 0.0f, 0.0f, 1.0f, true };
         params_[8] = { Freeze, "Freeze", 0.0f, 0.0f, 1.0f, true };
+        params_[9] = { SpawnMode, "Spawn Mode", 0.0f, 0.0f, 2.0f, false };
+        params_[10] = { SpectralSensitivity, "Spectral Sens", 0.5f, 0.0f, 1.0f, true };
     }
 
     void prepare(const ProcessSpec& spec) override {
@@ -56,6 +60,8 @@ public:
         writePos_ = 0;
         samplesUntilNextGrain_ = 0.0f;
         totalSamplesRecorded_ = 0;
+        prevSampleL_ = 0.0f;
+        prevSampleR_ = 0.0f;
     }
 
     void reset() override {
@@ -63,6 +69,8 @@ public:
         writePos_ = 0;
         samplesUntilNextGrain_ = 0.0f;
         totalSamplesRecorded_ = 0;
+        prevSampleL_ = 0.0f;
+        prevSampleR_ = 0.0f;
         std::fill(ringBufferL_.begin(), ringBufferL_.end(), 0.0f);
         std::fill(ringBufferR_.begin(), ringBufferR_.end(), 0.0f);
     }
@@ -99,10 +107,43 @@ public:
             }
             const size_t currentWrite = writePos_;
 
-            samplesUntilNextGrain_ -= 1.0f;
-            if (samplesUntilNextGrain_ <= 0.0f) {
-                samplesUntilNextGrain_ += spawnIntervalSamples;
+            // Detección de novedad / flujo espectral para SpawnMode == 2 (Spectral / Onset) (Punto 28)
+            const float diffL = drySampleL - prevSampleL_;
+            const float diffR = drySampleR - prevSampleR_;
+            prevSampleL_ = drySampleL;
+            prevSampleR_ = drySampleR;
+            const float sampleFlux = std::sqrt(0.5f * (diffL * diffL + diffR * diffR));
 
+            bool shouldSpawn = false;
+            const int mode = static_cast<int>(targetSpawnMode_ + 0.5f);
+
+            if (mode == 1) {
+                // Modo 1: Estocástico (Distribución aleatoria de Poisson continua)
+                const float prob = density / static_cast<float>(spec_.sampleRate);
+                shouldSpawn = (nextRandomFloat() < prob);
+            } else if (mode == 2) {
+                // Modo 2: Espectral / Onset (Disparado por saltos de flujo espectral y transitorios)
+                samplesUntilNextGrain_ -= 1.0f;
+                const float fluxThreshold = (1.05f - targetSpectralSensitivity_) * 0.12f;
+                if (sampleFlux > fluxThreshold && samplesUntilNextGrain_ <= 0.0f) {
+                    shouldSpawn = true;
+                    // Tiempo refractario mínimo para no saturar el pool
+                    samplesUntilNextGrain_ = std::max(64.0f, spawnIntervalSamples * 0.25f);
+                } else if (samplesUntilNextGrain_ <= -spawnIntervalSamples * 2.0f) {
+                    // Fallback periódico para evitar silencios prolongados
+                    shouldSpawn = true;
+                    samplesUntilNextGrain_ = spawnIntervalSamples;
+                }
+            } else {
+                // Modo 0: Clock isócrono regular
+                samplesUntilNextGrain_ -= 1.0f;
+                if (samplesUntilNextGrain_ <= 0.0f) {
+                    shouldSpawn = true;
+                    samplesUntilNextGrain_ += spawnIntervalSamples;
+                }
+            }
+
+            if (shouldSpawn) {
                 Grain* grain = grainPool_.acquire();
                 if (grain != nullptr) {
                     const float rPos = nextRandomFloat();
@@ -125,7 +166,9 @@ public:
                         while (startPos < 0.0f) startPos += static_cast<float>(bufferCapacity_);
                     }
 
-                    const float finalPitchSemitones = pitchSemi + (pitchSpray * rPitch);
+                    // En modo espectral, el flujo modula dinámicamente el pitch spray
+                    const float effectivePitchSpray = (mode == 2) ? (pitchSpray * (1.0f + sampleFlux * 2.0f)) : pitchSpray;
+                    const float finalPitchSemitones = pitchSemi + (effectivePitchSpray * rPitch);
                     const float rate = std::pow(2.0f, finalPitchSemitones / 12.0f);
 
                     const float pan = std::clamp(0.5f + 0.5f * (rPan * panSpray), 0.0f, 1.0f);
@@ -195,6 +238,8 @@ public:
             case DryWet: targetMix_ = std::clamp(value, 0.0f, 1.0f); break;
             case ScrubPosition: targetScrubPos_ = std::clamp(value, 0.0f, 1.0f); break;
             case Freeze: targetFreeze_ = (value > 0.5f) ? 1.0f : 0.0f; break;
+            case SpawnMode: targetSpawnMode_ = std::clamp(value, 0.0f, 2.0f); break;
+            case SpectralSensitivity: targetSpectralSensitivity_ = std::clamp(value, 0.0f, 1.0f); break;
         }
     }
 
@@ -209,6 +254,8 @@ public:
             case DryWet: return targetMix_;
             case ScrubPosition: return targetScrubPos_;
             case Freeze: return targetFreeze_;
+            case SpawnMode: return targetSpawnMode_;
+            case SpectralSensitivity: return targetSpectralSensitivity_;
             default: return 0.0f;
         }
     }
@@ -297,9 +344,13 @@ private:
     float targetMix_{ 0.5f };
     float targetScrubPos_{ 0.0f };
     float targetFreeze_{ 0.0f };
+    float targetSpawnMode_{ 0.0f };
+    float targetSpectralSensitivity_{ 0.5f };
+    float prevSampleL_{ 0.0f };
+    float prevSampleR_{ 0.0f };
 
     std::array<PinDescriptor, 2> pins_;
-    std::array<ParameterInfo, 9> params_;
+    std::array<ParameterInfo, 11> params_;
 };
 
 inline AutoRegisterNode<GranularNode> registerGranular(NodeType::Granular, "granular", "Granular");

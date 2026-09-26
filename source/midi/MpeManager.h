@@ -311,7 +311,7 @@ private:
         }
     }
 
-    void handleAllNotesOff(EventManager* eventManager) noexcept {
+    void handleAllNotesOff([[maybe_unused]] EventManager* eventManager) noexcept {
         for (auto& v : voices_) {
             v.isActive = false;
             v.associatedEventId = InvalidEventId;

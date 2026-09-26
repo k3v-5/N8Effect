@@ -5,6 +5,7 @@
 #include <span>
 #include <cstdint>
 #include "../core/Types.h"
+#include "../dsp/core/FastMath.h"
 
 namespace audio_graph {
 

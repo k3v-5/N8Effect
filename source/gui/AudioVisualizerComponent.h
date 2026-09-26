@@ -9,6 +9,7 @@
 #include "../core/RealtimePools.h"
 #include "../event/EventTypes.h"
 #include "../event/EventTelemetryBuffer.h"
+#include "../dsp/processors/GranularNode.h"
 
 namespace audio_graph {
 
@@ -16,7 +17,7 @@ class N8AudioProcessor;
 
 /**
  * @brief Visualizador de Audio y Espectrograma en Tiempo Real (Reglas 23, 24, 25, 26).
- * Modos: Analizador de Espectro FFT, Osciloscopio con Zero-Crossing, Goniometro Lissajous, Split y Radar 3D de Eventos Acústicos.
+ * Modos: Analizador de Espectro FFT, Osciloscopio con Zero-Crossing, Goniometro Lissajous, Split, Radar 3D y Nube Granular.
  * Soporta Master Output y Node Probing interactivo.
  */
 class AudioVisualizerComponent : public juce::Component {
@@ -27,7 +28,8 @@ public:
         Goniometer = 2,
         Split = 3,
         Radar = 4,
-        Waterfall = 5
+        Waterfall = 5,
+        GrainCloud = 6
     };
 
     enum class SourceMode : uint8_t {
@@ -67,6 +69,7 @@ public:
         configureButton(splitBtn_, "SPLIT");
         configureButton(radarBtn_, "RADAR 3D");
         configureButton(waterfallBtn_, "WATERFALL 3D");
+        configureButton(cloudBtn_, "GRAIN CLOUD");
         configureButton(sourceToggleBtn_, "SRC: MASTER");
 
         specBtn_.onClick = [this]() { setMode(DisplayMode::Spectrum); };
@@ -75,6 +78,7 @@ public:
         splitBtn_.onClick = [this]() { setMode(DisplayMode::Split); };
         radarBtn_.onClick = [this]() { setMode(DisplayMode::Radar); };
         waterfallBtn_.onClick = [this]() { setMode(DisplayMode::Waterfall); };
+        cloudBtn_.onClick = [this]() { setMode(DisplayMode::GrainCloud); };
 
         sourceToggleBtn_.onClick = [this]() {
             if (sourceMode_ == SourceMode::Master) {
@@ -93,6 +97,7 @@ public:
         addAndMakeVisible(splitBtn_);
         addAndMakeVisible(radarBtn_);
         addAndMakeVisible(waterfallBtn_);
+        addAndMakeVisible(cloudBtn_);
         addAndMakeVisible(sourceToggleBtn_);
 
         updateButtonStates();
@@ -121,6 +126,19 @@ public:
 
     void updateTelemetry();
 
+    std::function<void(float azimuth, float distance)> onRadarSpatialNodeMoved;
+    float getInteractiveAzimuth() const noexcept { return interactiveAzimuth_; }
+    float getInteractiveDistance() const noexcept { return interactiveDistance_; }
+    void setInteractiveSpatialCoordinates(float azimuth, float distance) noexcept {
+        interactiveAzimuth_ = std::clamp(azimuth, -1.0f, 1.0f);
+        interactiveDistance_ = std::clamp(distance, 0.1f, 10.0f);
+        repaint();
+    }
+
+    void mouseDown(const juce::MouseEvent& e) override;
+    void mouseDrag(const juce::MouseEvent& e) override;
+    void mouseUp(const juce::MouseEvent& e) override;
+
     void paint(juce::Graphics& g) override;
     void resized() override;
 
@@ -143,6 +161,9 @@ private:
 
         waterfallBtn_.setColour(juce::TextButton::buttonColourId, mode_ == DisplayMode::Waterfall ? juce::Colours::white : juce::Colour(0xff141414));
         waterfallBtn_.setColour(juce::TextButton::textColourOffId, mode_ == DisplayMode::Waterfall ? juce::Colours::black : juce::Colours::white);
+
+        cloudBtn_.setColour(juce::TextButton::buttonColourId, mode_ == DisplayMode::GrainCloud ? juce::Colours::white : juce::Colour(0xff141414));
+        cloudBtn_.setColour(juce::TextButton::textColourOffId, mode_ == DisplayMode::GrainCloud ? juce::Colours::black : juce::Colours::white);
     }
 
     void drawSpectrum(juce::Graphics& g, juce::Rectangle<float> bounds);
@@ -150,6 +171,7 @@ private:
     void drawGoniometer(juce::Graphics& g, juce::Rectangle<float> bounds);
     void drawRadar(juce::Graphics& g, juce::Rectangle<float> bounds);
     void drawWaterfall(juce::Graphics& g, juce::Rectangle<float> bounds);
+    void drawGrainCloud(juce::Graphics& g, juce::Rectangle<float> bounds);
 
     N8AudioProcessor& processor_;
     DisplayMode mode_{ DisplayMode::Spectrum };
@@ -161,11 +183,23 @@ private:
     juce::TextButton splitBtn_;
     juce::TextButton radarBtn_;
     juce::TextButton waterfallBtn_;
+    juce::TextButton cloudBtn_;
     juce::TextButton sourceToggleBtn_;
+
+    static constexpr size_t MaxGrainCloudParticles = 128;
+    std::array<GranularNode::GrainCloudPoint, MaxGrainCloudParticles> grainCloudParticles_{};
+    size_t grainCloudCount_{ 0 };
+    float grainCloudDecay_{ 1.0f };
+    float grainScanAngle_{ 0.0f };
 
     static constexpr size_t MaxRadarParticles = 64;
     std::array<VisualEventParticle, MaxRadarParticles> radarParticles_{};
     float radarAngle_{ 0.0f };
+
+    bool isDraggingRadar_{ false };
+    bool hasDragged_{ false };
+    float interactiveAzimuth_{ 0.0f };
+    float interactiveDistance_{ 2.5f };
 
     static constexpr size_t FftOrder = 10; // 1024 puntos
     static constexpr size_t FftSize = 1 << FftOrder;

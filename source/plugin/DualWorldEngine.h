@@ -10,6 +10,7 @@
 #include "../modulation/ModulationEngine.h"
 #include "../analysis/AnalysisEngine.h"
 #include "../core/CpuProfiler.h"
+#include "../dsp/core/AdaptiveNoiseFloorEstimator.h"
 
 namespace audio_graph {
 
@@ -31,6 +32,7 @@ public:
         modulationEngine_.prepare(spec);
         analysisEngine_.prepare(spec);
         profiler_.prepare(spec.sampleRate, spec.maximumBlockSize);
+        noiseFloorEstimator_.prepare(spec.sampleRate);
 
         currentDryLevel_ = targetDryLevel_;
         currentWetLevel_ = targetWetLevel_;
@@ -42,6 +44,7 @@ public:
         modulationEngine_.reset();
         analysisEngine_.reset();
         profiler_.reset();
+        noiseFloorEstimator_.reset();
     }
 
     void setDryLevel(float level) noexcept {
@@ -96,6 +99,9 @@ public:
         return profiler_.getLatestMetrics();
     }
 
+    AdaptiveNoiseFloorEstimator& getNoiseFloorEstimator() noexcept { return noiseFloorEstimator_; }
+    const AdaptiveNoiseFloorEstimator& getNoiseFloorEstimator() const noexcept { return noiseFloorEstimator_; }
+
     /**
      * @brief Procesa el bloque de audio dividiendo el flujo en Dry World, Analysis y Event World (Reglas 1, 2, 7, 17)
      */
@@ -126,7 +132,7 @@ public:
         // A. Capturar audio entrante en el buffer de historia de eventos
         eventManager_.captureInputAudio(context.inputChannels, context.numInputChannels, numSamples);
 
-        // B. Calcular nivel RMS de la fuente para Source Following (Regla 3)
+        // B. Calcular nivel RMS de la fuente para Source Following con Histéresis Adaptativa (Reglas 3 y 27)
         float sourceEnergy = 0.0f;
         float energyL = 0.0f;
         float energyR = 0.0f;
@@ -141,10 +147,13 @@ public:
             sourceEnergy = (energyL + energyR) / (static_cast<float>(numSamples) * 2.0f);
         }
 
-        // C. Renderizar eventos activos en el eventBuffer sumados al audio entrante (Reglas 1, 2, 17)
+        noiseFloorEstimator_.updateBlock(sourceEnergy, numSamples);
+        const int sourceSilenceOverride = noiseFloorEstimator_.isSourceSilent() ? 1 : 0;
+
+        // C. Renderizar eventos activos en el eventBuffer sumados al audio entrante (Reglas 1, 2, 17, 27)
         eventBuffer_.copyFrom(context.inputChannels, context.numInputChannels, numSamples);
         if (numChannels >= 2) {
-            eventManager_.render(eventBuffer_.getWritePointer(0), eventBuffer_.getWritePointer(1), numSamples, sourceEnergy);
+            eventManager_.render(eventBuffer_.getWritePointer(0), eventBuffer_.getWritePointer(1), numSamples, sourceEnergy, sourceSilenceOverride);
         }
         profiler_.endStage(ProfilerStage::Events);
 
@@ -209,6 +218,7 @@ private:
     ModulationEngine modulationEngine_;
     AnalysisEngine analysisEngine_;
     CpuProfiler profiler_;
+    AdaptiveNoiseFloorEstimator noiseFloorEstimator_;
 
     float targetDryLevel_{ 1.0f }; // Por defecto 100% puro (Regla 1)
     float currentDryLevel_{ 1.0f };

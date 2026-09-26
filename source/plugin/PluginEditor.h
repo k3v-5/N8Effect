@@ -2,6 +2,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_opengl/juce_opengl.h>
 #include "PluginProcessor.h"
 #include "../gui/GraphCanvasComponent.h"
 #include "../gui/NodePaletteComponent.h"
@@ -71,6 +72,9 @@ private:
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> dryAttachment_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> wetAttachment_;
+
+    // Contexto de renderizado por GPU (OpenGL 3.3+, 60 FPS con VSync) (Reglas 13, 21, 23)
+    std::unique_ptr<juce::OpenGLContext> openGLContext_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(N8AudioProcessorEditor)
 };

@@ -39,6 +39,7 @@ public:
             case NodeType::Reverb:
             case NodeType::ReverseReverb:
             case NodeType::Convolution:
+            case NodeType::ShimmerReverb:
                 return juce::Colour(0xffa855f7); // Purple for Reverbs & IR
             case NodeType::Compressor:
             case NodeType::Multiband:
@@ -56,6 +57,7 @@ public:
             case NodeType::SpectralProcessor:
             case NodeType::Resonator:
             case NodeType::Glitch:
+            case NodeType::SpectralSmear:
                 return juce::Colour(0xffeab308); // Gold / Yellow for Granular & Spectral
             case NodeType::Phaser:
             case NodeType::Chorus:
@@ -64,6 +66,7 @@ public:
             case NodeType::RingModulator:
             case NodeType::FrequencyShifter:
             case NodeType::PitchShifter:
+            case NodeType::Refraction:
                 return juce::Colour(0xff38bdf8); // Sky blue / Violet for Modulation
             case NodeType::SpatialPanner:
             case NodeType::MidSideEncoder:
@@ -91,6 +94,7 @@ public:
             case NodeType::TapeStop: return "TAPE STOP // VINYL";
             case NodeType::Reverb: return "REVERB // FDN SPACE";
             case NodeType::ReverseReverb: return "REVERB // BLOOM";
+            case NodeType::ShimmerReverb: return "REVERB // SHIMMER FDN";
             case NodeType::Convolution: return "CONVOLUTION // ZERO-LATENCY";
             case NodeType::Compressor: return "DYNAMICS // VCA COMP";
             case NodeType::Multiband: return "DYNAMICS // 3-WAY OTT";
@@ -104,12 +108,14 @@ public:
             case NodeType::Granular: return "GRANULAR // 128 GRAINS";
             case NodeType::Spectral: return "SPECTRAL // FFT PROCESSOR";
             case NodeType::SpectralProcessor: return "SPECTRAL // SHAPER";
+            case NodeType::SpectralSmear: return "SPECTRAL // LIQUID DIFFUSION";
             case NodeType::Resonator: return "MODAL // RESONATOR";
             case NodeType::Glitch: return "GLITCH // RE-TRIGGER";
             case NodeType::AudioSlicer: return "SLICER // FROZEN GRAIN";
             case NodeType::Phaser: return "PHASER // 6-STAGE";
             case NodeType::Chorus: return "CHORUS // 4-VOICE";
             case NodeType::Flanger: return "FLANGER // COMB";
+            case NodeType::Refraction: return "REFRACTION // 8-VOICE PRISM";
             case NodeType::RotarySpeaker: return "ROTARY // LESLIE 3D";
             case NodeType::RingModulator: return "RING MOD // 4-QUADRANT";
             case NodeType::FrequencyShifter: return "FREQ SHIFT // HILBERT";
@@ -171,7 +177,8 @@ public:
                 return;
             }
             case NodeType::Reverb:
-            case NodeType::ReverseReverb: {
+            case NodeType::ReverseReverb:
+            case NodeType::ShimmerReverb: {
                 // Envolvente de difusión y cola espacial
                 curvePath.startNewSubPath(x + 2.0f, y + h - 3.0f);
                 curvePath.quadraticTo(x + 8.0f, y + 4.0f, x + w * 0.3f, y + 10.0f);
@@ -255,7 +262,8 @@ public:
             case NodeType::Spectral:
             case NodeType::SpectralProcessor:
             case NodeType::Resonator:
-            case NodeType::Glitch: {
+            case NodeType::Glitch:
+            case NodeType::SpectralSmear: {
                 // Nube de micro-partículas o barras espectrales
                 for (int b = 0; b < 7; ++b) {
                     float bx = x + 6.0f + static_cast<float>(b) * (w - 12.0f) / 6.0f;
@@ -291,7 +299,8 @@ public:
             case NodeType::RotarySpeaker:
             case NodeType::RingModulator:
             case NodeType::FrequencyShifter:
-            case NodeType::PitchShifter: {
+            case NodeType::PitchShifter:
+            case NodeType::Refraction: {
                 // Modulación cíclica y dispersión estéreo
                 curvePath.startNewSubPath(x + 4.0f, midY);
                 for (float sx = 4.0f; sx < w - 4.0f; sx += 4.0f) {

@@ -4,11 +4,14 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdint>
+#include "../../core/RealtimePools.h"
 
 namespace audio_graph {
 
 /**
- * @brief Línea de retardo fraccional circular con interpolación cúbica (Hermite) (Reglas 32 y 46)
+ * @brief Línea de retardo fraccional circular con capacidad de potencia de dos (2^N),
+ * indexación ultrarrápida por máscara de bits (index & mask) e interpolación cúbica (Hermite)
+ * con buffer alineado a 64 bytes para aceleración AVX2/AVX-512 (Reglas 11, 12, 32, 34, 46, 47).
  */
 class DelayLine {
 public:
@@ -16,7 +19,14 @@ public:
 
     void prepare(size_t maxDelaySamples) {
         maxDelaySamples_ = std::max<size_t>(16, maxDelaySamples);
-        buffer_.assign(maxDelaySamples_, 0.0f);
+        // Calcular la siguiente potencia de 2 >= maxDelaySamples + 4
+        size_t cap = 16;
+        while (cap < maxDelaySamples_ + 4) {
+            cap <<= 1;
+        }
+        capacity_ = cap;
+        mask_ = capacity_ - 1;
+        buffer_.assign(capacity_, 0.0f);
         writeIndex_ = 0;
     }
 
@@ -26,50 +36,46 @@ public:
     }
 
     void write(float sample) noexcept {
-        if (maxDelaySamples_ == 0) return;
+        if (capacity_ == 0) return;
         buffer_[writeIndex_] = sample;
-        writeIndex_ = (writeIndex_ + 1) % maxDelaySamples_;
+        writeIndex_ = (writeIndex_ + 1) & mask_;
     }
 
-    // Lectura con interpolación lineal
+    // Lectura con interpolación lineal ultra-optimizada sin divisiones ni bucles
     float readLinear(float delaySamples) const noexcept {
-        if (maxDelaySamples_ == 0) return 0.0f;
+        if (capacity_ == 0) return 0.0f;
 
-        float clampedDelay = std::clamp(delaySamples, 0.0f, static_cast<float>(maxDelaySamples_ - 2));
+        float clampedDelay = std::clamp(delaySamples, 0.0f, static_cast<float>(maxDelaySamples_));
         float readPos = static_cast<float>(writeIndex_) - clampedDelay;
-        while (readPos < 0.0f) readPos += static_cast<float>(maxDelaySamples_);
+        int iPos = static_cast<int>(std::floor(readPos));
+        float frac = readPos - static_cast<float>(iPos);
 
-        size_t idx0 = static_cast<size_t>(readPos) % maxDelaySamples_;
-        size_t idx1 = (idx0 + 1) % maxDelaySamples_;
-        float frac = readPos - std::floor(readPos);
+        size_t idx0 = static_cast<size_t>(iPos) & mask_;
+        size_t idx1 = (idx0 + 1) & mask_;
 
         return buffer_[idx0] + frac * (buffer_[idx1] - buffer_[idx0]);
     }
 
-    // Lectura con interpolación cúbica Hermite de 4 puntos para máxima calidad acústica (Regla 34)
+    // Lectura con interpolación cúbica Hermite de 4 puntos optimizada por máscara de bits (Reglas 34 y 47)
     float readCubic(float delaySamples) const noexcept {
-        if (maxDelaySamples_ < 4) return readLinear(delaySamples);
+        if (capacity_ == 0) return 0.0f;
+        if (capacity_ < 4) return readLinear(delaySamples);
 
-        float clampedDelay = std::clamp(delaySamples, 1.0f, static_cast<float>(maxDelaySamples_ - 3));
+        float clampedDelay = std::clamp(delaySamples, 1.0f, static_cast<float>(maxDelaySamples_));
         float readPos = static_cast<float>(writeIndex_) - clampedDelay;
-        while (readPos < 0.0f) readPos += static_cast<float>(maxDelaySamples_);
+        int iPos = static_cast<int>(std::floor(readPos));
+        float frac = readPos - static_cast<float>(iPos);
 
-        int idx1 = static_cast<int>(readPos);
-        int idx0 = idx1 - 1;
-        int idx2 = idx1 + 1;
-        int idx3 = idx1 + 2;
+        size_t idx0 = static_cast<size_t>(iPos - 1) & mask_;
+        size_t idx1 = static_cast<size_t>(iPos) & mask_;
+        size_t idx2 = (idx1 + 1) & mask_;
+        size_t idx3 = (idx1 + 2) & mask_;
 
-        auto wrap = [this](int idx) -> size_t {
-            while (idx < 0) idx += static_cast<int>(maxDelaySamples_);
-            return static_cast<size_t>(idx) % maxDelaySamples_;
-        };
+        float xm1 = buffer_[idx0];
+        float x0  = buffer_[idx1];
+        float x1  = buffer_[idx2];
+        float x2  = buffer_[idx3];
 
-        float xm1 = buffer_[wrap(idx0)];
-        float x0  = buffer_[wrap(idx1)];
-        float x1  = buffer_[wrap(idx2)];
-        float x2  = buffer_[wrap(idx3)];
-
-        float frac = readPos - std::floor(readPos);
         float c0 = x0;
         float c1 = 0.5f * (x1 - xm1);
         float c2 = xm1 - 2.5f * x0 + 2.0f * x1 - 0.5f * x2;
@@ -79,11 +85,15 @@ public:
     }
 
     size_t getMaxDelaySamples() const noexcept { return maxDelaySamples_; }
+    size_t getCapacity() const noexcept { return capacity_; }
+    size_t getMask() const noexcept { return mask_; }
 
 private:
     size_t maxDelaySamples_{ 0 };
+    size_t capacity_{ 0 };
+    size_t mask_{ 0 };
     size_t writeIndex_{ 0 };
-    std::vector<float> buffer_;
+    std::vector<float, AlignedAllocator<float, 64>> buffer_;
 };
 
 } // namespace audio_graph
