@@ -372,3 +372,49 @@ Todo componente de la interfaz de usuario (como botones de paletas, conectores o
 
 3. **Invariante de Clic Simple Limpio**:
    - Si el usuario simplemente hace clic y suelta sin exceder el umbral de movimiento, la cadena de ejecución estándar de JUCE debe conservarse intacta para permitir interacciones rápidas por un solo clic.
+
+---
+
+## 49. Invariante de Animación y Telemetría Continua en Visualizadores GUI (Continuous Sweep & Live Telemetry Invariant)
+
+Todo componente de visualización gráfica en tiempo real (Radar 3D, Osciloscopio, Espectrograma FFT, Waterfall Sonogram, Editor de Granos):
+
+1. **Independencia del Estado de Silencio (Zero Audio Gating):**
+   - El hilo de dibujo de la GUI (`paint()`, `timerCallback()`) y la máquina de estados de barrido (rotación de agujas, decaimiento de fósforo CRT, fade out de partículas) **NUNCA deben retornar tempranamente** ante bloques de audio nulos o silenciosos (`readSamples == 0`).
+   - El vaciado (`pop()`) de buffers de telemetría SPSC lock-free debe ejecutarse de forma continua en cada frame visual para garantizar que los eventos encolados se procesen y expiren fluidamente.
+
+2. **Alimentación Reactiva desde el Análisis en Vivo:**
+   - La telemetría hacia la GUI debe alimentarse de forma unificada desde el `AnalysisEngine` (transientes, energía RMS, fundamental YIN, centroide espectral y paneo estéreo), evitando dependencias con la lógica interna de plugins de terceros o fuentes estáticas.
+
+3. **Alineación de Coordenadas de Barrido:**
+   - Todo renderizado polar en JUCE debe respetar el desplazamiento de fase angular del sistema de coordenadas ($\theta_{\text{JUCE}} = \theta_{\text{Radar}} - \pi/2$) para asegurar que las estelas de fósforo y los marcadores de transientes coincidan milimétricamente con el haz de barrido.
+
+---
+
+## 50. Protocolo Obligatorio de Documentación Continua, Indexación y Persistencia de Contexto para Agentes (Living Index & Agent Handoff Protocol)
+
+Para asegurar la continuidad absoluta del desarrollo, la escalabilidad del sistema y la interoperabilidad fluida entre agentes y modelos de lenguaje (LLMs):
+
+1. **Documentación Obligatoria de Avances y Pendientes**:
+   - En cada sesión o intervención técnica, es mandatorio registrar de manera explícita y estructurada:
+     - **Avances realizados**: Módulos creados, refactorizados u optimizados, decisiones de diseño tomadas y justificación técnica.
+     - **Estado actual exacto**: Situación en la que queda el código al finalizar la sesión (fase, estabilidad, métricas).
+     - **Pendientes inmediatos y Backlog**: Tareas pendientes desglosadas por prioridad (inmediatas, mediano plazo, deuda técnica).
+   - El archivo canónico de seguimiento rápido del estado del proyecto es `PROJECT.md` (o informes detallados en `docs/` cuando la envergadura lo requiera).
+
+2. **Indexación y Persistencia de Contexto para Agentes / LLMs**:
+   - La estructura del repositorio, contratos de interfaces, componentes registrados y comandos de compilación/prueba deben mantenerse permanentemente indexados en `PROJECT.md`.
+   - Ningún agente debe asumir que el siguiente agente contará con memoria histórica de conversaciones previas. El repositorio debe ser **autosuficiente y autoexplicativo**: cualquier nuevo LLM debe poder leer `AGENTS.md` y `PROJECT.md` y situarse de inmediato en el contexto exacto de ejecución, sabiendo qué está listo, qué está en progreso y qué debe ejecutarse a continuación.
+
+3. **Invariante de Código Escalable, Seguro, Óptimo y Testeable**:
+   - **Escalabilidad y SOLID**: Respetar estrictamente los principios SOLID (Regla 46). El motor debe poder crecer sin refactorizar su núcleo.
+   - **Seguridad en Tiempo Real**: Cumplimiento estricto de cero allocations (`malloc`/`new`), ausencia de primitivas bloqueantes en el hilo de audio (Regla 9) y límites acotados a todos los pools y buffers (Regla 47).
+   - **Optimización**: Erradicación de denormales (FTZ/DAZ), aproximaciones analíticas rápidas (`FastMath`), ordenamiento topológico y reutilización de memoria temporal (Regla 47).
+   - **Testing Mandatorio**: Ningún cambio o nueva funcionalidad se da por concluida sin incorporar sus pruebas unitarias correspondientes en `tests/TestMain.cpp` (verificando estabilidad numérica, ausencia de NaN/Inf, cambio dinámico de sample rates y buffer sizes).
+
+4. **Protocolo de Cierre de Sesión (Clean Handoff Check)**:
+   - Antes de concluir una tarea, el agente debe:
+     1. Ejecutar y validar la suite de pruebas (`N8Effect_Tests`).
+     2. Actualizar `PROJECT.md` con los avances logrados, el contexto de lo que se estaba realizando y los pendientes actualizados.
+     3. Dejar el espacio de trabajo en un estado coherente, limpio y listo para que el usuario u otro agente continúe sin fricción.
+

@@ -136,6 +136,7 @@ void N8AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     };
 
     dualWorldEngine_.prepare(currentSpec_);
+    dualWorldEngine_.setUseRustEngine(true);
     testSynth_.prepare(sampleRate, samplesPerBlock);
     mpeManager_.prepare(sampleRate);
     dualWorldEngine_.getExecutor().setProbeVisualizer(&probeVisualizerBuffer_);
@@ -149,6 +150,7 @@ void N8AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
             inst->processor->prepare(currentSpec_);
         }
     }
+    recompilePlan();
 }
 
 void N8AudioProcessor::releaseResources() {
@@ -385,25 +387,25 @@ bool N8AudioProcessor::recompilePlan() {
     std::vector<NodeId> sorted;
     std::string err;
     if (graph_.validateAndTopologicalSort(sorted, err)) {
+        std::vector<RustGraphConnection> rustConns;
+        rustConns.reserve(graph_.getConnections().size());
+        for (const auto& c : graph_.getConnections()) {
+            rustConns.push_back(RustGraphConnection{
+                .id = c.id,
+                .source_node_id = c.sourceNodeId,
+                .source_pin_id = c.sourcePinId,
+                .dest_node_id = c.destNodeId,
+                .dest_pin_id = c.destPinId
+            });
+        }
+
+        std::array<bool, 256> bypassedFlags{};
+        const size_t flagCount = std::min(sorted.size(), bypassedFlags.size());
+        for (size_t i = 0; i < flagCount; ++i) {
+            bypassedFlags[i] = graph_.isNodeBypassed(sorted[i]);
+        }
+
         if (rustPlanExchanger_) {
-            std::vector<RustGraphConnection> rustConns;
-            rustConns.reserve(graph_.getConnections().size());
-            for (const auto& c : graph_.getConnections()) {
-                rustConns.push_back(RustGraphConnection{
-                    .id = c.id,
-                    .source_node_id = c.sourceNodeId,
-                    .source_pin_id = c.sourcePinId,
-                    .dest_node_id = c.destNodeId,
-                    .dest_pin_id = c.destPinId
-                });
-            }
-
-            std::array<bool, 256> bypassedFlags{};
-            const size_t flagCount = std::min(sorted.size(), bypassedFlags.size());
-            for (size_t i = 0; i < flagCount; ++i) {
-                bypassedFlags[i] = graph_.isNodeBypassed(sorted[i]);
-            }
-
             n8_rust_graph_exchanger_compile_standby(
                 rustPlanExchanger_,
                 sorted.data(),
@@ -414,6 +416,41 @@ bool N8AudioProcessor::recompilePlan() {
                 static_cast<uint32_t>(flagCount)
             );
             n8_rust_graph_exchanger_commit(rustPlanExchanger_);
+        }
+
+        // Sincronizar grafo con el RustDualWorldEngine (Reglas 4, 5, 19, 20, 46)
+        std::vector<uint32_t> nodeTypes;
+        nodeTypes.reserve(sorted.size());
+        for (NodeId id : sorted) {
+            auto* node = graph_.getNode(id);
+            if (node && node->processor) {
+                nodeTypes.push_back(static_cast<uint32_t>(node->processor->getType()));
+            } else {
+                nodeTypes.push_back(3); // Passthrough por defecto
+            }
+        }
+
+        dualWorldEngine_.syncRustGraph(
+            sorted.data(),
+            static_cast<uint32_t>(sorted.size()),
+            nodeTypes.data(),
+            static_cast<uint32_t>(nodeTypes.size()),
+            rustConns.data(),
+            static_cast<uint32_t>(rustConns.size()),
+            bypassedFlags.data(),
+            static_cast<uint32_t>(flagCount)
+        );
+
+        // Sincronizar parámetros de cada nodo activo con el RustDualWorldEngine (Reglas 4, 8, 46)
+        if (auto* re = dualWorldEngine_.getRustEngine()) {
+            for (NodeId id : sorted) {
+                auto* node = graph_.getNode(id);
+                if (node && node->processor) {
+                    for (const auto& p : node->processor->getParameters()) {
+                        n8_rust_dual_world_set_node_param(re, id, p.id, node->processor->getParameter(p.id));
+                    }
+                }
+            }
         }
 
         // Double buffering thread-safe (Reglas 9, 26, 30)

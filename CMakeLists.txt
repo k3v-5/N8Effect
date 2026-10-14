@@ -7,6 +7,27 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ==============================================================================
+# Núcleo Acelerado en Rust (n8_rust_core - Reglas 9, 46, 47)
+# ==============================================================================
+find_program(CARGO_EXECUTABLE cargo HINTS "$ENV{HOME}/.cargo/bin" "C:/Users/$ENV{USERNAME}/.cargo/bin")
+
+if (CARGO_EXECUTABLE)
+    add_custom_target(n8_rust_core_build
+        COMMAND ${CARGO_EXECUTABLE} build --release --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/source/dsp/rust_core/Cargo.toml"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/source/dsp/rust_core"
+        COMMENT "Compilando n8_rust_core en Release con Cargo..."
+    )
+endif()
+
+if (WIN32)
+    set(N8_RUST_CORE_LIB "${CMAKE_CURRENT_SOURCE_DIR}/source/dsp/rust_core/target/release/n8_rust_core.lib")
+    set(N8_RUST_CORE_SYS_LIBS userenv ws2_32 bcrypt ntdll)
+else()
+    set(N8_RUST_CORE_LIB "${CMAKE_CURRENT_SOURCE_DIR}/source/dsp/rust_core/target/release/libn8_rust_core.a")
+    set(N8_RUST_CORE_SYS_LIBS pthread dl m)
+endif()
+
+# ==============================================================================
 # Target de Pruebas Unitarias del Núcleo (Ultra-rápido, sin dependencias pesadas)
 # ==============================================================================
 add_executable(N8Effect_Tests
@@ -110,12 +131,13 @@ target_include_directories(N8Effect_Tests PRIVATE
 )
 
 target_link_libraries(N8Effect_Tests PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/source/dsp/rust_core/target/release/n8_rust_core.lib"
-    userenv
-    ws2_32
-    bcrypt
-    ntdll
+    ${N8_RUST_CORE_LIB}
+    ${N8_RUST_CORE_SYS_LIBS}
 )
+
+if (TARGET n8_rust_core_build)
+    add_dependencies(N8Effect_Tests n8_rust_core_build)
+endif()
 
 if (MSVC)
     target_compile_options(N8Effect_Tests PRIVATE /W4 /permissive- /utf-8 /arch:AVX2)
@@ -131,7 +153,15 @@ add_executable(N8Effect_ConcurrencyChallenge
 )
 target_include_directories(N8Effect_ConcurrencyChallenge PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/source
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/dsp/rust_core/include
 )
+target_link_libraries(N8Effect_ConcurrencyChallenge PRIVATE
+    ${N8_RUST_CORE_LIB}
+    ${N8_RUST_CORE_SYS_LIBS}
+)
+if (TARGET n8_rust_core_build)
+    add_dependencies(N8Effect_ConcurrencyChallenge n8_rust_core_build)
+endif()
 if (MSVC)
     target_compile_options(N8Effect_ConcurrencyChallenge PRIVATE /W4 /permissive- /utf-8 /arch:AVX2)
 else()
@@ -146,7 +176,15 @@ add_executable(N8Effect_AudioBenchmarkChallenge
 )
 target_include_directories(N8Effect_AudioBenchmarkChallenge PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/source
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/dsp/rust_core/include
 )
+target_link_libraries(N8Effect_AudioBenchmarkChallenge PRIVATE
+    ${N8_RUST_CORE_LIB}
+    ${N8_RUST_CORE_SYS_LIBS}
+)
+if (TARGET n8_rust_core_build)
+    add_dependencies(N8Effect_AudioBenchmarkChallenge n8_rust_core_build)
+endif()
 if (MSVC)
     target_compile_options(N8Effect_AudioBenchmarkChallenge PRIVATE /W4 /permissive- /utf-8 /arch:AVX2 /O2)
 else()
@@ -336,12 +374,13 @@ target_link_libraries(N8Effect PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags
-    "${CMAKE_CURRENT_SOURCE_DIR}/source/dsp/rust_core/target/release/n8_rust_core.lib"
-    userenv
-    ws2_32
-    bcrypt
-    ntdll
+    ${N8_RUST_CORE_LIB}
+    ${N8_RUST_CORE_SYS_LIBS}
 )
+
+if (TARGET n8_rust_core_build)
+    add_dependencies(N8Effect n8_rust_core_build)
+endif()
 
 if (MSVC)
     target_compile_options(N8Effect PRIVATE /utf-8 /arch:AVX2)

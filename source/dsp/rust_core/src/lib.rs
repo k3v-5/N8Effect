@@ -120,7 +120,13 @@ pub mod adaptive_noise_floor_estimator;
 pub mod delay_line;
 pub mod linkwitz_riley_crossover;
 pub mod container_node;
+pub mod buffer_pool;
+pub mod node_instance;
+pub mod dual_world_engine;
 
+pub use buffer_pool::RustAudioBufferPool;
+pub use node_instance::{RustProcessorNode, RustNodeInstance, RustProcessorRegistry};
+pub use dual_world_engine::RustDualWorldEngine;
 pub use container_node::RustContainerCore;
 pub use dimension_chorus::RustDimensionChorus;
 pub use dynamic_tremolo::RustDynamicTremolo;
@@ -14793,4 +14799,384 @@ pub unsafe extern "C" fn n8_rust_container_validate_subgraph(
     RustContainerCore::validate_subgraph(nodes_slice, conns_slice)
 }
 
+// ==============================================================================
+// C-FFI Export: RustAudioBufferPool (Rules 9, 10, 46, 47)
+// ==============================================================================
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_buffer_pool_create(capacity: usize, max_block_size: usize) -> *mut RustAudioBufferPool {
+    Box::into_raw(Box::new(RustAudioBufferPool::new(capacity, max_block_size)))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_buffer_pool_destroy(ptr: *mut RustAudioBufferPool) {
+    if !ptr.is_null() {
+        drop(Box::from_raw(ptr));
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_buffer_pool_prepare(ptr: *mut RustAudioBufferPool, max_block_size: usize) {
+    if let Some(pool) = ptr.as_mut() {
+        pool.prepare(max_block_size);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_buffer_pool_reset(ptr: *mut RustAudioBufferPool) {
+    if let Some(pool) = ptr.as_mut() {
+        pool.reset();
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_buffer_pool_acquire(
+    ptr: *mut RustAudioBufferPool,
+    out_slot: *mut usize,
+    out_left: *mut *mut f32,
+    out_right: *mut *mut f32,
+) -> bool {
+    if let Some(pool) = ptr.as_mut() {
+        if let Some(slot) = pool.acquire() {
+            if !out_slot.is_null() {
+                *out_slot = slot;
+            }
+            if let Some((l, r)) = pool.get_channel_ptrs_mut(slot) {
+                if !out_left.is_null() {
+                    *out_left = l;
+                }
+                if !out_right.is_null() {
+                    *out_right = r;
+                }
+            }
+            return true;
+        }
+    }
+    false
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_buffer_pool_release(ptr: *mut RustAudioBufferPool, slot: usize) {
+    if let Some(pool) = ptr.as_mut() {
+        pool.release(slot);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_buffer_pool_release_all(ptr: *mut RustAudioBufferPool) {
+    if let Some(pool) = ptr.as_mut() {
+        pool.release_all();
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_buffer_pool_available_count(ptr: *const RustAudioBufferPool) -> usize {
+    if let Some(pool) = ptr.as_ref() {
+        pool.available_count()
+    } else {
+        0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RustProcessorRegistry C-ABI (Rules 19, 20)
+// ---------------------------------------------------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_processor_registry_create() -> *mut RustProcessorRegistry {
+    Box::into_raw(Box::new(RustProcessorRegistry::new()))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_processor_registry_destroy(ptr: *mut RustProcessorRegistry) {
+    if !ptr.is_null() {
+        drop(Box::from_raw(ptr));
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_processor_registry_get_name(
+    ptr: *const RustProcessorRegistry,
+    type_id: u32,
+) -> *const std::os::raw::c_char {
+    if let Some(_reg) = ptr.as_ref() {
+        match type_id {
+            1 => b"Input\0".as_ptr() as *const std::os::raw::c_char,
+            2 => b"Output\0".as_ptr() as *const std::os::raw::c_char,
+            3 => b"Passthrough\0".as_ptr() as *const std::os::raw::c_char,
+            4 => b"Filter\0".as_ptr() as *const std::os::raw::c_char,
+            5 => b"Delay\0".as_ptr() as *const std::os::raw::c_char,
+            6 => b"Reverb\0".as_ptr() as *const std::os::raw::c_char,
+            7 => b"Granular\0".as_ptr() as *const std::os::raw::c_char,
+            8 => b"Distortion\0".as_ptr() as *const std::os::raw::c_char,
+            9 => b"Compressor\0".as_ptr() as *const std::os::raw::c_char,
+            10 => b"Container\0".as_ptr() as *const std::os::raw::c_char,
+            11 => b"PitchShifter\0".as_ptr() as *const std::os::raw::c_char,
+            12 => b"Spectral\0".as_ptr() as *const std::os::raw::c_char,
+            13 => b"Resonator\0".as_ptr() as *const std::os::raw::c_char,
+            14 => b"Glitch\0".as_ptr() as *const std::os::raw::c_char,
+            15 => b"Multiband\0".as_ptr() as *const std::os::raw::c_char,
+            16 => b"Phaser\0".as_ptr() as *const std::os::raw::c_char,
+            17 => b"Chorus\0".as_ptr() as *const std::os::raw::c_char,
+            18 => b"Flanger\0".as_ptr() as *const std::os::raw::c_char,
+            19 => b"RingModulator\0".as_ptr() as *const std::os::raw::c_char,
+            20 => b"FrequencyShifter\0".as_ptr() as *const std::os::raw::c_char,
+            21 => b"Tape\0".as_ptr() as *const std::os::raw::c_char,
+            22 => b"Feedback\0".as_ptr() as *const std::os::raw::c_char,
+            23 => b"EventContainer\0".as_ptr() as *const std::os::raw::c_char,
+            24 => b"MidSideEncoder\0".as_ptr() as *const std::os::raw::c_char,
+            25 => b"MidSideDecoder\0".as_ptr() as *const std::os::raw::c_char,
+            26 => b"SpatialPanner\0".as_ptr() as *const std::os::raw::c_char,
+            27 => b"ParametricEQ\0".as_ptr() as *const std::os::raw::c_char,
+            28 => b"AdvancedDelay\0".as_ptr() as *const std::os::raw::c_char,
+            29 => b"SpectralProcessor\0".as_ptr() as *const std::os::raw::c_char,
+            30 => b"TapeStop\0".as_ptr() as *const std::os::raw::c_char,
+            31 => b"FormantFilter\0".as_ptr() as *const std::os::raw::c_char,
+            32 => b"NoiseTexture\0".as_ptr() as *const std::os::raw::c_char,
+            33 => b"TransientShaper\0".as_ptr() as *const std::os::raw::c_char,
+            34 => b"RotarySpeaker\0".as_ptr() as *const std::os::raw::c_char,
+            35 => b"HarmonicExciter\0".as_ptr() as *const std::os::raw::c_char,
+            36 => b"Vocoder\0".as_ptr() as *const std::os::raw::c_char,
+            37 => b"KarplusStrong\0".as_ptr() as *const std::os::raw::c_char,
+            38 => b"ReverseReverb\0".as_ptr() as *const std::os::raw::c_char,
+            39 => b"BrickwallLimiter\0".as_ptr() as *const std::os::raw::c_char,
+            40 => b"Bitcrusher\0".as_ptr() as *const std::os::raw::c_char,
+            41 => b"NoiseGate\0".as_ptr() as *const std::os::raw::c_char,
+            42 => b"DeEsser\0".as_ptr() as *const std::os::raw::c_char,
+            43 => b"MidiArpeggiator\0".as_ptr() as *const std::os::raw::c_char,
+            44 => b"MidiChordEngine\0".as_ptr() as *const std::os::raw::c_char,
+            45 => b"MidiScaleQuantizer\0".as_ptr() as *const std::os::raw::c_char,
+            46 => b"ExternalSidechain\0".as_ptr() as *const std::os::raw::c_char,
+            47 => b"Convolution\0".as_ptr() as *const std::os::raw::c_char,
+            48 => b"Oversampler\0".as_ptr() as *const std::os::raw::c_char,
+            49 => b"AudioSlicer\0".as_ptr() as *const std::os::raw::c_char,
+            50 => b"ShimmerReverb\0".as_ptr() as *const std::os::raw::c_char,
+            51 => b"Refraction\0".as_ptr() as *const std::os::raw::c_char,
+            52 => b"SpectralSmear\0".as_ptr() as *const std::os::raw::c_char,
+            53 => b"SamplePlayer\0".as_ptr() as *const std::os::raw::c_char,
+            54 => b"DynamicEq\0".as_ptr() as *const std::os::raw::c_char,
+            55 => b"StereoImager\0".as_ptr() as *const std::os::raw::c_char,
+            56 => b"LoFiCassette\0".as_ptr() as *const std::os::raw::c_char,
+            57 => b"AutoWahFilter\0".as_ptr() as *const std::os::raw::c_char,
+            58 => b"ModalResonator\0".as_ptr() as *const std::os::raw::c_char,
+            59 => b"RustWaveguide\0".as_ptr() as *const std::os::raw::c_char,
+            60 => b"DimensionChorus\0".as_ptr() as *const std::os::raw::c_char,
+            61 => b"DynamicTremolo\0".as_ptr() as *const std::os::raw::c_char,
+            62 => b"MultibandSaturator\0".as_ptr() as *const std::os::raw::c_char,
+            63 => b"CombResonator\0".as_ptr() as *const std::os::raw::c_char,
+            64 => b"PitchDelay\0".as_ptr() as *const std::os::raw::c_char,
+            65 => b"PhaseDispersion\0".as_ptr() as *const std::os::raw::c_char,
+            66 => b"MorphingSVF\0".as_ptr() as *const std::os::raw::c_char,
+            67 => b"FractalResonator\0".as_ptr() as *const std::os::raw::c_char,
+            68 => b"VactrolLPG\0".as_ptr() as *const std::os::raw::c_char,
+            69 => b"BarberpoleFilter\0".as_ptr() as *const std::os::raw::c_char,
+            70 => b"SidechainPumper\0".as_ptr() as *const std::os::raw::c_char,
+            71 => b"FrequencySplitPanner\0".as_ptr() as *const std::os::raw::c_char,
+            72 => b"ChebyshevHarmonicShaper\0".as_ptr() as *const std::os::raw::c_char,
+            73 => b"SubharmonicSynthesizer\0".as_ptr() as *const std::os::raw::c_char,
+            74 => b"TransauralCrosstalkCanceller\0".as_ptr() as *const std::os::raw::c_char,
+            75 => b"DopplerOrbitalSpatializer\0".as_ptr() as *const std::os::raw::c_char,
+            76 => b"GranularBufferShuffler\0".as_ptr() as *const std::os::raw::c_char,
+            77 => b"DisintegrationLooper\0".as_ptr() as *const std::os::raw::c_char,
+            78 => b"SpringReverbTank\0".as_ptr() as *const std::os::raw::c_char,
+            79 => b"DualBodeFrequencyShifter\0".as_ptr() as *const std::os::raw::c_char,
+            80 => b"MicrotonalHarmonizer\0".as_ptr() as *const std::os::raw::c_char,
+            81 => b"FormantPitchShifter\0".as_ptr() as *const std::os::raw::c_char,
+            82 => b"SpectralResonanceTamer\0".as_ptr() as *const std::os::raw::c_char,
+            83 => b"SpectralMorphingConvolver\0".as_ptr() as *const std::os::raw::c_char,
+            _ => b"Unknown\0".as_ptr() as *const std::os::raw::c_char,
+        }
+    } else {
+        b"Unknown\0".as_ptr() as *const std::os::raw::c_char
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RustDualWorldEngine C-ABI (Roadmap Phase 4, Rules 1, 4, 9, 17, 34, 35, 47)
+// ---------------------------------------------------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_create(
+    sample_rate: f64,
+    max_block_size: usize,
+) -> *mut RustDualWorldEngine {
+    Box::into_raw(Box::new(RustDualWorldEngine::new(sample_rate, max_block_size)))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_destroy(ptr: *mut RustDualWorldEngine) {
+    if !ptr.is_null() {
+        drop(Box::from_raw(ptr));
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_prepare(
+    ptr: *mut RustDualWorldEngine,
+    sample_rate: f64,
+    max_block_size: usize,
+) {
+    if let Some(engine) = ptr.as_mut() {
+        engine.prepare(sample_rate, max_block_size);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_reset(ptr: *mut RustDualWorldEngine) {
+    if let Some(engine) = ptr.as_mut() {
+        engine.reset();
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_set_dry_level(ptr: *mut RustDualWorldEngine, level: f32) {
+    if let Some(engine) = ptr.as_mut() {
+        engine.set_dry_level(level);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_get_dry_level(ptr: *const RustDualWorldEngine) -> f32 {
+    if let Some(engine) = ptr.as_ref() {
+        engine.get_dry_level()
+    } else {
+        1.0
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_set_wet_level(ptr: *mut RustDualWorldEngine, level: f32) {
+    if let Some(engine) = ptr.as_mut() {
+        engine.set_wet_level(level);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_get_wet_level(ptr: *const RustDualWorldEngine) -> f32 {
+    if let Some(engine) = ptr.as_ref() {
+        engine.get_wet_level()
+    } else {
+        1.0
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_set_editor_active(ptr: *mut RustDualWorldEngine, active: bool) {
+    if let Some(engine) = ptr.as_mut() {
+        engine.set_editor_active(active);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_add_node(
+    ptr: *mut RustDualWorldEngine,
+    node_id: u32,
+    type_id: u32,
+) -> bool {
+    if let Some(engine) = ptr.as_mut() {
+        engine.add_node(node_id, type_id)
+    } else {
+        false
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_remove_node(
+    ptr: *mut RustDualWorldEngine,
+    node_id: u32,
+) -> bool {
+    if let Some(engine) = ptr.as_mut() {
+        engine.remove_node(node_id)
+    } else {
+        false
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_set_node_bypassed(
+    ptr: *mut RustDualWorldEngine,
+    node_id: u32,
+    bypassed: bool,
+) {
+    if let Some(engine) = ptr.as_mut() {
+        engine.set_node_bypassed(node_id, bypassed);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_set_node_param(
+    ptr: *mut RustDualWorldEngine,
+    node_id: u32,
+    param_id: u32,
+    value: f32,
+) {
+    if let Some(engine) = ptr.as_mut() {
+        engine.set_node_parameter(node_id, param_id, value);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_get_node_param(
+    ptr: *const RustDualWorldEngine,
+    node_id: u32,
+    param_id: u32,
+) -> f32 {
+    if let Some(engine) = ptr.as_ref() {
+        engine.get_node_parameter(node_id, param_id)
+    } else {
+        0.0
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_update_graph(
+    ptr: *mut RustDualWorldEngine,
+    node_ids: *const u32,
+    num_nodes: u32,
+    connections: *const RustGraphConnection,
+    num_connections: u32,
+    bypassed_flags: *const bool,
+    num_bypassed: u32,
+) -> bool {
+    if let Some(engine) = ptr.as_mut() {
+        let n = num_nodes as usize;
+        let n_conns = num_connections as usize;
+        let n_byp = num_bypassed as usize;
+
+        let node_ids_slice = if !node_ids.is_null() && n > 0 {
+            std::slice::from_raw_parts(node_ids, n)
+        } else {
+            &[]
+        };
+
+        let conns_slice = if !connections.is_null() && n_conns > 0 {
+            std::slice::from_raw_parts(connections, n_conns)
+        } else {
+            &[]
+        };
+
+        let byp_slice = if !bypassed_flags.is_null() && n_byp > 0 {
+            std::slice::from_raw_parts(bypassed_flags, n_byp)
+        } else {
+            &[]
+        };
+
+        engine.update_graph_topology(node_ids_slice, conns_slice, byp_slice)
+    } else {
+        false
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn n8_rust_dual_world_process(
+    ptr: *mut RustDualWorldEngine,
+    in_l: *const f32,
+    in_r: *const f32,
+    out_l: *mut f32,
+    out_r: *mut f32,
+    num_samples: u32,
+) {
+    if let Some(engine) = ptr.as_mut() {
+        engine.process(in_l, in_r, out_l, out_r, num_samples as usize);
+    }
+}
 

@@ -1512,6 +1512,7 @@ struct RustExecutionStepDesc {
     int32_t audio_rate_mod_step_index;
     uint32_t num_predecessors;
     uint32_t num_successors;
+    int16_t predecessor_step_indices[8];
 };
 #pragma pack(pop)
 
@@ -2735,6 +2736,61 @@ void n8_rust_lr_crossover_process_block(
     float* high_l,
     float* high_r,
     size_t num_samples
+);
+
+// Tipo opaco para el pool de buffers de audio alineado a 64 bytes en Rust
+struct RustAudioBufferPool;
+
+RustAudioBufferPool* n8_rust_buffer_pool_create(size_t capacity, size_t max_block_size);
+void n8_rust_buffer_pool_destroy(RustAudioBufferPool* ptr);
+void n8_rust_buffer_pool_prepare(RustAudioBufferPool* ptr, size_t max_block_size);
+void n8_rust_buffer_pool_reset(RustAudioBufferPool* ptr);
+bool n8_rust_buffer_pool_acquire(
+    RustAudioBufferPool* ptr,
+    size_t* out_slot,
+    float** out_left,
+    float** out_right
+);
+void n8_rust_buffer_pool_release(RustAudioBufferPool* ptr, size_t slot);
+void n8_rust_buffer_pool_release_all(RustAudioBufferPool* ptr);
+size_t n8_rust_buffer_pool_available_count(const RustAudioBufferPool* ptr);
+
+struct RustProcessorRegistry;
+RustProcessorRegistry* n8_rust_processor_registry_create(void);
+void n8_rust_processor_registry_destroy(RustProcessorRegistry* ptr);
+const char* n8_rust_processor_registry_get_name(const RustProcessorRegistry* ptr, uint32_t type_id);
+
+struct RustDualWorldEngine;
+RustDualWorldEngine* n8_rust_dual_world_create(double sample_rate, size_t max_block_size);
+void n8_rust_dual_world_destroy(RustDualWorldEngine* ptr);
+void n8_rust_dual_world_prepare(RustDualWorldEngine* ptr, double sample_rate, size_t max_block_size);
+void n8_rust_dual_world_reset(RustDualWorldEngine* ptr);
+void n8_rust_dual_world_set_dry_level(RustDualWorldEngine* ptr, float level);
+float n8_rust_dual_world_get_dry_level(const RustDualWorldEngine* ptr);
+void n8_rust_dual_world_set_wet_level(RustDualWorldEngine* ptr, float level);
+float n8_rust_dual_world_get_wet_level(const RustDualWorldEngine* ptr);
+void n8_rust_dual_world_set_editor_active(RustDualWorldEngine* ptr, bool active);
+bool n8_rust_dual_world_add_node(RustDualWorldEngine* ptr, uint32_t node_id, uint32_t type_id);
+bool n8_rust_dual_world_remove_node(RustDualWorldEngine* ptr, uint32_t node_id);
+void n8_rust_dual_world_set_node_bypassed(RustDualWorldEngine* ptr, uint32_t node_id, bool bypassed);
+void n8_rust_dual_world_set_node_param(RustDualWorldEngine* ptr, uint32_t node_id, uint32_t param_id, float value);
+float n8_rust_dual_world_get_node_param(const RustDualWorldEngine* ptr, uint32_t node_id, uint32_t param_id);
+bool n8_rust_dual_world_update_graph(
+    RustDualWorldEngine* ptr,
+    const uint32_t* node_ids,
+    uint32_t num_nodes,
+    const RustGraphConnection* connections,
+    uint32_t num_connections,
+    const bool* bypassed_flags,
+    uint32_t num_bypassed
+);
+void n8_rust_dual_world_process(
+    RustDualWorldEngine* ptr,
+    const float* in_l,
+    const float* in_r,
+    float* out_l,
+    float* out_r,
+    uint32_t num_samples
 );
 
 #ifdef __cplusplus

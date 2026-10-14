@@ -55,6 +55,30 @@ impl MidiArpeggiatorCore {
         self.last_step = -1;
     }
 
+    pub fn set_parameter(&mut self, param_id: u32, value: f32) {
+        match param_id {
+            1 => self.target_rate = value,
+            2 => self.target_pattern = value,
+            3 => self.target_octaves = value,
+            4 => self.target_gate = value,
+            5 => self.target_swing = value,
+            6 => self.target_synth_mix = value,
+            _ => {}
+        }
+    }
+
+    pub fn get_parameter(&self, param_id: u32) -> f32 {
+        match param_id {
+            1 => self.target_rate,
+            2 => self.target_pattern,
+            3 => self.target_octaves,
+            4 => self.target_gate,
+            5 => self.target_swing,
+            6 => self.target_synth_mix,
+            _ => 0.0,
+        }
+    }
+
     pub fn set_notes(&mut self, notes: &[i32]) {
         self.num_active_notes = notes.len().min(16);
         for i in 0..self.num_active_notes {

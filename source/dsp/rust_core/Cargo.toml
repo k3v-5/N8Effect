@@ -5,7 +5,7 @@ edition = "2021"
 
 [lib]
 name = "n8_rust_core"
-crate-type = ["staticlib"]
+crate-type = ["staticlib", "rlib"]
 
 [profile.release]
 opt-level = 3

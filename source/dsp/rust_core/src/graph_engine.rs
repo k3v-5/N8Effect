@@ -39,6 +39,7 @@ pub struct RustExecutionStepDesc {
     pub audio_rate_mod_step_index: i32,
     pub num_predecessors: u32,
     pub num_successors: u32,
+    pub predecessor_step_indices: [i16; 8],
 }
 
 impl Default for RustExecutionStepDesc {
@@ -52,6 +53,7 @@ impl Default for RustExecutionStepDesc {
             audio_rate_mod_step_index: -1,
             num_predecessors: 0,
             num_successors: 0,
+            predecessor_step_indices: [-1; 8],
         }
     }
 }
@@ -322,6 +324,7 @@ impl RustGraphPlan {
                 audio_rate_mod_step_index: -1,
                 num_predecessors: 0,
                 num_successors: 0,
+                predecessor_step_indices: [-1; 8],
             };
         }
 
@@ -343,6 +346,10 @@ impl RustGraphPlan {
                 } else if conn.dest_pin_id == AUDIO_RATE_MOD_PIN_ID {
                     self.steps[d].audio_rate_mod_step_index = s as i32;
                 } else {
+                    let p_count = self.steps[d].num_predecessors as usize;
+                    if p_count < 8 {
+                        self.steps[d].predecessor_step_indices[p_count] = s as i16;
+                    }
                     self.steps[d].num_predecessors += 1;
                     self.steps[d].is_root = false;
                 }

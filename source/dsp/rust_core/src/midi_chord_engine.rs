@@ -55,6 +55,34 @@ impl MidiChordEngineCore {
         }
     }
 
+    pub fn set_parameter(&mut self, param_id: u32, value: f32) {
+        let mut recompute = false;
+        match param_id {
+            1 => { self.target_chord_type = value.clamp(0.0, 10.0); recompute = true; }
+            2 => { self.target_inversion = value.clamp(0.0, 2.0); recompute = true; }
+            3 => self.target_strum_delay = value.clamp(0.0, 80.0),
+            4 => self.target_spread = value.clamp(0.0, 1.0),
+            5 => { self.target_root_note = value.clamp(36.0, 72.0); recompute = true; }
+            6 => self.target_synth_mix = value.clamp(0.0, 1.0),
+            _ => {}
+        }
+        if recompute {
+            self.recalculate_chord();
+        }
+    }
+
+    pub fn get_parameter(&self, param_id: u32) -> f32 {
+        match param_id {
+            1 => self.target_chord_type,
+            2 => self.target_inversion,
+            3 => self.target_strum_delay,
+            4 => self.target_spread,
+            5 => self.target_root_note,
+            6 => self.target_synth_mix,
+            _ => 0.0,
+        }
+    }
+
     pub fn set_parameters(
         &mut self,
         chord_type: f32,

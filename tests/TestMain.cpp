@@ -9680,6 +9680,287 @@ void testPhase11RustContainerNodeCoreMigration() {
     std::cout << "PASSED (100% Rust C-ABI Container Core Validated)\n";
 }
 
+void testPhase12RustAudioBufferPoolLockFree() {
+    std::cout << "[TEST] Phase 12: RustAudioBufferPool 64-Byte Cacheline Alignment & Lock-Free Bitmask (Reglas 9, 10, 11, 46, 47)... " << std::flush;
+
+    const size_t capacity = 8;
+    const size_t blockSize = 512;
+    auto* pool = n8_rust_buffer_pool_create(capacity, blockSize);
+    assert(pool != nullptr);
+    assert(n8_rust_buffer_pool_available_count(pool) == capacity);
+
+    std::vector<size_t> acquiredSlots;
+    for (size_t i = 0; i < capacity; ++i) {
+        size_t slot = 999;
+        float* left = nullptr;
+        float* right = nullptr;
+        bool ok = n8_rust_buffer_pool_acquire(pool, &slot, &left, &right);
+        assert(ok);
+        assert(slot < capacity);
+        assert(left != nullptr && right != nullptr);
+        assert(reinterpret_cast<uintptr_t>(left) % 64 == 0);
+
+        left[0] = 0.5f;
+        left[blockSize - 1] = -0.5f;
+        right[0] = 0.25f;
+        right[blockSize - 1] = -0.25f;
+
+        acquiredSlots.push_back(slot);
+    }
+
+    assert(n8_rust_buffer_pool_available_count(pool) == 0);
+
+    size_t extraSlot = 0;
+    float* extraLeft = nullptr;
+    float* extraRight = nullptr;
+    bool exhaustedOk = n8_rust_buffer_pool_acquire(pool, &extraSlot, &extraLeft, &extraRight);
+    assert(!exhaustedOk);
+
+    for (size_t i = 0; i < 4; ++i) {
+        n8_rust_buffer_pool_release(pool, acquiredSlots[i]);
+    }
+    assert(n8_rust_buffer_pool_available_count(pool) == 4);
+
+    for (size_t i = 0; i < 4; ++i) {
+        size_t slot = 999;
+        float* left = nullptr;
+        float* right = nullptr;
+        bool ok = n8_rust_buffer_pool_acquire(pool, &slot, &left, &right);
+        assert(ok);
+        assert(slot < capacity);
+        assert(reinterpret_cast<uintptr_t>(left) % 64 == 0);
+    }
+    assert(n8_rust_buffer_pool_available_count(pool) == 0);
+
+    n8_rust_buffer_pool_reset(pool);
+    assert(n8_rust_buffer_pool_available_count(pool) == capacity);
+
+    n8_rust_buffer_pool_destroy(pool);
+
+    std::cout << "PASSED (100% Rust C-ABI Audio Buffer Pool Validated)\n";
+}
+
+void testPhase13RustProcessorRegistry() {
+    std::cout << "[TEST] Phase 13: RustProcessorRegistry O(1) Factory & C-ABI Dispatch (Reglas 5, 19, 20, 46)... " << std::flush;
+
+    RustProcessorRegistry* reg = n8_rust_processor_registry_create();
+    assert(reg != nullptr);
+
+    const char* expectedNames[] = {
+        "", "Input", "Output", "Passthrough", "Filter", "Delay", "Reverb", "Granular",
+        "Distortion", "Compressor", "Container", "PitchShifter", "Spectral", "Resonator",
+        "Glitch", "Multiband", "Phaser", "Chorus", "Flanger", "RingModulator",
+        "FrequencyShifter", "Tape", "Feedback", "EventContainer", "MidSideEncoder",
+        "MidSideDecoder", "SpatialPanner", "ParametricEQ", "AdvancedDelay",
+        "SpectralProcessor", "TapeStop", "FormantFilter", "NoiseTexture", "TransientShaper",
+        "RotarySpeaker", "HarmonicExciter", "Vocoder", "KarplusStrong", "ReverseReverb",
+        "BrickwallLimiter", "Bitcrusher", "NoiseGate", "DeEsser", "MidiArpeggiator",
+        "MidiChordEngine", "MidiScaleQuantizer", "ExternalSidechain", "Convolution",
+        "Oversampler", "AudioSlicer", "ShimmerReverb", "Refraction", "SpectralSmear",
+        "SamplePlayer", "DynamicEq", "StereoImager", "LoFiCassette", "AutoWahFilter",
+        "ModalResonator", "RustWaveguide", "DimensionChorus", "DynamicTremolo",
+        "MultibandSaturator", "CombResonator", "PitchDelay", "PhaseDispersion",
+        "MorphingSVF", "FractalResonator", "VactrolLPG", "BarberpoleFilter",
+        "SidechainPumper", "FrequencySplitPanner", "ChebyshevHarmonicShaper",
+        "SubharmonicSynthesizer", "TransauralCrosstalkCanceller", "DopplerOrbitalSpatializer",
+        "GranularBufferShuffler", "DisintegrationLooper", "SpringReverbTank",
+        "DualBodeFrequencyShifter", "MicrotonalHarmonizer", "FormantPitchShifter",
+        "SpectralResonanceTamer", "SpectralMorphingConvolver"
+    };
+
+    for (uint32_t i = 1; i <= 83; ++i) {
+        std::string name = n8_rust_processor_registry_get_name(reg, i);
+        assert(name == expectedNames[i]);
+    }
+    assert(std::string(n8_rust_processor_registry_get_name(reg, 99)) == "Unknown");
+
+    n8_rust_processor_registry_destroy(reg);
+    std::cout << "PASSED (100% Rust C-ABI Processor Registry Validated with 83 Node Types)\n";
+}
+
+void testPhase14RustDualWorldEngineProcess() {
+    std::cout << "[TEST] Phase 14: RustDualWorldEngine Unified Audio Thread Loop & Dry/Wet Isolation (Reglas 1, 4, 9, 17, 34, 35, 47)... " << std::flush;
+
+    const double sampleRate = 48000.0;
+    const size_t blockSize = 256;
+
+    RustDualWorldEngine* engine = n8_rust_dual_world_create(sampleRate, blockSize);
+    assert(engine != nullptr);
+
+    // Verify dry/wet levels default
+    assert(std::abs(n8_rust_dual_world_get_dry_level(engine) - 1.0f) < 1e-4f);
+    assert(std::abs(n8_rust_dual_world_get_wet_level(engine) - 1.0f) < 1e-4f);
+
+    n8_rust_dual_world_set_dry_level(engine, 0.75f);
+    assert(std::abs(n8_rust_dual_world_get_dry_level(engine) - 0.75f) < 1e-4f);
+    n8_rust_dual_world_set_wet_level(engine, 0.25f);
+    assert(std::abs(n8_rust_dual_world_get_wet_level(engine) - 0.25f) < 1e-4f);
+
+    // Test adding nodes
+    // Node 10: Filter (type 4)
+    // Node 20: Delay (type 5)
+    // Node 30: Distortion (type 8)
+    bool add1 = n8_rust_dual_world_add_node(engine, 10, 4);
+    assert(add1);
+    bool add2 = n8_rust_dual_world_add_node(engine, 20, 5);
+    assert(add2);
+    bool add3 = n8_rust_dual_world_add_node(engine, 30, 8);
+    assert(add3);
+
+    // Duplicate node ID rejection
+    bool addDup = n8_rust_dual_world_add_node(engine, 10, 4);
+    assert(!addDup);
+
+    // Test parameter manipulation
+    n8_rust_dual_world_set_node_param(engine, 10, 1, 2500.0f); // Cutoff = 2500 Hz
+    float pVal = n8_rust_dual_world_get_node_param(engine, 10, 1);
+    assert(std::abs(pVal - 2500.0f) < 1.0f);
+
+    // Test bypass toggle
+    n8_rust_dual_world_set_node_bypassed(engine, 20, true);
+
+    // Test Sequential ping-pong audio processing
+    std::vector<float> inputL(blockSize, 0.0f);
+    std::vector<float> inputR(blockSize, 0.0f);
+    std::vector<float> outputL(blockSize, 0.0f);
+    std::vector<float> outputR(blockSize, 0.0f);
+
+    for (size_t s = 0; s < blockSize; ++s) {
+        float t = static_cast<float>(s) / static_cast<float>(sampleRate);
+        inputL[s] = 0.5f * std::sin(2.0f * 3.14159265f * 440.0f * t);
+        inputR[s] = 0.5f * std::cos(2.0f * 3.14159265f * 440.0f * t);
+    }
+
+    // Set dry 100%, wet 0% to test pure dry isolation (Rule 1 & 17)
+    n8_rust_dual_world_set_dry_level(engine, 1.0f);
+    n8_rust_dual_world_set_wet_level(engine, 0.0f);
+
+    // Run several blocks to settle gain smoothing
+    for (int b = 0; b < 10; ++b) {
+        n8_rust_dual_world_process(engine, inputL.data(), inputR.data(), outputL.data(), outputR.data(), blockSize);
+    }
+
+    for (size_t s = 0; s < blockSize; ++s) {
+        assert(!std::isnan(outputL[s]) && !std::isinf(outputL[s]));
+        assert(!std::isnan(outputR[s]) && !std::isinf(outputR[s]));
+        assert(std::abs(outputL[s] - inputL[s]) < 0.01f);
+        assert(std::abs(outputR[s] - inputR[s]) < 0.01f);
+    }
+
+    // Test DAG modular routing (Node 10 -> Node 30, with Node 20 bypassed)
+    uint32_t nodeIds[3] = { 10, 20, 30 };
+    RustGraphConnection conns[2];
+    conns[0] = { 1, 10, 2, 20, 1 }; // 10 -> 20
+    conns[1] = { 2, 20, 2, 30, 1 }; // 20 -> 30
+    bool bypFlags[3] = { false, true, false };
+
+    bool updateOk = n8_rust_dual_world_update_graph(engine, nodeIds, 3, conns, 2, bypFlags, 3);
+    assert(updateOk);
+
+    // Enable Wet 100%, Dry 0%
+    n8_rust_dual_world_set_dry_level(engine, 0.0f);
+    n8_rust_dual_world_set_wet_level(engine, 1.0f);
+
+    for (int b = 0; b < 10; ++b) {
+        n8_rust_dual_world_process(engine, inputL.data(), inputR.data(), outputL.data(), outputR.data(), blockSize);
+    }
+
+    float wetEnergy = 0.0f;
+    for (size_t s = 0; s < blockSize; ++s) {
+        assert(!std::isnan(outputL[s]) && !std::isinf(outputL[s]));
+        assert(!std::isnan(outputR[s]) && !std::isinf(outputR[s]));
+        wetEnergy += std::abs(outputL[s]) + std::abs(outputR[s]);
+    }
+    assert(wetEnergy > 0.01f);
+
+    // Test True Peak Master Anti-Clip protection (Rule 34 & 47)
+    std::vector<float> hotInput(blockSize, 5.0f); // Massive overdrive input
+    n8_rust_dual_world_set_dry_level(engine, 1.0f);
+    n8_rust_dual_world_set_wet_level(engine, 1.0f);
+    for (int b = 0; b < 5; ++b) {
+        n8_rust_dual_world_process(engine, hotInput.data(), hotInput.data(), outputL.data(), outputR.data(), blockSize);
+    }
+    for (size_t s = 0; s < blockSize; ++s) {
+        assert(std::abs(outputL[s]) <= 0.9886f);
+        assert(std::abs(outputR[s]) <= 0.9886f);
+    }
+
+    // Test reset & prepare with new sample rate (96 kHz, 1024 samples)
+    n8_rust_dual_world_prepare(engine, 96000.0, 1024);
+    n8_rust_dual_world_reset(engine);
+
+    // Test node removal
+    bool remOk = n8_rust_dual_world_remove_node(engine, 20);
+    assert(remOk);
+    bool remNotFound = n8_rust_dual_world_remove_node(engine, 999);
+    assert(!remNotFound);
+
+    n8_rust_dual_world_destroy(engine);
+
+    std::cout << "PASSED (100% Rust C-ABI Dual World Engine Validated)\n";
+}
+
+void testPhase15RustExtendedEffectLibrary() {
+    std::cout << "[TEST] Phase 15: Rust Extended Effect Library (83 DSP Node Types Verified in RustDualWorldEngine) (Reglas 4, 5, 8, 9, 14, 16, 19, 20, 34, 46, 47)... " << std::flush;
+
+    const double sampleRate = 48000.0;
+    const size_t blockSize = 256;
+
+    RustDualWorldEngine* engine = n8_rust_dual_world_create(sampleRate, blockSize);
+    assert(engine != nullptr);
+
+    // Test adding all 83 node types into the RustDualWorldEngine
+    for (uint32_t typeId = 1; typeId <= 83; ++typeId) {
+        uint32_t nodeId = 1000 + typeId;
+        bool added = n8_rust_dual_world_add_node(engine, nodeId, typeId);
+        assert(added);
+    }
+
+    // Set dry 0%, wet 100%
+    n8_rust_dual_world_set_dry_level(engine, 0.0f);
+    n8_rust_dual_world_set_wet_level(engine, 1.0f);
+
+    std::vector<float> inL(blockSize, 0.4f);
+    std::vector<float> inR(blockSize, -0.4f);
+    std::vector<float> outL(blockSize, 0.0f);
+    std::vector<float> outR(blockSize, 0.0f);
+
+    // Process blocks through engine with all 83 nodes instantiated
+    for (int b = 0; b < 20; ++b) {
+        n8_rust_dual_world_process(engine, inL.data(), inR.data(), outL.data(), outR.data(), blockSize);
+        for (size_t s = 0; s < blockSize; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+        }
+    }
+
+    // Verify parameter modification on extended nodes
+    // Node 1016 (type 16: Phaser, param 1 = rate)
+    n8_rust_dual_world_set_node_param(engine, 1016, 1, 2.5f);
+    assert(std::abs(n8_rust_dual_world_get_node_param(engine, 1016, 1) - 2.5f) < 0.05f);
+
+    // Node 1017 (type 17: Chorus, param 1 = rate)
+    n8_rust_dual_world_set_node_param(engine, 1017, 1, 1.5f);
+    assert(std::abs(n8_rust_dual_world_get_node_param(engine, 1017, 1) - 1.5f) < 0.05f);
+
+    // Node 1021 (type 21: Tape, param 1 = drive)
+    n8_rust_dual_world_set_node_param(engine, 1021, 1, 4.0f);
+    assert(std::abs(n8_rust_dual_world_get_node_param(engine, 1021, 1) - 4.0f) < 0.05f);
+
+    // Node 1050 (type 50: ShimmerReverb, param 1 = decay)
+    n8_rust_dual_world_set_node_param(engine, 1050, 1, 0.75f);
+    assert(std::abs(n8_rust_dual_world_get_node_param(engine, 1050, 1) - 0.75f) < 0.05f);
+
+    // Node 1083 (type 83: SpectralMorphingConvolver, param 1 = morph)
+    n8_rust_dual_world_set_node_param(engine, 1083, 1, 0.5f);
+    assert(std::abs(n8_rust_dual_world_get_node_param(engine, 1083, 1) - 0.5f) < 0.05f);
+
+    // Clean destruction
+    n8_rust_dual_world_destroy(engine);
+
+    std::cout << "PASSED (83/83 Rust DSP Nodes Verified in DualWorldEngine)\n";
+}
+
 int main() {
     std::cout << std::unitbuf;
     std::cout << "==================================================\n";
@@ -9930,11 +10211,15 @@ int main() {
     testOverhauledFactoryPresetCatalogDAG();
     testPhase10RustEventContainerRackMigration();
     testPhase11RustContainerNodeCoreMigration();
+    testPhase12RustAudioBufferPoolLockFree();
+    testPhase13RustProcessorRegistry();
+    testPhase14RustDualWorldEngineProcess();
+    testPhase15RustExtendedEffectLibrary();
     testVisualModulationAndGraphCanvasCabling();
     testPhase7BankPackagerAndKineticSceneMorph();
 
     std::cout << "==================================================\n";
-    std::cout << "TODOS LOS TESTS (164 PRUEBAS UNITARIAS) HAN PASADO CON EXITO\n";
+    std::cout << "TODOS LOS TESTS (168 PRUEBAS UNITARIAS) HAN PASADO CON EXITO\n";
     std::cout << "==================================================\n";
 
     return 0;

@@ -13,6 +13,7 @@
 #include "../core/CpuProfiler.h"
 #include "../dsp/core/AdaptiveNoiseFloorEstimator.h"
 #include "../dsp/core/FastMath.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -22,6 +23,13 @@ namespace audio_graph {
 class DualWorldEngine {
 public:
     DualWorldEngine() = default;
+
+    ~DualWorldEngine() {
+        if (rustEngine_ != nullptr) {
+            n8_rust_dual_world_destroy(rustEngine_);
+            rustEngine_ = nullptr;
+        }
+    }
 
     void prepare(const ProcessSpec& spec) {
         spec_ = spec;
@@ -36,8 +44,18 @@ public:
         profiler_.prepare(spec.sampleRate, spec.maximumBlockSize);
         noiseFloorEstimator_.prepare(spec.sampleRate);
 
+        if (rustEngine_ == nullptr) {
+            rustEngine_ = n8_rust_dual_world_create(spec.sampleRate, spec.maximumBlockSize);
+        } else {
+            n8_rust_dual_world_prepare(rustEngine_, spec.sampleRate, spec.maximumBlockSize);
+        }
+
         currentDryLevel_ = targetDryLevel_;
         currentWetLevel_ = targetWetLevel_;
+        if (rustEngine_ != nullptr) {
+            n8_rust_dual_world_set_dry_level(rustEngine_, currentDryLevel_);
+            n8_rust_dual_world_set_wet_level(rustEngine_, currentWetLevel_);
+        }
     }
 
     void reset() {
@@ -47,10 +65,73 @@ public:
         analysisEngine_.reset();
         profiler_.reset();
         noiseFloorEstimator_.reset();
+        if (rustEngine_ != nullptr) {
+            n8_rust_dual_world_reset(rustEngine_);
+        }
+    }
+
+    void setUseRustEngine(bool useRust) noexcept {
+        useRustEngine_.store(useRust, std::memory_order_release);
+    }
+
+    [[nodiscard]] bool isUsingRustEngine() const noexcept {
+        return useRustEngine_.load(std::memory_order_relaxed);
+    }
+
+    RustDualWorldEngine* getRustEngine() noexcept { return rustEngine_; }
+
+    void syncRustGraph(
+        const uint32_t* nodeIds,
+        uint32_t numNodes,
+        const uint32_t* nodeTypes,
+        uint32_t numTypes,
+        const RustGraphConnection* connections,
+        uint32_t numConnections,
+        const bool* bypassedFlags,
+        uint32_t numBypassed
+    ) {
+        if (rustEngine_ == nullptr || nodeIds == nullptr) return;
+
+        for (uint32_t i = 0; i < numNodes; ++i) {
+            uint32_t nid = nodeIds[i];
+            uint32_t ntype = (i < numTypes && nodeTypes != nullptr) ? nodeTypes[i] : 3;
+            n8_rust_dual_world_add_node(rustEngine_, nid, ntype);
+            bool byp = (i < numBypassed && bypassedFlags != nullptr) ? bypassedFlags[i] : false;
+            n8_rust_dual_world_set_node_bypassed(rustEngine_, nid, byp);
+        }
+
+        n8_rust_dual_world_update_graph(
+            rustEngine_,
+            nodeIds,
+            numNodes,
+            connections,
+            numConnections,
+            bypassedFlags,
+            numBypassed
+        );
+    }
+
+    void syncRustGraph(
+        const std::vector<uint32_t>& nodeIds,
+        const std::vector<uint32_t>& nodeTypes,
+        const std::vector<RustGraphConnection>& connections,
+        const std::vector<uint8_t>& bypassedFlags
+    ) {
+        syncRustGraph(
+            nodeIds.data(),
+            static_cast<uint32_t>(nodeIds.size()),
+            nodeTypes.data(),
+            static_cast<uint32_t>(nodeTypes.size()),
+            connections.data(),
+            static_cast<uint32_t>(connections.size()),
+            reinterpret_cast<const bool*>(bypassedFlags.data()),
+            static_cast<uint32_t>(bypassedFlags.size())
+        );
     }
 
     void setDryLevel(float level) noexcept {
         targetDryLevel_ = std::clamp(level, 0.0f, 2.0f);
+        if (rustEngine_ != nullptr) n8_rust_dual_world_set_dry_level(rustEngine_, targetDryLevel_);
     }
 
     float getDryLevel() const noexcept {
@@ -59,6 +140,7 @@ public:
 
     void setWetLevel(float level) noexcept {
         targetWetLevel_ = std::clamp(level, 0.0f, 2.0f);
+        if (rustEngine_ != nullptr) n8_rust_dual_world_set_wet_level(rustEngine_, targetWetLevel_);
     }
 
     float getWetLevel() const noexcept {
@@ -76,6 +158,7 @@ public:
     void setEditorActive(bool active) noexcept {
         editorActive_.store(active, std::memory_order_relaxed);
         eventManager_.setEditorActive(active);
+        if (rustEngine_ != nullptr) n8_rust_dual_world_set_editor_active(rustEngine_, active);
     }
 
     [[nodiscard]] bool isEditorActive() const noexcept {
@@ -125,6 +208,21 @@ public:
      * @brief Procesa el bloque de audio dividiendo el flujo en Dry World, Analysis y Event World (Reglas 1, 2, 7, 17)
      */
     void process(const ExecutionPlan& plan, const ProcessContext& context, float* const* finalOutput, Graph* graph = nullptr) {
+        // Fast-path: Unified Rust Engine Execution (Reglas 1, 4, 9, 17, 34, 46, 47)
+        if (useRustEngine_.load(std::memory_order_relaxed) && rustEngine_ != nullptr && context.numSamples > 0 && finalOutput != nullptr) {
+            profiler_.startBlock();
+            const float* inL = (context.numInputChannels > 0 && context.inputChannels != nullptr) ? context.inputChannels[0] : nullptr;
+            const float* inR = (context.numInputChannels > 1 && context.inputChannels != nullptr) ? context.inputChannels[1] : inL;
+            float* outL = (context.numOutputChannels > 0) ? finalOutput[0] : nullptr;
+            float* outR = (context.numOutputChannels > 1) ? finalOutput[1] : outL;
+            if (inL != nullptr && outL != nullptr) {
+                n8_rust_dual_world_process(rustEngine_, inL, inR, outL, outR, context.numSamples);
+                const uint32_t nodeCount = (graph != nullptr) ? static_cast<uint32_t>(graph->getNodes().size()) : 0;
+                profiler_.endBlock(context.numSamples, 0, 0, nodeCount);
+                return;
+            }
+        }
+
         profiler_.startBlock();
         DenormalDisabler denormalGuard; // Regla 9 y 34
         const uint32_t numSamples = context.numSamples;
@@ -247,6 +345,8 @@ public:
 
 private:
     std::atomic<bool> editorActive_{ false };
+    std::atomic<bool> useRustEngine_{ false };
+    RustDualWorldEngine* rustEngine_{ nullptr };
 
     ProcessSpec spec_;
     PreallocatedBuffer dryBuffer_;

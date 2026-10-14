@@ -32,6 +32,22 @@ impl ExternalSidechainCore {
         self.target_mute = mute.clamp(0.0, 1.0);
     }
 
+    pub fn set_parameter(&mut self, param_id: u32, value: f32) {
+        match param_id {
+            1 => self.target_gain_db = value.clamp(-60.0, 12.0),
+            2 => self.target_mute = value.clamp(0.0, 1.0),
+            _ => {}
+        }
+    }
+
+    pub fn get_parameter(&self, param_id: u32) -> f32 {
+        match param_id {
+            1 => self.target_gain_db,
+            2 => self.target_mute,
+            _ => 0.0,
+        }
+    }
+
     pub fn process(
         &mut self,
         sc_l: Option<&[f32]>,

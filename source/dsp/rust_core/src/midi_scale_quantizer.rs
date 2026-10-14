@@ -51,6 +51,29 @@ impl MidiScaleQuantizerCore {
         self.smoothed_shift = 1.0;
     }
 
+    pub fn set_parameter(&mut self, param_id: u32, value: f32) {
+        match param_id {
+            1 => self.target_root_key = value.clamp(0.0, 11.0),
+            2 => self.target_scale = value.clamp(0.0, 10.0),
+            3 => self.target_transpose = value.clamp(-24.0, 24.0),
+            4 => self.target_snap_speed = value.clamp(5.0, 100.0),
+            5 => self.target_mix = value.clamp(0.0, 1.0),
+            _ => {}
+        }
+        self.update_scale_mask();
+    }
+
+    pub fn get_parameter(&self, param_id: u32) -> f32 {
+        match param_id {
+            1 => self.target_root_key,
+            2 => self.target_scale,
+            3 => self.target_transpose,
+            4 => self.target_snap_speed,
+            5 => self.target_mix,
+            _ => 0.0,
+        }
+    }
+
     pub fn set_parameters(
         &mut self,
         root_key: f32,

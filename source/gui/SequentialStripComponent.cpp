@@ -69,6 +69,12 @@ void SequentialStripComponent::rebuild() {
             processor_.setNodeBypassed(id, isBypassed);
         });
 
+        slot->setOnParameterChanged([this](NodeId nid, ParameterId pid, float val) {
+            if (auto* re = processor_.getDualWorldEngine().getRustEngine()) {
+                n8_rust_dual_world_set_node_param(re, nid, pid, val);
+            }
+        });
+
         contentContainer_.addAndMakeVisible(*slot);
         slots_.push_back(std::move(slot));
 

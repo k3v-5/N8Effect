@@ -553,6 +553,12 @@ void GraphCanvasComponent::rebuildFromGraph() {
             });
         });
 
+        comp->setOnParameterChanged([this](NodeId nid, ParameterId pid, float val) {
+            if (auto* re = processor_.getDualWorldEngine().getRustEngine()) {
+                n8_rust_dual_world_set_node_param(re, nid, pid, val);
+            }
+        });
+
         comp->setOnModulationRouteAdded([this](NodeId nid, ParameterId pid, ModSourceType src, float depth) {
             auto& mat = processor_.getDualWorldEngine().getModulationEngine().getMatrix();
             mat.addRoute(src, nid, pid, depth, true);
