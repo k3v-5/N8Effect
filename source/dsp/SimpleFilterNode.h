@@ -4,15 +4,16 @@
 #include <array>
 #include <algorithm>
 #include <span>
-#include <numbers>
 #include "../graph/AudioProcessorNode.h"
 #include "../graph/NodeFactory.h"
+#include "rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
- * @brief Filtro State-Variable de 2 polos (SVF) (Regla 5, 8, 14, 34, 38)
+ * @brief Filtro State-Variable de 2 polos (SVF) (Regla 5, 8, 14, 34, 38, 46, 47)
  * Implementa Lowpass, Highpass y Bandpass matemáticamente exactos con TPT (Topology-Preserving Transform).
+ * Delegado al motor SIMD de alto rendimiento en Rust (n8_rust_simple_filter).
  */
 class SimpleFilterNode : public AudioProcessorNode {
 public:
@@ -29,86 +30,89 @@ public:
         params_[0] = { CutoffHz, "Cutoff", 1000.0f, 20.0f, 20000.0f, true };
         params_[1] = { Resonance, "Resonance", 0.707f, 0.1f, 10.0f, true };
         params_[2] = { Mode, "Mode", 0.0f, 0.0f, 2.0f, false };
+
+        rustNode_ = n8_rust_simple_filter_create();
+    }
+
+    ~SimpleFilterNode() override {
+        if (rustNode_) {
+            n8_rust_simple_filter_destroy(rustNode_);
+            rustNode_ = nullptr;
+        }
+    }
+
+    SimpleFilterNode(const SimpleFilterNode&) = delete;
+    SimpleFilterNode& operator=(const SimpleFilterNode&) = delete;
+
+    SimpleFilterNode(SimpleFilterNode&& other) noexcept
+        : spec_(other.spec_),
+          pins_(other.pins_),
+          params_(other.params_),
+          rustNode_(other.rustNode_) {
+        other.rustNode_ = nullptr;
+    }
+
+    SimpleFilterNode& operator=(SimpleFilterNode&& other) noexcept {
+        if (this != &other) {
+            if (rustNode_) {
+                n8_rust_simple_filter_destroy(rustNode_);
+            }
+            spec_ = other.spec_;
+            pins_ = other.pins_;
+            params_ = other.params_;
+            rustNode_ = other.rustNode_;
+            other.rustNode_ = nullptr;
+        }
+        return *this;
     }
 
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
-        reset();
-        updateCoefficients();
-    }
-
-    void reset() override {
-        s1_.fill(0.0f);
-        s2_.fill(0.0f);
-    }
-
-    void process(ProcessContext& context) override {
-        updateCoefficients();
-
-        const bool hasFM = (context.numAudioRateModChannels > 0 && context.audioRateModChannels != nullptr);
-        const float sampleRate = static_cast<float>(spec_.sampleRate > 0.0 ? spec_.sampleRate : 44100.0);
-        const float maxNyquist = std::max(100.0f, sampleRate * 0.48f);
-        const uint32_t channels = std::min(context.numOutputChannels, static_cast<uint32_t>(2));
-
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            float g = g_;
-            float h = h_;
-            float r = r_;
-
-            // Modulación FM muestra a muestra (Módulo 3)
-            if (hasFM) {
-                float fmMod = context.audioRateModChannels[0] ? context.audioRateModChannels[0][s] : 0.0f;
-                float modCutoff = std::clamp(targetCutoff_ * std::pow(2.0f, fmMod * 2.5f), 20.0f, maxNyquist);
-                float wd = 2.0f * std::numbers::pi_v<float> * modCutoff;
-                float T = 1.0f / sampleRate;
-                float wa = (2.0f / T) * std::tan(wd * T * 0.5f);
-                g = wa * T * 0.5f;
-                r = 1.0f / (2.0f * targetResonance_);
-                h = 1.0f + 2.0f * r * g + g * g;
-            }
-
-            for (uint32_t ch = 0; ch < channels; ++ch) {
-                const float in = (ch < context.numInputChannels && context.inputChannels[ch] != nullptr)
-                    ? context.inputChannels[ch][s]
-                    : 0.0f;
-
-                // TPT State Variable Filter equations
-                const float hp = (in - (2.0f * r + g) * s1_[ch] - s2_[ch]) / h;
-                const float bp = g * hp + s1_[ch];
-                const float lp = g * bp + s2_[ch];
-
-                s1_[ch] = 2.0f * bp - s1_[ch];
-                s2_[ch] = 2.0f * lp - s2_[ch];
-
-                // Protección contra NaN / Inf (Regla 38)
-                if (std::isnan(s1_[ch]) || std::isinf(s1_[ch])) s1_[ch] = 0.0f;
-                if (std::isnan(s2_[ch]) || std::isinf(s2_[ch])) s2_[ch] = 0.0f;
-
-                float out = lp;
-                if (mode_ == 1) out = hp;
-                else if (mode_ == 2) out = bp;
-
-                context.outputChannels[ch][s] = out;
-            }
+        if (rustNode_) {
+            n8_rust_simple_filter_prepare(rustNode_, spec.sampleRate);
         }
     }
 
+    void reset() override {
+        if (rustNode_) {
+            n8_rust_simple_filter_reset(rustNode_);
+        }
+    }
+
+    void process(ProcessContext& context) override {
+        if (!rustNode_ || context.numSamples == 0 || context.outputChannels == nullptr) return;
+
+        const float* inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr) ? context.inputChannels[0] : nullptr;
+        const float* inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr) ? context.inputChannels[1] : inL;
+
+        const float* fmL = (context.numAudioRateModChannels > 0 && context.audioRateModChannels != nullptr && context.audioRateModChannels[0] != nullptr)
+            ? context.audioRateModChannels[0] : nullptr;
+
+        float* outL = (context.numOutputChannels > 0) ? context.outputChannels[0] : nullptr;
+        float* outR = (context.numOutputChannels > 1) ? context.outputChannels[1] : nullptr;
+
+        n8_rust_simple_filter_process(
+            rustNode_,
+            inL,
+            inR,
+            fmL,
+            outL,
+            outR,
+            static_cast<uint32_t>(context.numSamples)
+        );
+    }
+
     void setParameter(ParameterId id, float value) override {
-        switch (id) {
-            case CutoffHz: targetCutoff_ = std::clamp(value, 20.0f, 20000.0f); break;
-            case Resonance: targetResonance_ = std::clamp(value, 0.1f, 10.0f); break;
-            case Mode: mode_ = static_cast<int>(std::round(value)); break;
-            default: break;
+        if (rustNode_) {
+            n8_rust_simple_filter_set_parameter(rustNode_, id, value);
         }
     }
 
     float getParameter(ParameterId id) const override {
-        switch (id) {
-            case CutoffHz: return targetCutoff_;
-            case Resonance: return targetResonance_;
-            case Mode: return static_cast<float>(mode_);
-            default: return 0.0f;
+        if (rustNode_) {
+            return n8_rust_simple_filter_get_parameter(rustNode_, id);
         }
+        return 0.0f;
     }
 
     NodeType getType() const override { return NodeType::Filter; }
@@ -118,28 +122,8 @@ public:
     std::span<const ParameterInfo> getParameters() const override { return params_; }
 
 private:
-    void updateCoefficients() noexcept {
-        const float sampleRate = static_cast<float>(spec_.sampleRate > 0.0 ? spec_.sampleRate : 44100.0);
-        const float wd = 2.0f * std::numbers::pi_v<float> * targetCutoff_;
-        const float T = 1.0f / sampleRate;
-        const float wa = (2.0f / T) * std::tan(wd * T * 0.5f);
-        g_ = wa * T * 0.5f;
-        r_ = 1.0f / (2.0f * targetResonance_);
-        h_ = 1.0f + 2.0f * r_ * g_ + g_ * g_;
-    }
-
-    ProcessSpec spec_;
-    float targetCutoff_{ 1000.0f };
-    float targetResonance_{ 0.707f };
-    int mode_{ 0 };
-
-    float g_{ 0.0f };
-    float r_{ 0.707f };
-    float h_{ 1.0f };
-
-    std::array<float, 2> s1_{ 0.0f, 0.0f };
-    std::array<float, 2> s2_{ 0.0f, 0.0f };
-
+    ProcessSpec spec_{ 44100.0, 512, 2, 2 };
+    RustSimpleFilter* rustNode_{ nullptr };
     std::array<PinDescriptor, 3> pins_;
     std::array<ParameterInfo, 3> params_;
 };

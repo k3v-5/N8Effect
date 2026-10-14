@@ -251,6 +251,7 @@ public:
             case NodeType::Glitch: return "RHYTHM // BEAT SLICER";
             case NodeType::Spectral: return "SPECTRAL // FREEZE & SMEAR";
             case NodeType::Resonator: return "MODAL // RESONATOR BANK";
+            case NodeType::RustWaveguide: return "PHYSICAL // RUST WAVEGUIDE";
             case NodeType::PitchShifter:
             case NodeType::FrequencyShifter: return "PITCH // SSB & CROSSFADE";
             case NodeType::Phaser:

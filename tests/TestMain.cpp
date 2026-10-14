@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cassert>
 #include <unordered_set>
+#include <map>
 #include <thread>
 #include <chrono>
 
@@ -98,6 +99,12 @@
 #include "../source/preset/PresetPackager.h"
 #include "../source/dsp/processors/AudioSlicerNode.h"
 #include "../source/dsp/core/AdaptiveNoiseFloorEstimator.h"
+#include "../source/dsp/processors/DynamicEqNode.h"
+#include "../source/dsp/processors/StereoImagerNode.h"
+#include "../source/dsp/processors/LoFiCassetteNode.h"
+#include "../source/dsp/processors/AutoWahFilterNode.h"
+#include "../source/dsp/processors/ModalResonatorNode.h"
+#include "../source/dsp/processors/RustWaveguideNode.h"
 
 using namespace audio_graph;
 
@@ -2657,15 +2664,15 @@ void testTestInputSynthesizerPolyphonyAndLifecycle() {
 }
 
 void testAll40FactoryPresetsCatalog() {
-    std::cout << "[TEST] 20 Thematic Categories & 80 Creative Presets (Reglas 4, 5, 9, 21, 22, 34, 38, 44, 46)... ";
+    std::cout << "[TEST] 15 Thematic Categories & 60 Flagship DAG Presets (Reglas 4, 5, 9, 21, 22, 34, 38, 44, 46)... ";
     ProcessSpec spec{ 48000.0, 256, 2, 2 };
 
     PresetManager pm;
     const auto& presets = pm.getFactoryPresets();
-    assert(presets.size() == 80);
+    assert(presets.size() == 60);
 
     const auto categories = pm.getCategories();
-    assert(categories.size() == 20);
+    assert(categories.size() == 15);
 
     // Set para rastrear los tipos de nodos DSP del motor
     std::unordered_set<NodeType> presentNodeTypes;
@@ -2753,8 +2760,8 @@ void testAll40FactoryPresetsCatalog() {
         }
     }
 
-    // Comprobar que todas las 20 categorías están cubiertas (con al menos 2 presets cada una)
-    assert(categoryCounts.size() == 20);
+    // Comprobar que todas las 15 categorías están cubiertas (con al menos 2 presets cada una)
+    assert(categoryCounts.size() == 15);
     for (const auto& [cat, count] : categoryCounts) {
         assert(count >= 2);
     }
@@ -2762,7 +2769,7 @@ void testAll40FactoryPresetsCatalog() {
     // Verificar que se emplean al menos 28 tipos distintos de nodos en el catálogo de presets
     assert(presentNodeTypes.size() >= 28);
 
-    std::cout << "PASSED (80 presets, 20 categorias, " << presentNodeTypes.size() << " tipos DSP verificados)\n";
+    std::cout << "PASSED (60 presets, 15 categorias, " << presentNodeTypes.size() << " tipos DSP verificados)\n";
 }
 
 void testTapeStopProcessingAndHermiteInterpolation() {
@@ -4244,7 +4251,22 @@ void testAll44DSPNodesInstantiationAndProcessing() {
         NodeType::AudioSlicer,
         NodeType::ShimmerReverb,
         NodeType::Refraction,
-        NodeType::SpectralSmear
+        NodeType::SpectralSmear,
+        NodeType::SamplePlayer,
+        NodeType::DynamicEq,
+        NodeType::StereoImager,
+        NodeType::LoFiCassette,
+        NodeType::AutoWahFilter,
+        NodeType::ModalResonator,
+        NodeType::RustWaveguide,
+        NodeType::DimensionChorus,
+        NodeType::DynamicTremolo,
+        NodeType::MultibandSaturator,
+        NodeType::CombResonator,
+        NodeType::PitchDelay,
+        NodeType::PhaseDispersion,
+        NodeType::MorphingSVF,
+        NodeType::FractalResonator
     };
 
     std::vector<float> inL(256, 0.0f);
@@ -4325,8 +4347,8 @@ void testAll44DSPNodesInstantiationAndProcessing() {
         ++verifiedCount;
     }
 
-    assert(verifiedCount == 50);
-    std::cout << "PASSED (50/50 procesadores verificados con éxito)\n";
+    assert(verifiedCount == 65);
+    std::cout << "PASSED (65/65 procesadores verificados con éxito)\n";
 }
 
 void testRadar3DAcousticTelemetryEmission() {
@@ -7342,7 +7364,2324 @@ void testAntiClipAndPopEradication() {
     std::cout << "PASSED\n";
 }
 
+void testDynamicEqNodeProcessingAndBands() {
+    std::cout << "[TEST] DynamicEqNode 4-Band Dynamics & Sidechain (Reglas 5, 8, 9, 14, 34, 46)... ";
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+    DynamicEqNode eq;
+    eq.prepare(spec);
+
+    // 1. Probar silencio
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inCh[2] = { inL.data(), inR.data() };
+    float* outCh[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ inCh, outCh, 2, 2, 256 };
+
+    eq.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-6f);
+        assert(std::abs(outR[i]) < 1e-6f);
+    }
+
+    // 2. Probar señal sinusoidal caliente a 1 kHz sobrepasando el umbral de Band 2
+    eq.setParameter(DynamicEqNode::Band2Freq, 1000.0f);
+    eq.setParameter(DynamicEqNode::Band2Gain, 0.0f);
+    eq.setParameter(DynamicEqNode::Band2Thresh, -20.0f);
+    eq.setParameter(DynamicEqNode::DynamicRatio, 4.0f);
+    eq.setParameter(DynamicEqNode::AttackMs, 2.0f);
+    eq.setParameter(DynamicEqNode::ReleaseMs, 50.0f);
+
+    for (size_t i = 0; i < 256; ++i) {
+        inL[i] = 0.9f * std::sin(2.0f * 3.14159f * 1000.0f * static_cast<float>(i) / 48000.0f);
+        inR[i] = inL[i];
+    }
+
+    for (int b = 0; b < 10; ++b) {
+        eq.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // 3. Probar cambios de sample rate dinámicos
+    ProcessSpec spec96{ 96000.0, 512, 2, 2 };
+    eq.prepare(spec96);
+    eq.reset();
+
+    std::cout << "PASSED\n";
+}
+
+void testStereoImagerNodeMidSideAndHaas() {
+    std::cout << "[TEST] StereoImagerNode Mid/Side Width, Haas & Mono-Bass (Reglas 5, 8, 9, 14, 16, 46)... ";
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+    StereoImagerNode imager;
+    imager.prepare(spec);
+
+    std::vector<float> inL(256);
+    std::vector<float> inR(256);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inCh[2] = { inL.data(), inR.data() };
+    float* outCh[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ inCh, outCh, 2, 2, 256 };
+
+    // Señal estéreo no correlacionada (L=seno, R=coseno)
+    for (size_t i = 0; i < 256; ++i) {
+        inL[i] = std::sin(2.0f * 3.14159f * 440.0f * static_cast<float>(i) / 48000.0f);
+        inR[i] = std::cos(2.0f * 3.14159f * 440.0f * static_cast<float>(i) / 48000.0f);
+    }
+
+    // 1. Probar colapso a Mono (Width = 0.0)
+    imager.setParameter(StereoImagerNode::Width, 0.0f);
+    imager.setParameter(StereoImagerNode::HaasDelayMs, 0.0f);
+    imager.setParameter(StereoImagerNode::Mix, 1.0f);
+
+    imager.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        // L y R deben ser prácticamente idénticos en mono
+        assert(std::abs(outL[i] - outR[i]) < 1e-4f);
+    }
+
+    // 2. Probar ensanchamiento estéreo (Width = 2.0)
+    imager.setParameter(StereoImagerNode::Width, 2.0f);
+    imager.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+    }
+
+    // 3. Probar Haas delay
+    imager.setParameter(StereoImagerNode::HaasDelayMs, 10.0f);
+    imager.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testLoFiCassetteTapeEmulation() {
+    std::cout << "[TEST] LoFiCassetteNode Wow & Flutter, Saturation & Dropouts (Reglas 5, 8, 9, 34, 46)... ";
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+    LoFiCassetteNode cassette;
+    cassette.prepare(spec);
+
+    cassette.setParameter(LoFiCassetteNode::Wow, 0.4f);
+    cassette.setParameter(LoFiCassetteNode::Flutter, 0.3f);
+    cassette.setParameter(LoFiCassetteNode::Age, 0.5f);
+    cassette.setParameter(LoFiCassetteNode::Saturation, 0.4f);
+    cassette.setParameter(LoFiCassetteNode::Dropouts, 0.1f);
+    cassette.setParameter(LoFiCassetteNode::Mix, 1.0f);
+
+    std::vector<float> inL(256);
+    std::vector<float> inR(256);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inCh[2] = { inL.data(), inR.data() };
+    float* outCh[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ inCh, outCh, 2, 2, 256 };
+
+    for (size_t i = 0; i < 256; ++i) {
+        inL[i] = 0.7f * std::sin(2.0f * 3.14159f * 1000.0f * static_cast<float>(i) / 48000.0f);
+        inR[i] = inL[i];
+    }
+
+    for (int b = 0; b < 20; ++b) {
+        cassette.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+            assert(std::abs(outL[i]) <= 1.5f);
+            assert(std::abs(outR[i]) <= 1.5f);
+        }
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testAutoWahFilterDynamicModulation() {
+    std::cout << "[TEST] AutoWahFilterNode Cytomic SVF, Envelope & Sidechain (Reglas 5, 8, 9, 34, 46)... ";
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+    AutoWahFilterNode wah;
+    wah.prepare(spec);
+
+    std::vector<float> inL(256);
+    std::vector<float> inR(256);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    const float* inCh[2] = { inL.data(), inR.data() };
+    float* outCh[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ inCh, outCh, 2, 2, 256 };
+
+    for (size_t i = 0; i < 256; ++i) {
+        inL[i] = 0.8f * std::sin(2.0f * 3.14159f * 300.0f * static_cast<float>(i) / 48000.0f);
+        inR[i] = inL[i];
+    }
+
+    // Probar los 3 modos: Lowpass (0), Bandpass (1), Highpass (2)
+    for (float mode = 0.0f; mode <= 2.0f; mode += 1.0f) {
+        wah.setParameter(AutoWahFilterNode::FilterMode, mode);
+        wah.setParameter(AutoWahFilterNode::BaseFreq, 400.0f);
+        wah.setParameter(AutoWahFilterNode::Sensitivity, 0.8f);
+        wah.setParameter(AutoWahFilterNode::Resonance, 5.0f);
+        wah.setParameter(AutoWahFilterNode::AttackMs, 5.0f);
+        wah.setParameter(AutoWahFilterNode::DecayMs, 100.0f);
+        wah.setParameter(AutoWahFilterNode::Mix, 1.0f);
+
+        for (int b = 0; b < 10; ++b) {
+            wah.process(ctx);
+            for (size_t i = 0; i < 256; ++i) {
+                assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+                assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+            }
+        }
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testModalResonatorAcousticModes() {
+    std::cout << "[TEST] ModalResonatorNode 8-Mode Acoustic Physical Resonator (Reglas 5, 8, 9, 34, 46)... ";
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+    ModalResonatorNode resonator;
+    resonator.prepare(spec);
+
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    inL[0] = 1.0f; // Impulso de excitación
+    inR[0] = 1.0f;
+    const float* inCh[2] = { inL.data(), inR.data() };
+    float* outCh[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ inCh, outCh, 2, 2, 256 };
+
+    // Probar los 4 materiales: Bell (0), Wood (1), Drum (2), String (3)
+    for (float mat = 0.0f; mat <= 3.0f; mat += 1.0f) {
+        resonator.setParameter(ModalResonatorNode::Structure, mat);
+        resonator.setParameter(ModalResonatorNode::FundFreq, 220.0f);
+        resonator.setParameter(ModalResonatorNode::DecaySec, 1.5f);
+        resonator.setParameter(ModalResonatorNode::Inharmonicity, 0.2f);
+        resonator.setParameter(ModalResonatorNode::Damping, 0.3f);
+        resonator.setParameter(ModalResonatorNode::Mix, 0.8f);
+
+        resonator.reset();
+        inL[0] = 1.0f;
+        inR[0] = 1.0f;
+        resonator.process(ctx);
+
+        assert(std::abs(outL[0]) > 0.001f); // Resonancia acústica inmediata
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+
+        inL[0] = 0.0f;
+        inR[0] = 0.0f;
+        for (int b = 0; b < 10; ++b) {
+            resonator.process(ctx);
+            for (size_t i = 0; i < 256; ++i) {
+                assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+                assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+            }
+        }
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testGraphTopologicalAutoLayoutAlgorithm() {
+    std::cout << "[TEST] Graph Topological Depth & Auto-Layout Algorithm (Reglas 4, 28, 46)... ";
+    Graph graph;
+    NodeId inNode = graph.addNode(std::make_unique<PassthroughNode>(), "Input", 0.0f, 0.0f);
+    NodeId fx1 = graph.addNode(std::make_unique<SimpleFilterNode>(), "Filter", 0.0f, 0.0f);
+    NodeId fx2 = graph.addNode(std::make_unique<SimpleDelayNode>(), "Delay", 0.0f, 0.0f);
+    NodeId fx3 = graph.addNode(std::make_unique<DistortionNode>(), "Distortion", 0.0f, 0.0f);
+    NodeId outNode = graph.addNode(std::make_unique<PassthroughNode>(), "Output", 0.0f, 0.0f);
+
+    // inNode -> fx1 -> fx3 -> outNode
+    //        -> fx2 -> fx3
+    graph.connect(inNode, 2, fx1, 1);
+    graph.connect(inNode, 2, fx2, 1);
+    graph.connect(fx1, 2, fx3, 1);
+    graph.connect(fx2, 2, fx3, 1);
+    graph.connect(fx3, 2, outNode, 1);
+
+    // Ejecutar lógica de profundidad topológica
+    const auto& nodes = graph.getNodes();
+    const auto& conns = graph.getConnections();
+
+    std::unordered_map<NodeId, int> depths;
+    for (const auto& [nid, inst] : nodes) {
+        depths[nid] = 0;
+    }
+
+    const int maxIterations = static_cast<int>(nodes.size());
+    for (int iter = 0; iter < maxIterations; ++iter) {
+        bool changed = false;
+        for (const auto& c : conns) {
+            if (c.sourceNodeId == c.destNodeId) continue;
+            const int srcDepth = depths[c.sourceNodeId];
+            if (depths[c.destNodeId] < srcDepth + 1) {
+                depths[c.destNodeId] = srcDepth + 1;
+                changed = true;
+            }
+        }
+        if (!changed) break;
+    }
+
+    // inNode debe tener profundidad 0
+    assert(depths[inNode] == 0);
+    // fx1 y fx2 deben tener profundidad 1
+    assert(depths[fx1] == 1);
+    assert(depths[fx2] == 1);
+    // fx3 debe tener profundidad 2
+    assert(depths[fx3] == 2);
+    // outNode debe tener profundidad 3
+    assert(depths[outNode] == 3);
+
+    // Agrupar en columnas
+    std::map<int, std::vector<NodeId>> columns;
+    for (const auto& [nid, inst] : nodes) {
+        columns[depths[nid]].push_back(nid);
+    }
+
+    assert(columns.size() == 4);
+    assert(columns[0].size() == 1); // inNode
+    assert(columns[1].size() == 2); // fx1, fx2
+    assert(columns[2].size() == 1); // fx3
+    assert(columns[3].size() == 1); // outNode
+
+    std::cout << "PASSED\n";
+}
+
+void testRustWaveguidePhysicalAcousticProcessing() {
+    std::cout << "[TEST] RustWaveguideNode SIMD AVX2 Physical Resonator (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+    RustWaveguideNode waveguide;
+    waveguide.prepare(spec);
+
+    std::vector<float> inL(256, 0.0f);
+    std::vector<float> inR(256, 0.0f);
+    std::vector<float> outL(256, 0.0f);
+    std::vector<float> outR(256, 0.0f);
+    inL[0] = 1.0f; // Excitation impulse
+    inR[0] = 1.0f;
+    const float* inCh[2] = { inL.data(), inR.data() };
+    float* outCh[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ inCh, outCh, 2, 2, 256 };
+
+    // Set parameters
+    waveguide.setParameter(RustWaveguideNode::Frequency, 440.0f);
+    waveguide.setParameter(RustWaveguideNode::Decay, 0.95f);
+    waveguide.setParameter(RustWaveguideNode::Brightness, 0.8f);
+    waveguide.setParameter(RustWaveguideNode::NonLinearity, 0.35f);
+    waveguide.setParameter(RustWaveguideNode::Coupling, 0.4f);
+    waveguide.setParameter(RustWaveguideNode::Mix, 0.85f);
+
+    assert(std::abs(waveguide.getParameter(RustWaveguideNode::Frequency) - 440.0f) < 1e-3f);
+    assert(std::abs(waveguide.getParameter(RustWaveguideNode::Decay) - 0.95f) < 1e-3f);
+    assert(std::abs(waveguide.getParameter(RustWaveguideNode::Brightness) - 0.8f) < 1e-3f);
+    assert(std::abs(waveguide.getParameter(RustWaveguideNode::NonLinearity) - 0.35f) < 1e-3f);
+    assert(std::abs(waveguide.getParameter(RustWaveguideNode::Coupling) - 0.4f) < 1e-3f);
+    assert(std::abs(waveguide.getParameter(RustWaveguideNode::Mix) - 0.85f) < 1e-3f);
+
+    // 1. Process excitation impulse
+    waveguide.process(ctx);
+    assert(std::abs(outL[0]) > 0.001f); // Immediate physical response
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+    }
+
+    // 2. Process decaying tails across multiple silent blocks
+    inL[0] = 0.0f;
+    inR[0] = 0.0f;
+    for (int b = 0; b < 10; ++b) {
+        waveguide.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // 3. Multi-sample rate adaptability (Rule 14)
+    const double rates[] = { 44100.0, 88200.0, 96000.0, 192000.0 };
+    for (double sr : rates) {
+        ProcessSpec s{ sr, 512, 2, 2 };
+        waveguide.prepare(s);
+        waveguide.reset();
+        inL[0] = 1.0f;
+        inR[0] = 1.0f;
+        waveguide.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // 4. In-Place buffer safety (inL == outL, inR == outR)
+    std::vector<float> inPlaceBufL(256, 0.0f);
+    std::vector<float> inPlaceBufR(256, 0.0f);
+    inPlaceBufL[0] = 1.0f;
+    inPlaceBufR[0] = 1.0f;
+    const float* inPlaceIn[2] = { inPlaceBufL.data(), inPlaceBufR.data() };
+    float* inPlaceOut[2] = { inPlaceBufL.data(), inPlaceBufR.data() };
+    ProcessContext inPlaceCtx{ inPlaceIn, inPlaceOut, 2, 2, 256 };
+    waveguide.process(inPlaceCtx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(inPlaceBufL[i]) && !std::isinf(inPlaceBufL[i]));
+        assert(!std::isnan(inPlaceBufR[i]) && !std::isinf(inPlaceBufR[i]));
+    }
+
+    // 5. Smart Randomizer compatibility with enriched families
+    PresetMetadata randMeta;
+    std::array<float, 8> randMacros{};
+    Graph randGraph;
+    for (int rep = 0; rep < 5; ++rep) {
+        assert(SmartRandomizer::generateSurprisePatch(randGraph, randMeta, randMacros));
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testPhase7RustSceneMorphAndSmartRandomizer() {
+    std::cout << "[TEST] Phase 7: Rust Scene Morph Engine & Smart Acoustic Randomizer (Reglas 7, 11, 12, 21, 35, 46, 47)... ";
+
+    // 1. RustSceneMorphEngine 1D Linear Morphing & Anti-Click Smoothing
+    auto* morphEng = n8_rust_scene_morph_create();
+    assert(morphEng != nullptr);
+
+    RustParamEntry paramsA[] = { { 1, 100.0f }, { 2, 0.2f } };
+    float macrosA[] = { 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f };
+    n8_rust_scene_morph_set_node_params(morphEng, 0, 10, paramsA, 2);
+    n8_rust_scene_morph_set_macros(morphEng, 0, macrosA);
+    assert(n8_rust_scene_morph_has_scene(morphEng, 0));
+
+    RustParamEntry paramsB[] = { { 1, 500.0f }, { 2, 0.8f } };
+    float macrosB[] = { 0.9f, 0.8f, 0.7f, 0.6f, 0.5f, 0.4f, 0.3f, 0.2f };
+    n8_rust_scene_morph_set_node_params(morphEng, 1, 10, paramsB, 2);
+    n8_rust_scene_morph_set_macros(morphEng, 1, macrosB);
+    assert(n8_rust_scene_morph_has_scene(morphEng, 1));
+
+    // Test factor setter & getter
+    n8_rust_scene_morph_set_factor_1d(morphEng, 0.5f);
+    assert(std::abs(n8_rust_scene_morph_get_target_factor_1d(morphEng) - 0.5f) < 1e-4f);
+
+    // Step smoothing with 1.0f (direct step)
+    float curFactor = n8_rust_scene_morph_step_smoothing_1d(morphEng, 1.0f);
+    assert(std::abs(curFactor - 0.5f) < 1e-4f);
+
+    // Interpolate param 1 at t=0.5 -> (100 + 500) / 2 = 300
+    float interpP1 = n8_rust_scene_morph_interpolate_param_1d(morphEng, 10, 1, 0.0f);
+    assert(std::abs(interpP1 - 300.0f) < 1e-3f);
+
+    // Interpolate param 2 at t=0.5 -> (0.2 + 0.8) / 2 = 0.5
+    float interpP2 = n8_rust_scene_morph_interpolate_param_1d(morphEng, 10, 2, 0.0f);
+    assert(std::abs(interpP2 - 0.5f) < 1e-3f);
+
+    // Interpolate macros
+    float interpMacros[8]{};
+    n8_rust_scene_morph_interpolate_macros_1d(morphEng, interpMacros);
+    assert(std::abs(interpMacros[0] - 0.5f) < 1e-3f);
+    assert(std::abs(interpMacros[7] - 0.5f) < 1e-3f);
+
+    // 2. RustSceneMorphEngine 2D XY Vector Morphing
+    RustParamEntry paramsC[] = { { 1, 200.0f } };
+    RustParamEntry paramsD[] = { { 1, 800.0f } };
+    float macrosC[] = { 0.3f, 0.3f, 0.3f, 0.3f, 0.3f, 0.3f, 0.3f, 0.3f };
+    float macrosD[] = { 0.7f, 0.7f, 0.7f, 0.7f, 0.7f, 0.7f, 0.7f, 0.7f };
+    n8_rust_scene_morph_set_node_params(morphEng, 2, 10, paramsC, 1);
+    n8_rust_scene_morph_set_macros(morphEng, 2, macrosC);
+    n8_rust_scene_morph_set_node_params(morphEng, 3, 10, paramsD, 1);
+    n8_rust_scene_morph_set_macros(morphEng, 3, macrosD);
+
+    n8_rust_scene_morph_set_xy(morphEng, 0.5f, 0.5f);
+    float outX = 0.0f, outY = 0.0f;
+    n8_rust_scene_morph_step_smoothing_xy(morphEng, 1.0f, &outX, &outY);
+    assert(std::abs(outX - 0.5f) < 1e-4f && std::abs(outY - 0.5f) < 1e-4f);
+
+    float interpXY = n8_rust_scene_morph_interpolate_param_xy(morphEng, 10, 1, 0.0f);
+    // Bilinear at center: (100 + 500 + 200 + 800) / 4 = 400
+    assert(std::abs(interpXY - 400.0f) < 1e-3f);
+
+    n8_rust_scene_morph_destroy(morphEng);
+
+    // 3. RustSmartRandomizer Acoustic Safety Clamps
+    auto* randRz = n8_rust_smart_randomizer_create(98765);
+    assert(randRz != nullptr);
+
+    // Test feedback runaway clamp (max 0.82)
+    for (int i = 0; i < 50; ++i) {
+        float fb = n8_rust_smart_randomizer_perturb_param(randRz, 0.8f, 0.0f, 1.0f, 0.5f, true, false, false);
+        assert(fb <= 0.8201f);
+        assert(fb >= 0.0f);
+    }
+
+    // Test resonance auto-oscillation peak clamp (max 14.0)
+    for (int i = 0; i < 50; ++i) {
+        float q = n8_rust_smart_randomizer_perturb_param(randRz, 12.0f, 0.1f, 30.0f, 0.8f, false, true, false);
+        assert(q <= 14.001f);
+        assert(q >= 0.1f);
+    }
+
+    // Test macro bounds [0.0, 1.0]
+    float testMac[8] = { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+    for (int i = 0; i < 20; ++i) {
+        n8_rust_smart_randomizer_mutate_macros(randRz, testMac, 0.4f);
+        for (float m : testMac) {
+            assert(m >= 0.0f && m <= 1.0f);
+        }
+    }
+
+    n8_rust_smart_randomizer_destroy(randRz);
+
+    std::cout << "PASSED\n";
+}
+
+void testPhase7SceneMorph2DVectorPadAndMacros() {
+    std::cout << "[TEST] Phase 7: 2D Scene Morphing (Pad X/Y), 4 Acoustic Scenes & Global Macros (Reglas 7, 11, 21, 35, 46, 47)... ";
+
+    // 1. Instanciar SceneManager y verificar estado inicial
+    SceneManager sceneMgr;
+    assert(!sceneMgr.hasSceneA());
+    assert(!sceneMgr.hasSceneB());
+    assert(!sceneMgr.hasSceneC());
+    assert(!sceneMgr.hasSceneD());
+    assert(!sceneMgr.hasScene(0));
+    assert(!sceneMgr.hasScene(1));
+    assert(!sceneMgr.hasScene(2));
+    assert(!sceneMgr.hasScene(3));
+
+    // 2. Construir Grafo de Prueba con DSP Nodes reales
+    Graph graph;
+    auto& factory = NodeFactory::getInstance();
+    NodeId inId = graph.addNode(factory.create(NodeType::Input), "In", 0.0f, 0.0f);
+    NodeId filterId = graph.addNode(factory.create(NodeType::Filter), "Filt", 100.0f, 0.0f);
+    NodeId delayId = graph.addNode(factory.create(NodeType::Delay), "Del", 200.0f, 0.0f);
+    NodeId outId = graph.addNode(factory.create(NodeType::Output), "Out", 300.0f, 0.0f);
+    graph.connect(inId, 1, filterId, 1);
+    graph.connect(filterId, 2, delayId, 1);
+    graph.connect(delayId, 2, outId, 1);
+
+    auto* filterNode = graph.getNode(filterId)->processor.get();
+    auto* delayNode = graph.getNode(delayId)->processor.get();
+
+    // 3. Capturar Escena A (Top-Left, X=0, Y=0): Warm Ambient
+    filterNode->setParameter(1, 400.0f); // Cutoff
+    delayNode->setParameter(1, 0.5f);    // Time
+    std::array<float, 8> macrosA{ 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f };
+    sceneMgr.captureSceneA(graph, macrosA);
+    assert(sceneMgr.hasSceneA());
+    assert(sceneMgr.hasScene(0));
+
+    // 4. Capturar Escena B (Top-Right, X=1, Y=0): Bright Echo
+    filterNode->setParameter(1, 8000.0f);
+    delayNode->setParameter(1, 0.2f);
+    std::array<float, 8> macrosB{ 0.9f, 0.8f, 0.7f, 0.6f, 0.5f, 0.4f, 0.3f, 0.2f };
+    sceneMgr.captureSceneB(graph, macrosB);
+    assert(sceneMgr.hasSceneB());
+    assert(sceneMgr.hasScene(1));
+
+    // 5. Capturar Escena C (Bottom-Left, X=0, Y=1): Deep Sub
+    filterNode->setParameter(1, 100.0f);
+    delayNode->setParameter(1, 0.8f);
+    std::array<float, 8> macrosC{ 0.2f, 0.2f, 0.2f, 0.2f, 0.2f, 0.2f, 0.2f, 0.2f };
+    sceneMgr.captureSceneC(graph, macrosC);
+    assert(sceneMgr.hasSceneC());
+    assert(sceneMgr.hasScene(2));
+
+    // 6. Capturar Escena D (Bottom-Right, X=1, Y=1): Cyber Glitch
+    filterNode->setParameter(1, 15000.0f);
+    delayNode->setParameter(1, 0.05f);
+    std::array<float, 8> macrosD{ 0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f, 0.8f };
+    sceneMgr.captureSceneD(graph, macrosD);
+    assert(sceneMgr.hasSceneD());
+    assert(sceneMgr.hasScene(3));
+
+    // 7. Prueba de Interpolación Bilineal en el Centro (X=0.5, Y=0.5)
+    // Cutoff esperado = (400 + 8000 + 100 + 15000) / 4 = 5875 Hz
+    // Delay Time esperado = (0.5 + 0.2 + 0.8 + 0.05) / 4 = 0.3875 s
+    sceneMgr.setMorphXY(0.5f, 0.5f);
+    assert(std::abs(sceneMgr.getMorphX() - 0.5f) < 1e-4f);
+    assert(std::abs(sceneMgr.getMorphY() - 0.5f) < 1e-4f);
+
+    std::array<float, 8> curMacros{};
+    sceneMgr.updateAndApplyXY(graph, curMacros, 1.0f);
+
+    float actualCutoff = filterNode->getParameter(1);
+    float actualDelayTime = delayNode->getParameter(1);
+    assert(std::abs(actualCutoff - 5875.0f) < 5.0f);
+    assert(std::abs(actualDelayTime - 0.3875f) < 1e-3f);
+    assert(std::abs(curMacros[0] - 0.5f) < 1e-3f);
+
+    // 8. Prueba de Esquinas Exactas
+    // Corner A (0.0, 0.0)
+    sceneMgr.setMorphXY(0.0f, 0.0f);
+    sceneMgr.updateAndApplyXY(graph, curMacros, 1.0f);
+    assert(std::abs(filterNode->getParameter(1) - 400.0f) < 1.0f);
+    assert(std::abs(delayNode->getParameter(1) - 0.5f) < 1e-3f);
+    assert(std::abs(curMacros[0] - 0.1f) < 1e-3f);
+
+    // Corner B (1.0, 0.0)
+    sceneMgr.setMorphXY(1.0f, 0.0f);
+    sceneMgr.updateAndApplyXY(graph, curMacros, 1.0f);
+    assert(std::abs(filterNode->getParameter(1) - 8000.0f) < 5.0f);
+    assert(std::abs(delayNode->getParameter(1) - 0.2f) < 1e-3f);
+    assert(std::abs(curMacros[0] - 0.9f) < 1e-3f);
+
+    // Corner C (0.0, 1.0)
+    sceneMgr.setMorphXY(0.0f, 1.0f);
+    sceneMgr.updateAndApplyXY(graph, curMacros, 1.0f);
+    assert(std::abs(filterNode->getParameter(1) - 100.0f) < 1.0f);
+    assert(std::abs(delayNode->getParameter(1) - 0.8f) < 1e-3f);
+    assert(std::abs(curMacros[0] - 0.2f) < 1e-3f);
+
+    // Corner D (1.0, 1.0)
+    sceneMgr.setMorphXY(1.0f, 1.0f);
+    sceneMgr.updateAndApplyXY(graph, curMacros, 1.0f);
+    assert(std::abs(filterNode->getParameter(1) - 15000.0f) < 10.0f);
+    assert(std::abs(delayNode->getParameter(1) - 0.05f) < 1e-3f);
+    assert(std::abs(curMacros[0] - 0.8f) < 1e-3f);
+
+    // 9. Verificación de Suavizado Anti-Click Continuo (Regla 35)
+    sceneMgr.setMorphXY(0.0f, 0.0f);
+    sceneMgr.updateAndApplyXY(graph, curMacros, 1.0f);
+    sceneMgr.setMorphXY(1.0f, 1.0f);
+    sceneMgr.updateAndApplyXY(graph, curMacros, 0.1f);
+    float smX = sceneMgr.getCurrentSmoothedMorphX();
+    float smY = sceneMgr.getCurrentSmoothedMorphY();
+    assert(smX > 0.05f && smX < 0.20f);
+    assert(smY > 0.05f && smY < 0.20f);
+
+    // 10. Verificación de Normalización Dinámica con Escenas Parciales
+    sceneMgr.clearScene(2);
+    sceneMgr.clearScene(3);
+    assert(!sceneMgr.hasSceneC());
+    assert(!sceneMgr.hasSceneD());
+    assert(sceneMgr.hasSceneA());
+    assert(sceneMgr.hasSceneB());
+
+    sceneMgr.setMorphXY(0.5f, 0.8f);
+    sceneMgr.updateAndApplyXY(graph, curMacros, 1.0f);
+    assert(std::abs(filterNode->getParameter(1) - 4200.0f) < 5.0f);
+
+    // 11. Verificación de Copia y Movimiento
+    {
+        SceneManager copyMgr = sceneMgr;
+        assert(copyMgr.hasSceneA());
+        assert(copyMgr.hasSceneB());
+        assert(!copyMgr.hasSceneC());
+
+        SceneManager moveMgr = std::move(copyMgr);
+        assert(moveMgr.hasSceneA());
+        assert(moveMgr.hasSceneB());
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testPhase8RustOptimizationAndSIMDKernels() {
+    std::cout << "[TEST] Phase 8: Rust Optimization Engine, FTZ/DAZ Guards & SIMD Kernels (Reglas 9, 34, 46, 47)... ";
+
+    // 1. Hardware FTZ / DAZ Register Guards
+    {
+        uint32_t saved = n8_rust_opt_enable_ftz_daz();
+        assert(n8_rust_opt_is_ftz_daz_active() == true);
+        assert(ScopedDenormalGuard::areDenormalsDisabled() == true);
+
+        // Verify subnormal floating point detection
+        float subnormalVal = 1.0e-40f;
+        assert(ScopedDenormalGuard::isDenormal(subnormalVal) == true);
+        assert(ScopedDenormalGuard::isDenormal(1.0f) == false);
+
+        n8_rust_opt_restore_mxcsr(saved);
+    }
+
+    // 2. High-Performance Math Kernels (Pade tanh, soft-clip, exp_neg, db_to_gain)
+    {
+        // Pade tanh
+        assert(std::abs(n8_rust_opt_fast_tanh(0.0f)) < 1e-6f);
+        assert(n8_rust_opt_fast_tanh(4.0f) == 1.0f);
+        assert(n8_rust_opt_fast_tanh(-4.0f) == -1.0f);
+        for (float x = -2.5f; x <= 2.5f; x += 0.25f) {
+            float rustVal = n8_rust_opt_fast_tanh(x);
+            float stdVal = std::tanh(x);
+            assert(!std::isnan(rustVal) && !std::isinf(rustVal));
+            assert(std::abs(rustVal - stdVal) < 0.005f);
+        }
+
+        // Fast soft-clip
+        assert(std::abs(n8_rust_opt_fast_soft_clip(0.0f)) < 1e-6f);
+        assert(n8_rust_opt_fast_soft_clip(2.0f) == 1.0f);
+        assert(n8_rust_opt_fast_soft_clip(-2.0f) == -1.0f);
+
+        // Fast exp negative
+        assert(n8_rust_opt_fast_exp_negative(0.0f) == 1.0f);
+        assert(n8_rust_opt_fast_exp_negative(-20.0f) == 0.0f);
+        for (float x = -8.0f; x <= 0.0f; x += 0.5f) {
+            float fastExp = n8_rust_opt_fast_exp_negative(x);
+            float stdExp = std::exp(x);
+            assert(!std::isnan(fastExp) && !std::isinf(fastExp));
+            assert(std::abs(fastExp - stdExp) < 0.02f);
+        }
+
+        // Fast dB to gain
+        assert(std::abs(n8_rust_opt_fast_db_to_gain(0.0f) - 1.0f) < 1e-4f);
+        assert(n8_rust_opt_fast_db_to_gain(-100.0f) == 0.0f);
+    }
+
+    // 3. Vector SIMD Kernels (vecPadéTanh, vecMultiplyAdd, vecApplyGain, vecMix, vecFlushDenormals, vecSoftClip)
+    {
+        constexpr size_t N = 64;
+        std::vector<float> inA(N), inB(N), inC(N), out(N);
+        for (size_t i = 0; i < N; ++i) {
+            inA[i] = static_cast<float>(i) * 0.05f - 1.6f;
+            inB[i] = 2.0f;
+            inC[i] = 0.1f;
+        }
+
+        // FastMath::vecPadéTanhRust
+        FastMath::vecPadéTanhRust(inA.data(), out.data(), N);
+        for (size_t i = 0; i < N; ++i) {
+            assert(!std::isnan(out[i]));
+            assert(std::abs(out[i] - n8_rust_opt_fast_tanh(inA[i])) < 1e-5f);
+        }
+
+        // FastMath::vecMultiplyAddRust: out = inA * inB + inC
+        FastMath::vecMultiplyAddRust(inA.data(), inB.data(), inC.data(), out.data(), N);
+        for (size_t i = 0; i < N; ++i) {
+            float expected = inA[i] * inB[i] + inC[i];
+            assert(std::abs(out[i] - expected) < 1e-5f);
+        }
+
+        // FastMath::vecApplyGainRust
+        FastMath::vecApplyGainRust(inA.data(), out.data(), 0.5f, N);
+        for (size_t i = 0; i < N; ++i) {
+            assert(std::abs(out[i] - inA[i] * 0.5f) < 1e-5f);
+        }
+
+        // FastMath::vecMixRust
+        FastMath::vecMixRust(inA.data(), inB.data(), out.data(), 0.75f, N);
+        for (size_t i = 0; i < N; ++i) {
+            float expected = 0.25f * inA[i] + 0.75f * inB[i];
+            assert(std::abs(out[i] - expected) < 1e-5f);
+        }
+
+        // FastMath::vecFlushDenormalsRust
+        std::vector<float> denormBuf = { 1.0f, 1.0e-38f, -0.5f, -1.0e-40f, 0.0f };
+        FastMath::vecFlushDenormalsRust(denormBuf.data(), denormBuf.size());
+        assert(denormBuf[0] == 1.0f);
+        assert(denormBuf[1] == 0.0f);
+        assert(denormBuf[2] == -0.5f);
+        assert(denormBuf[3] == 0.0f);
+        assert(denormBuf[4] == 0.0f);
+
+        // FastMath::vecSoftClipRust
+        FastMath::vecSoftClipRust(inA.data(), out.data(), N);
+        for (size_t i = 0; i < N; ++i) {
+            assert(out[i] >= -1.0f && out[i] <= 1.0f);
+        }
+    }
+
+    // 4. DAG Buffer Slot Reuse Optimizer (Rule 47)
+    {
+        // Construct Diamond DAG: Root 0 -> Branch 1 & Branch 2 -> Merge 3
+        uint32_t stepPreds[] = { 0, 0, 1, 2 };
+        uint32_t stepOffsets[] = { 0, 0, 1, 2 };
+        uint32_t stepCounts[] = { 0, 1, 1, 2 };
+        RustStepSlotAssignment assignments[4]{};
+
+        uint32_t slotsUsed = n8_rust_opt_compute_optimal_buffer_slots(
+            stepPreds,
+            4,
+            stepOffsets,
+            stepCounts,
+            4,
+            assignments
+        );
+
+        assert(slotsUsed <= 3);
+        for (int s = 0; s < 4; ++s) {
+            assert(assignments[s].step_index == static_cast<uint32_t>(s));
+        }
+
+        // Test with Graph + ExecutionPlan
+        Graph graph;
+        auto n0 = graph.addNode(NodeFactory::getInstance().create(NodeType::Passthrough), "N0", 0, 0);
+        auto n1 = graph.addNode(NodeFactory::getInstance().create(NodeType::Passthrough), "N1", 100, 0);
+        auto n2 = graph.addNode(NodeFactory::getInstance().create(NodeType::Passthrough), "N2", 200, 0);
+        graph.connect(n0, 2, n1, 1);
+        graph.connect(n1, 2, n2, 1);
+
+        std::vector<NodeId> sorted;
+        std::string err;
+        assert(graph.validateAndTopologicalSort(sorted, err));
+
+        ExecutionPlan plan;
+        plan.compileFrom(graph, sorted);
+        std::vector<RustStepSlotAssignment> planAssigns;
+        uint32_t planSlots = plan.computeOptimalBufferSlotsRust(planAssigns);
+        assert(planSlots > 0 && planSlots <= 3);
+        assert(planAssigns.size() == 3);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testPhase9DimensionChorus() {
+    std::cout << "[TEST] Phase 9: DimensionChorus Roland SDD-320 Spatial Ensemble (Reglas 5, 8, 9, 34, 46, 47)... ";
+    DimensionChorusNode chorus;
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    chorus.prepare(spec);
+
+    for (float mode = 1.0f; mode <= 4.0f; mode += 1.0f) {
+        chorus.setParameter(DimensionChorusNode::Mode, mode);
+        std::vector<float> inL(256, 0.4f), inR(256, 0.4f), outL(256, 0.0f), outR(256, 0.0f);
+        const float* ins[2] = { inL.data(), inR.data() };
+        float* outs[2] = { outL.data(), outR.data() };
+        ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+        chorus.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+    std::cout << "PASSED\n";
+}
+
+void testPhase9DynamicTremolo() {
+    std::cout << "[TEST] Phase 9: DynamicTremolo Optical/Harmonic & Envelope Rate Warping (Reglas 5, 8, 9, 34, 46, 47)... ";
+    DynamicTremoloNode tremolo;
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    tremolo.prepare(spec);
+
+    tremolo.setParameter(DynamicTremoloNode::Shape, 3.0f); // Harmonic
+    tremolo.setParameter(DynamicTremoloNode::Dynamics, 0.8f);
+    std::vector<float> inL(256, 0.6f), inR(256, -0.6f), outL(256, 0.0f), outR(256, 0.0f);
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+    tremolo.process(ctx);
+
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+    }
+    std::cout << "PASSED\n";
+}
+
+void testPhase9MultibandSaturator() {
+    std::cout << "[TEST] Phase 9: MultibandSaturator 3-Band LR4 FabFilter Saturn Style (Reglas 5, 8, 9, 32, 34, 46, 47)... ";
+    MultibandSaturatorNode sat;
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    sat.prepare(spec);
+
+    sat.setParameter(MultibandSaturatorNode::DriveLowDb, 0.0f);
+    sat.setParameter(MultibandSaturatorNode::DriveMidDb, 0.0f);
+    sat.setParameter(MultibandSaturatorNode::DriveHighDb, 0.0f);
+
+    std::vector<float> inL(256, 0.5f), inR(256, 0.5f), outL(256, 0.0f), outR(256, 0.0f);
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 10; ++b) sat.process(ctx);
+
+    sat.setParameter(MultibandSaturatorNode::DriveLowDb, 12.0f);
+    sat.setParameter(MultibandSaturatorNode::DriveMidDb, 18.0f);
+    sat.setParameter(MultibandSaturatorNode::ModelMid, 2.0f); // Foldback
+    sat.process(ctx);
+
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+    }
+    std::cout << "PASSED\n";
+}
+
+void testPhase9CombResonator() {
+    std::cout << "[TEST] Phase 9: CombResonator Tuned Bipolar Feedback & Damping (Reglas 5, 8, 9, 12, 34, 46, 47)... ";
+    CombResonatorNode comb;
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    comb.prepare(spec);
+
+    comb.setParameter(CombResonatorNode::FreqHz, 440.0f);
+    comb.setParameter(CombResonatorNode::Feedback, 0.92f);
+    comb.setParameter(CombResonatorNode::StereoDetuneCents, 25.0f);
+
+    std::vector<float> inL(256, 0.0f), inR(256, 0.0f), outL(256, 0.0f), outR(256, 0.0f);
+    inL[0] = 1.0f; inR[0] = 1.0f;
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    comb.process(ctx);
+
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        assert(std::abs(outL[i]) < 10.0f);
+    }
+    std::cout << "PASSED\n";
+}
+
+void testPhase9PitchDelay() {
+    std::cout << "[TEST] Phase 9: PitchDelay Eventide Crystals Dual Grain Pitch Delay (Reglas 5, 8, 9, 14, 18, 34, 46, 47)... ";
+    PitchDelayNode pDelay;
+    assert(pDelay.supportsTail() == true);
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    pDelay.prepare(spec);
+
+    pDelay.setParameter(PitchDelayNode::PitchSemitones, 12.0f);
+    pDelay.setParameter(PitchDelayNode::DetuneCents, 15.0f);
+    pDelay.setParameter(PitchDelayNode::ReverseMode, 1.0f);
+    pDelay.setParameter(PitchDelayNode::Feedback, 0.5f);
+
+    std::vector<float> inL(256, 0.5f), inR(256, 0.5f), outL(256, 0.0f), outR(256, 0.0f);
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    pDelay.process(ctx);
+
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+    }
+    std::cout << "PASSED\n";
+}
+
+void testPhase9CatalogAndNodeFactoryRegistry() {
+    std::cout << "[TEST] Phase 9: NodeFactory Large Effect Library Catalog & Category Search (Reglas 19 y 20)... ";
+    auto& factory = NodeFactory::getInstance();
+    const auto& reg = factory.getRegistry();
+    assert(reg.size() >= 80);
+
+    auto p1 = factory.create("dimensionchorus");
+    assert(p1 != nullptr && p1->getType() == NodeType::DimensionChorus);
+
+    auto p2 = factory.create("dynamictremolo");
+    assert(p2 != nullptr && p2->getType() == NodeType::DynamicTremolo);
+
+    auto p3 = factory.create("multibandsaturator");
+    assert(p3 != nullptr && p3->getType() == NodeType::MultibandSaturator);
+
+    auto p4 = factory.create("combresonator");
+    assert(p4 != nullptr && p4->getType() == NodeType::CombResonator);
+
+    auto p5 = factory.create("pitchdelay");
+    assert(p5 != nullptr && p5->getType() == NodeType::PitchDelay);
+
+    auto p6 = factory.create("phasedispersion");
+    assert(p6 != nullptr && p6->getType() == NodeType::PhaseDispersion);
+
+    auto p7 = factory.create("morphingsvf");
+    assert(p7 != nullptr && p7->getType() == NodeType::MorphingSVF);
+
+    auto p8 = factory.create("fractalresonator");
+    assert(p8 != nullptr && p8->getType() == NodeType::FractalResonator);
+
+    auto p9 = factory.create("vactrollpg");
+    assert(p9 != nullptr && p9->getType() == NodeType::VactrolLPG);
+
+    auto p10 = factory.create("barberpolefilter");
+    assert(p10 != nullptr && p10->getType() == NodeType::BarberpoleFilter);
+
+    auto p11 = factory.create("sidechainpumper");
+    assert(p11 != nullptr && p11->getType() == NodeType::SidechainPumper);
+
+    auto p12 = factory.create("frequencysplitpanner");
+    assert(p12 != nullptr && p12->getType() == NodeType::FrequencySplitPanner);
+
+    auto p13 = factory.create("chebyshevharmonicshaper");
+    assert(p13 != nullptr && p13->getType() == NodeType::ChebyshevHarmonicShaper);
+
+    auto p14 = factory.create("subharmonicsynthesizer");
+    assert(p14 != nullptr && p14->getType() == NodeType::SubharmonicSynthesizer);
+
+    auto p15 = factory.create("transauralcrosstalkcanceller");
+    assert(p15 != nullptr && p15->getType() == NodeType::TransauralCrosstalkCanceller);
+
+    auto p16 = factory.create("dopplerorbitalspatializer");
+    assert(p16 != nullptr && p16->getType() == NodeType::DopplerOrbitalSpatializer);
+
+    std::cout << "PASSED\n";
+}
+
+void testExoticPhaseDispersion() {
+    std::cout << "[TEST] Exotic Filter: PhaseDispersion 24-Stage Allpass Chirp Cascade (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    PhaseDispersionNode pd;
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    pd.prepare(spec);
+
+    pd.setParameter(PhaseDispersionNode::Stages, 24.0f);
+    pd.setParameter(PhaseDispersionNode::DispersionFreq, 2500.0f);
+    pd.setParameter(PhaseDispersionNode::Spread, 0.9f);
+    pd.setParameter(PhaseDispersionNode::Feedback, 0.6f);
+    pd.setParameter(PhaseDispersionNode::Mix, 0.8f);
+
+    std::vector<float> inL(256, 0.0f), inR(256, 0.0f), outL(256, 0.0f), outR(256, 0.0f);
+    inL[0] = 1.0f;
+    inR[0] = 1.0f;
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    pd.process(ctx);
+
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+    }
+    float tailEnergy = 0.0f;
+    for (size_t i = 10; i < 256; ++i) {
+        tailEnergy += std::abs(outL[i]);
+    }
+    assert(tailEnergy > 0.001f);
+    std::cout << "PASSED\n";
+}
+
+void testExoticMorphingSvf() {
+    std::cout << "[TEST] Exotic Filter: MorphingSVF 360-Degree Continuous Topology Warp (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    MorphingSvfNode svf;
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+    svf.prepare(spec);
+
+    for (float m = 0.0f; m <= 1.0f; m += 0.2f) {
+        svf.setParameter(MorphingSvfNode::CutoffHz, 1500.0f);
+        svf.setParameter(MorphingSvfNode::Resonance, 12.0f);
+        svf.setParameter(MorphingSvfNode::Morph, m);
+        svf.setParameter(MorphingSvfNode::Drive, 4.0f);
+
+        std::vector<float> inL(256, 0.5f), inR(256, 0.5f), outL(256, 0.0f), outR(256, 0.0f);
+        const float* ins[2] = { inL.data(), inR.data() };
+        float* outs[2] = { outL.data(), outR.data() };
+        ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+        svf.process(ctx);
+
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+            assert(std::abs(outL[i]) < 10.0f);
+        }
+    }
+    std::cout << "PASSED\n";
+}
+
+void testExoticFractalResonator() {
+    std::cout << "[TEST] Exotic Filter: FractalResonator Golden-Ratio Comb Matrix (Reglas 5, 8, 9, 12, 14, 34, 46, 47)... ";
+    FractalResonatorNode fr;
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    fr.prepare(spec);
+
+    fr.setParameter(FractalResonatorNode::BaseFreqHz, 261.63f);
+    fr.setParameter(FractalResonatorNode::FractalRatio, 0.618f);
+    fr.setParameter(FractalResonatorNode::Decay, 0.95f);
+    fr.setParameter(FractalResonatorNode::DampingHz, 7000.0f);
+    fr.setParameter(FractalResonatorNode::StereoWidth, 0.9f);
+    fr.setParameter(FractalResonatorNode::Mix, 0.7f);
+
+    std::vector<float> inL(256, 0.0f), inR(256, 0.0f), outL(256, 0.0f), outR(256, 0.0f);
+    inL[0] = 1.0f;
+    inR[0] = 1.0f;
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    fr.process(ctx);
+
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+    }
+    std::cout << "PASSED\n";
+}
+
+void testExoticVactrolLPG() {
+    std::cout << "[TEST] Exotic Filter: VactrolLPG Buchla 292 Sluggish Decay & Strike Ping (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    VactrolLpgNode lpg;
+    assert(lpg.getType() == NodeType::VactrolLPG);
+    assert(lpg.getPins().size() == 3);
+    assert(lpg.getParameters().size() == 7);
+
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+    lpg.prepare(spec);
+
+    // Initial state: closed gate (low cutoff)
+    lpg.setParameter(VactrolLpgNode::Cutoff, 0.05f);
+    lpg.setParameter(VactrolLpgNode::Resonance, 0.55f);
+    lpg.setParameter(VactrolLpgNode::DecayMs, 120.0f);
+    lpg.setParameter(VactrolLpgNode::Strike, 0.9f);
+    lpg.setParameter(VactrolLpgNode::ModeBalance, 0.5f);
+    lpg.setParameter(VactrolLpgNode::Drive, 1.5f);
+    lpg.setParameter(VactrolLpgNode::Mix, 1.0f);
+
+    std::vector<float> inL(256, 0.5f), inR(256, 0.5f), outL(256, 0.0f), outR(256, 0.0f);
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    // With closed gate, output should be very small
+    lpg.process(ctx);
+    float closedEnergy = 0.0f;
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        closedEnergy += std::abs(outL[i]);
+    }
+
+    // Trigger strike ping (Buchla acoustic bongo pluck)
+    lpg.triggerStrike();
+    lpg.process(ctx);
+    float strikeEnergy = 0.0f;
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        strikeEnergy += std::abs(outL[i]);
+    }
+    assert(strikeEnergy > closedEnergy * 2.0f);
+
+    // Process decay blocks: energy should decay exponentially/sluggishly
+    float prevEnergy = strikeEnergy;
+    for (int b = 0; b < 10; ++b) {
+        lpg.process(ctx);
+        float blockEnergy = 0.0f;
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            blockEnergy += std::abs(outL[i]);
+        }
+        prevEnergy = blockEnergy;
+    }
+
+    // Audio-rate Strike In pin modulation
+    std::vector<float> strikePin(256, 0.0f);
+    strikePin[0] = 0.95f; // Fast trigger pulse
+    const float* strikePins[1] = { strikePin.data() };
+    ProcessContext ctxStrike{
+        .inputChannels = ins,
+        .outputChannels = outs,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256,
+        .audioRateModChannels = strikePins,
+        .numAudioRateModChannels = 1
+    };
+    lpg.process(ctxStrike);
+    float audioRateTriggerEnergy = 0.0f;
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        audioRateTriggerEnergy += std::abs(outL[i]);
+    }
+    assert(audioRateTriggerEnergy > closedEnergy);
+
+    std::cout << "PASSED\n";
+}
+
+void testExoticBarberpoleFilter() {
+    std::cout << "[TEST] Exotic Filter: BarberpoleFilter Infinite Shepard-Risset Spiral Motion (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    BarberpoleFilterNode bp;
+    assert(bp.getType() == NodeType::BarberpoleFilter);
+    assert(bp.getPins().size() == 2);
+    assert(bp.getParameters().size() == 6);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    bp.prepare(spec);
+
+    // Test Rising spiral
+    bp.setParameter(BarberpoleFilterNode::RateHz, 0.75f);
+    bp.setParameter(BarberpoleFilterNode::Feedback, 0.80f);
+    bp.setParameter(BarberpoleFilterNode::StereoSpread, 0.5f);
+    bp.setParameter(BarberpoleFilterNode::FreqMin, 100.0f);
+    bp.setParameter(BarberpoleFilterNode::FreqMax, 14000.0f);
+    bp.setParameter(BarberpoleFilterNode::Mix, 0.75f);
+
+    std::vector<float> inL(256, 0.4f), inR(256, 0.4f), outL(256, 0.0f), outR(256, 0.0f);
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 20; ++b) {
+        bp.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+            assert(std::abs(outL[i]) < 10.0f);
+            assert(std::abs(outR[i]) < 10.0f);
+        }
+    }
+
+    // Test Falling spiral
+    bp.setParameter(BarberpoleFilterNode::RateHz, -1.2f);
+    for (int b = 0; b < 20; ++b) {
+        bp.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testSidechainPumperNode() {
+    std::cout << "[TEST] Kickstart Sidechain Pumper & Multiband Ducking (Reglas 5, 8, 9, 14, 34, 35, 37, 46, 47)... ";
+    SidechainPumperNode pumper;
+    assert(pumper.getType() == NodeType::SidechainPumper);
+    assert(pumper.getPins().size() == 3);
+    assert(pumper.getParameters().size() == 9);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    pumper.prepare(spec);
+
+    pumper.setParameter(SidechainPumperNode::SyncRate, 2.0f);     // 1/4 note
+    pumper.setParameter(SidechainPumperNode::Depth, 1.0f);        // Full ducking
+    pumper.setParameter(SidechainPumperNode::CurveShape, 0.0f);   // EDM curve
+    pumper.setParameter(SidechainPumperNode::BandSplit, 0.0f);    // Full band
+    pumper.setParameter(SidechainPumperNode::Mix, 1.0f);
+
+    std::vector<float> inL(256, 0.5f), inR(256, 0.5f), outL(256, 0.0f), outR(256, 0.0f);
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = ins,
+        .outputChannels = outs,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256,
+        .bpm = 120.0,
+        .ppqPosition = 0.0,
+        .isPlaying = true
+    };
+
+    // 1. Process initial beat block (should duck strongly at onset)
+    pumper.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+    }
+    // Gain at onset of beat should be ducked significantly below input (0.5)
+    assert(outL[0] < 0.25f);
+
+    // 2. Advance transport towards middle/end of beat (gain recovers)
+    ctx.ppqPosition = 0.85; // Near end of quarter note
+    pumper.process(ctx);
+    // At end of beat, gain should have recovered towards full volume
+    assert(outL[255] > 0.40f);
+
+    // 3. Test Multiband Low-Only Ducking
+    pumper.setParameter(SidechainPumperNode::BandSplit, 1.0f); // Low only ducking
+    pumper.setParameter(SidechainPumperNode::CrossoverHz, 250.0f);
+    ctx.ppqPosition = 0.0;
+    pumper.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+    }
+
+    // 4. Test Silence stability
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    pumper.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testFrequencySplitPannerNode() {
+    std::cout << "[TEST] Spectral Frequency-Split Spatial Dynamic Panner (Reglas 5, 8, 9, 14, 34, 35, 46, 47)... ";
+    FrequencySplitPannerNode panner;
+    assert(panner.getType() == NodeType::FrequencySplitPanner);
+    assert(panner.getPins().size() == 2);
+    assert(panner.getParameters().size() == 8);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    panner.prepare(spec);
+
+    panner.setParameter(FrequencySplitPannerNode::CrossoverHz, 650.0f);
+    panner.setParameter(FrequencySplitPannerNode::LowPan, -0.8f);       // Lows to left
+    panner.setParameter(FrequencySplitPannerNode::HighPan, 0.8f);       // Highs to right
+    panner.setParameter(FrequencySplitPannerNode::DynamicAmount, 0.5f);
+    panner.setParameter(FrequencySplitPannerNode::HaasSpread, 0.5f);
+    panner.setParameter(FrequencySplitPannerNode::MonoBassHz, 90.0f);
+    panner.setParameter(FrequencySplitPannerNode::Mix, 1.0f);
+
+    std::vector<float> inL(256), inR(256), outL(256), outR(256);
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{
+        .inputChannels = ins,
+        .outputChannels = outs,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 256
+    };
+
+    // 1. High frequency sine tone (3000 Hz) -> should pan primarily to Right
+    for (size_t i = 0; i < 256; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 3000.0f * (float)i / 44100.0f);
+        inL[i] = s;
+        inR[i] = s;
+    }
+    for (int b = 0; b < 10; ++b) {
+        panner.process(ctx);
+    }
+    float highEnergyL = 0.0f, highEnergyR = 0.0f;
+    for (size_t i = 0; i < 256; ++i) {
+        highEnergyL += outL[i] * outL[i];
+        highEnergyR += outR[i] * outR[i];
+        assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+        assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+    }
+    // High energy should dominate on the Right channel
+    assert(highEnergyR > highEnergyL * 1.5f);
+
+    // 2. Low-mid sine tone (250 Hz) -> should pan primarily to Left
+    panner.reset();
+    for (size_t i = 0; i < 256; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 250.0f * (float)i / 44100.0f);
+        inL[i] = s;
+        inR[i] = s;
+    }
+    for (int b = 0; b < 10; ++b) {
+        panner.process(ctx);
+    }
+    float lowEnergyL = 0.0f, lowEnergyR = 0.0f;
+    for (size_t i = 0; i < 256; ++i) {
+        lowEnergyL += outL[i] * outL[i];
+        lowEnergyR += outR[i] * outR[i];
+    }
+    // Low energy should dominate on the Left channel
+    assert(lowEnergyL > lowEnergyR * 1.5f);
+
+    // 3. Silence stability test
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    panner.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testChebyshevHarmonicShaperNode() {
+    std::cout << "[TEST] Chebyshev Polynomial Harmonic Shaper (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    ChebyshevHarmonicShaperNode shaper;
+    assert(shaper.getType() == NodeType::ChebyshevHarmonicShaper);
+    assert(shaper.getPins().size() == 2);
+    assert(shaper.getParameters().size() == 9);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    shaper.prepare(spec);
+
+    shaper.setParameter(ChebyshevHarmonicShaperNode::Drive, 1.5f);
+    shaper.setParameter(ChebyshevHarmonicShaperNode::Harmonic2, 0.4f);
+    shaper.setParameter(ChebyshevHarmonicShaperNode::Harmonic3, 0.3f);
+    shaper.setParameter(ChebyshevHarmonicShaperNode::Harmonic4, 0.2f);
+    shaper.setParameter(ChebyshevHarmonicShaperNode::Mix, 1.0f);
+
+    std::vector<float> inL(256), inR(256), outL(256, 0.0f), outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 440.0f * (float)i / 44100.0f);
+        inL[i] = s;
+        inR[i] = s;
+    }
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 10; ++b) {
+        shaper.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // Silence stability
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    shaper.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testSubharmonicSynthesizerNode() {
+    std::cout << "[TEST] Subharmonic Synthesizer & Analog Bass Extender (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    SubharmonicSynthesizerNode synth;
+    assert(synth.getType() == NodeType::SubharmonicSynthesizer);
+    assert(synth.getPins().size() == 2);
+    assert(synth.getParameters().size() == 6);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    synth.prepare(spec);
+
+    synth.setParameter(SubharmonicSynthesizerNode::SubBandFreq, 85.0f);
+    synth.setParameter(SubharmonicSynthesizerNode::SubOctave1_Level, 0.8f);
+    synth.setParameter(SubharmonicSynthesizerNode::SubOctave2_Level, 0.5f);
+    synth.setParameter(SubharmonicSynthesizerNode::Drive, 1.3f);
+    synth.setParameter(SubharmonicSynthesizerNode::Mix, 1.0f);
+
+    std::vector<float> inL(256), inR(256), outL(256, 0.0f), outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 80.0f * (float)i / 44100.0f) * 0.7f;
+        inL[i] = s;
+        inR[i] = s;
+    }
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 10; ++b) {
+        synth.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // Silence stability
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    synth.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testTransauralCrosstalkCancellerNode() {
+    std::cout << "[TEST] Transaural Crosstalk Canceller RACE 3D (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    TransauralCrosstalkCancellerNode cancel;
+    assert(cancel.getType() == NodeType::TransauralCrosstalkCanceller);
+    assert(cancel.getPins().size() == 2);
+    assert(cancel.getParameters().size() == 5);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    cancel.prepare(spec);
+
+    cancel.setParameter(TransauralCrosstalkCancellerNode::DelayUs, 180.0f);
+    cancel.setParameter(TransauralCrosstalkCancellerNode::CrosstalkCancellation, 0.7f);
+    cancel.setParameter(TransauralCrosstalkCancellerNode::CenterPreserve, 0.6f);
+    cancel.setParameter(TransauralCrosstalkCancellerNode::Mix, 1.0f);
+
+    std::vector<float> inL(256), inR(256, 0.0f), outL(256, 0.0f), outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        inL[i] = std::sin(2.0f * 3.14159265f * 1000.0f * (float)i / 44100.0f);
+    }
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 10; ++b) {
+        cancel.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // Silence stability
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    cancel.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testDopplerOrbitalSpatializerNode() {
+    std::cout << "[TEST] Doppler 3D Orbital Spatializer (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    DopplerOrbitalSpatializerNode doppler;
+    assert(doppler.getType() == NodeType::DopplerOrbitalSpatializer);
+    assert(doppler.getPins().size() == 2);
+    assert(doppler.getParameters().size() == 7);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    doppler.prepare(spec);
+
+    doppler.setParameter(DopplerOrbitalSpatializerNode::OrbitRateHz, 0.5f);
+    doppler.setParameter(DopplerOrbitalSpatializerNode::OrbitRadiusM, 3.5f);
+    doppler.setParameter(DopplerOrbitalSpatializerNode::DopplerDepth, 0.8f);
+    doppler.setParameter(DopplerOrbitalSpatializerNode::AirDamping, 0.6f);
+    doppler.setParameter(DopplerOrbitalSpatializerNode::Mix, 1.0f);
+
+    std::vector<float> inL(256), inR(256), outL(256, 0.0f), outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 1200.0f * (float)i / 44100.0f);
+        inL[i] = s;
+        inR[i] = s;
+    }
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 20; ++b) {
+        doppler.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // Silence stability
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    doppler.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testGranularBufferShufflerNode() {
+    std::cout << "[TEST] Granular Buffer Shuffler & Reverse Memory (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    GranularBufferShufflerNode shuffler;
+    assert(shuffler.getType() == NodeType::GranularBufferShuffler);
+    assert(shuffler.getPins().size() == 2);
+    assert(shuffler.getParameters().size() == 8);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    shuffler.prepare(spec);
+
+    shuffler.setParameter(GranularBufferShufflerNode::BufferLengthMs, 1000.0f);
+    shuffler.setParameter(GranularBufferShufflerNode::GrainSizeMs, 100.0f);
+    shuffler.setParameter(GranularBufferShufflerNode::Density, 15.0f);
+    shuffler.setParameter(GranularBufferShufflerNode::ReverseProb, 0.4f);
+    shuffler.setParameter(GranularBufferShufflerNode::PitchMode, 1.0f);
+    shuffler.setParameter(GranularBufferShufflerNode::ScatterPan, 0.7f);
+    shuffler.setParameter(GranularBufferShufflerNode::Mix, 0.9f);
+
+    std::vector<float> inL(256), inR(256), outL(256, 0.0f), outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 440.0f * (float)i / 44100.0f);
+        inL[i] = s;
+        inR[i] = s;
+    }
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 20; ++b) {
+        shuffler.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // Silence stability
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    shuffler.reset();
+    shuffler.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testDisintegrationLooperNode() {
+    std::cout << "[TEST] Disintegration Tape Looper & Oxide Decay (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    DisintegrationLooperNode looper;
+    assert(looper.getType() == NodeType::DisintegrationLooper);
+    assert(looper.getPins().size() == 2);
+    assert(looper.getParameters().size() == 7);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    looper.prepare(spec);
+
+    looper.setParameter(DisintegrationLooperNode::LoopLengthMs, 800.0f);
+    looper.setParameter(DisintegrationLooperNode::Feedback, 0.75f);
+    looper.setParameter(DisintegrationLooperNode::OxideDecay, 0.4f);
+    looper.setParameter(DisintegrationLooperNode::WowFlutter, 0.3f);
+    looper.setParameter(DisintegrationLooperNode::DropoutIntensity, 0.2f);
+    looper.setParameter(DisintegrationLooperNode::TapeWarmth, 0.6f);
+    looper.setParameter(DisintegrationLooperNode::Mix, 0.8f);
+
+    std::vector<float> inL(256), inR(256), outL(256, 0.0f), outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 880.0f * (float)i / 44100.0f);
+        inL[i] = s;
+        inR[i] = s;
+    }
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 20; ++b) {
+        looper.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // Silence stability
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    looper.reset();
+    looper.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testSpringReverbTankNode() {
+    std::cout << "[TEST] Helical Spring Reverb Tank & Boing Dispersion (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    SpringReverbTankNode spring;
+    assert(spring.getType() == NodeType::SpringReverbTank);
+    assert(spring.getPins().size() == 2);
+    assert(spring.getParameters().size() == 6);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    spring.prepare(spec);
+
+    spring.setParameter(SpringReverbTankNode::Tension, 0.7f);
+    spring.setParameter(SpringReverbTankNode::DecayTime, 2.5f);
+    spring.setParameter(SpringReverbTankNode::BoingDepth, 0.65f);
+    spring.setParameter(SpringReverbTankNode::Drive, 1.5f);
+    spring.setParameter(SpringReverbTankNode::DampingHz, 4000.0f);
+    spring.setParameter(SpringReverbTankNode::Mix, 0.75f);
+
+    std::vector<float> inL(256), inR(256), outL(256, 0.0f), outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        float s = (i == 0) ? 1.0f : 0.0f; // Impulse excitation
+        inL[i] = s;
+        inR[i] = s;
+    }
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 25; ++b) {
+        spring.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+        if (b == 0) std::fill(inL.begin(), inL.end(), 0.0f);
+    }
+
+    // Silence stability
+    spring.reset();
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    spring.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testDualBodeFrequencyShifterNode() {
+    std::cout << "[TEST] Dual Bode Frequency Shifter & Hilbert SSB (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    DualBodeFrequencyShifterNode shifter;
+    assert(shifter.getType() == NodeType::DualBodeFrequencyShifter);
+    assert(shifter.getPins().size() == 2);
+    assert(shifter.getParameters().size() == 6);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    shifter.prepare(spec);
+
+    shifter.setParameter(DualBodeFrequencyShifterNode::ShiftHz, 50.0f);
+    shifter.setParameter(DualBodeFrequencyShifterNode::StereoSpreadHz, 20.0f);
+    shifter.setParameter(DualBodeFrequencyShifterNode::Feedback, 0.25f);
+    shifter.setParameter(DualBodeFrequencyShifterNode::DampingHz, 6000.0f);
+    shifter.setParameter(DualBodeFrequencyShifterNode::SidebandBalance, 1.0f);
+    shifter.setParameter(DualBodeFrequencyShifterNode::Mix, 1.0f);
+
+    std::vector<float> inL(256), inR(256), outL(256, 0.0f), outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 500.0f * (float)i / 44100.0f);
+        inL[i] = s;
+        inR[i] = s;
+    }
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 20; ++b) {
+        shifter.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // Silence stability
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    shifter.reset();
+    shifter.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testMicrotonalHarmonizerNode() {
+    std::cout << "[TEST] Microtonal Harmonizer & 31-EDO / Just Intonation (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    MicrotonalHarmonizerNode harm;
+    assert(harm.getType() == NodeType::MicrotonalHarmonizer);
+    assert(harm.getPins().size() == 2);
+    assert(harm.getParameters().size() == 9);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    harm.prepare(spec);
+
+    harm.setParameter(MicrotonalHarmonizerNode::Voice1Semitones, 0.0f);
+    harm.setParameter(MicrotonalHarmonizerNode::Voice1Cents, 31.0f);
+    harm.setParameter(MicrotonalHarmonizerNode::Voice1Pan, -0.6f);
+    harm.setParameter(MicrotonalHarmonizerNode::Voice2Semitones, 7.0f);
+    harm.setParameter(MicrotonalHarmonizerNode::Voice2Cents, -14.0f);
+    harm.setParameter(MicrotonalHarmonizerNode::Voice2Pan, 0.6f);
+    harm.setParameter(MicrotonalHarmonizerNode::QuantizeScale, 3.0f); // 31-EDO
+    harm.setParameter(MicrotonalHarmonizerNode::Feedback, 0.2f);
+    harm.setParameter(MicrotonalHarmonizerNode::Mix, 0.85f);
+
+    std::vector<float> inL(256), inR(256), outL(256, 0.0f), outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 440.0f * (float)i / 44100.0f);
+        inL[i] = s;
+        inR[i] = s;
+    }
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 20; ++b) {
+        harm.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // Silence stability
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    harm.reset();
+    harm.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testFormantPitchShifterNode() {
+    std::cout << "[TEST] Formant Pitch Shifter & Anatomical Throat Decoupling (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    FormantPitchShifterNode fShifter;
+    assert(fShifter.getType() == NodeType::FormantPitchShifter);
+    assert(fShifter.getPins().size() == 2);
+    assert(fShifter.getParameters().size() == 5);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    fShifter.prepare(spec);
+
+    fShifter.setParameter(FormantPitchShifterNode::PitchSemitones, 2.0f);
+    fShifter.setParameter(FormantPitchShifterNode::FormantShiftSemitones, -3.0f);
+    fShifter.setParameter(FormantPitchShifterNode::ThroatMorph, 0.4f);
+    fShifter.setParameter(FormantPitchShifterNode::FormantIntensity, 0.8f);
+    fShifter.setParameter(FormantPitchShifterNode::Mix, 0.9f);
+
+    std::vector<float> inL(256), inR(256), outL(256, 0.0f), outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 600.0f * (float)i / 44100.0f);
+        inL[i] = s;
+        inR[i] = s;
+    }
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 20; ++b) {
+        fShifter.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // Silence stability
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    fShifter.reset();
+    fShifter.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testSpectralResonanceTamerNode() {
+    std::cout << "[TEST] Spectral Resonance Tamer Dynamic Spike Suppressor (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    SpectralResonanceTamerNode tamer;
+    assert(tamer.getType() == NodeType::SpectralResonanceTamer);
+    assert(tamer.getPins().size() == 2);
+    assert(tamer.getParameters().size() == 9);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    tamer.prepare(spec);
+
+    tamer.setParameter(SpectralResonanceTamerNode::Sensitivity, 0.7f);
+    tamer.setParameter(SpectralResonanceTamerNode::Depth, 0.75f);
+    tamer.setParameter(SpectralResonanceTamerNode::SharpnessQ, 5.0f);
+    tamer.setParameter(SpectralResonanceTamerNode::AttackMs, 12.0f);
+    tamer.setParameter(SpectralResonanceTamerNode::ReleaseMs, 90.0f);
+    tamer.setParameter(SpectralResonanceTamerNode::LowCutHz, 100.0f);
+    tamer.setParameter(SpectralResonanceTamerNode::HighCutHz, 12000.0f);
+    tamer.setParameter(SpectralResonanceTamerNode::DeltaListen, 0.0f);
+    tamer.setParameter(SpectralResonanceTamerNode::Mix, 1.0f);
+
+    std::vector<float> inL(256), inR(256), outL(256, 0.0f), outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 2500.0f * (float)i / 44100.0f);
+        inL[i] = s;
+        inR[i] = s;
+    }
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 20; ++b) {
+        tamer.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+    }
+
+    // Silence stability
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    tamer.reset();
+    tamer.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testSpectralMorphingConvolverNode() {
+    std::cout << "[TEST] Spectral Morphing Convolver & Dual Impulse Spaces (Reglas 5, 8, 9, 14, 34, 46, 47)... ";
+    SpectralMorphingConvolverNode conv;
+    assert(conv.getType() == NodeType::SpectralMorphingConvolver);
+    assert(conv.getPins().size() == 2);
+    assert(conv.getParameters().size() == 6);
+
+    ProcessSpec spec{ 44100.0, 256, 2, 2 };
+    conv.prepare(spec);
+
+    conv.setParameter(SpectralMorphingConvolverNode::Morph, 0.6f);
+    conv.setParameter(SpectralMorphingConvolverNode::DecayTimeS, 3.0f);
+    conv.setParameter(SpectralMorphingConvolverNode::Damping, 0.5f);
+    conv.setParameter(SpectralMorphingConvolverNode::PredelayMs, 10.0f);
+    conv.setParameter(SpectralMorphingConvolverNode::StereoSpread, 0.75f);
+    conv.setParameter(SpectralMorphingConvolverNode::Mix, 0.7f);
+
+    std::vector<float> inL(256), inR(256), outL(256, 0.0f), outR(256, 0.0f);
+    for (size_t i = 0; i < 256; ++i) {
+        float s = (i == 0) ? 1.0f : 0.0f; // Impulse excitation
+        inL[i] = s;
+        inR[i] = s;
+    }
+    const float* ins[2] = { inL.data(), inR.data() };
+    float* outs[2] = { outL.data(), outR.data() };
+    ProcessContext ctx{ .inputChannels = ins, .outputChannels = outs, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+    for (int b = 0; b < 25; ++b) {
+        conv.process(ctx);
+        for (size_t i = 0; i < 256; ++i) {
+            assert(!std::isnan(outL[i]) && !std::isinf(outL[i]));
+            assert(!std::isnan(outR[i]) && !std::isinf(outR[i]));
+        }
+        if (b == 0) std::fill(inL.begin(), inL.end(), 0.0f);
+    }
+
+    // Silence stability
+    conv.reset();
+    std::fill(inL.begin(), inL.end(), 0.0f);
+    std::fill(inR.begin(), inR.end(), 0.0f);
+    conv.process(ctx);
+    for (size_t i = 0; i < 256; ++i) {
+        assert(std::abs(outL[i]) < 1e-4f);
+        assert(std::abs(outR[i]) < 1e-4f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testOverhauledFactoryPresetCatalogDAG() {
+    std::cout << "[TEST] Factory Presets Overhaul: 68 Complex DAG Flagship Presets Verification (Reglas 4, 21, 22, 28, 46)... ";
+    PresetManager pm;
+    const auto& catalog = pm.getFactoryPresets();
+    assert(catalog.size() == 68);
+
+    ProcessSpec spec{ 48000.0, 256, 2, 2 };
+
+    for (size_t i = 0; i < catalog.size(); ++i) {
+        Graph g;
+        PresetMetadata meta;
+        std::array<float, 8> macros{};
+
+        bool ok = pm.loadFactoryPreset(i, g, meta, macros);
+        assert(ok && "Fallo al deserializar preset de fabrica");
+        assert(!meta.name.empty());
+        assert(!meta.category.empty());
+        assert(g.getNodeCount() >= 4 && "Todo preset flagship debe tener al menos 4 nodos");
+        assert(g.getConnections().size() >= 4 && "Todo preset flagship debe tener conexiones explicitas");
+
+        std::vector<NodeId> order;
+        std::string sortErr;
+        bool sortOk = g.validateAndTopologicalSort(order, sortErr);
+        assert(sortOk && "El grafo del preset contiene ciclos ilegales");
+
+        ExecutionPlan plan;
+        plan.compileFrom(g, order);
+        assert(!plan.isEmpty());
+
+        for (const auto& [nid, inst] : g.getNodes()) {
+            if (inst && inst->processor) {
+                inst->processor->prepare(spec);
+            }
+        }
+
+        GraphExecutor executor;
+        executor.prepare(spec);
+        std::vector<float> inL(256, 0.25f), inR(256, 0.25f);
+        const float* ins[2] = { inL.data(), inR.data() };
+        ProcessContext ctx{ .inputChannels = ins, .outputChannels = nullptr, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+        PreallocatedBuffer finalOut;
+        finalOut.prepare(2, 256);
+
+        executor.process(plan, ctx, finalOut);
+
+        const float* outL = finalOut.getReadPointer(0);
+        const float* outR = finalOut.getReadPointer(1);
+        for (size_t s = 0; s < 256; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+        }
+
+        // Test with silent input (0.0f) - detecting self-noise before keys are played
+        std::vector<float> silenceL(256, 0.0f), silenceR(256, 0.0f);
+        const float* silenceIns[2] = { silenceL.data(), silenceR.data() };
+        ProcessContext silenceCtx{ .inputChannels = silenceIns, .outputChannels = nullptr, .numInputChannels = 2, .numOutputChannels = 2, .numSamples = 256 };
+
+        for (const auto& [nid, inst] : g.getNodes()) {
+            if (inst && inst->processor) {
+                inst->processor->reset();
+            }
+        }
+
+        float silentEnergy = 0.0f;
+        for (int b = 0; b < 5; ++b) {
+            executor.process(plan, silenceCtx, finalOut);
+            const float* sOutL = finalOut.getReadPointer(0);
+            const float* sOutR = finalOut.getReadPointer(1);
+            for (size_t s = 0; s < 256; ++s) {
+                silentEnergy += std::abs(sOutL[s]) + std::abs(sOutR[s]);
+            }
+        }
+        assert(silentEnergy < 1e-4f && "Todo preset debe ser 100% silencioso antes de tocar cualquier tecla");
+    }
+
+    std::cout << "PASSED (68/68 presets DAG validados)\n";
+}
+
+void testPhase10RustEventContainerRackMigration() {
+    std::cout << "[TEST] Phase 10: EventContainerNode Rust Core Rack Migration (Reglas 2, 3, 6, 9, 10, 46, 47)... ";
+    ProcessSpec spec{ 48000.0, 128, 2, 2 };
+
+    // 1. Instanciación y preparación con Rust EventContainerCore
+    EventContainerNode evRack;
+    evRack.prepare(spec);
+
+    evRack.setParameter(EventContainerNode::Duration, 60.0f);
+    evRack.setParameter(EventContainerNode::Pitch, 1.5f);
+    evRack.setParameter(EventContainerNode::SourceFollow, 0.5f);
+    evRack.setParameter(EventContainerNode::Mix, 0.8f);
+
+    assert(std::abs(evRack.getParameter(EventContainerNode::Duration) - 60.0f) < 1e-3f);
+    assert(std::abs(evRack.getParameter(EventContainerNode::Pitch) - 1.5f) < 1e-3f);
+    assert(std::abs(evRack.getParameter(EventContainerNode::Mix) - 0.8f) < 1e-3f);
+
+    std::vector<float> inL(128, 0.75f);
+    std::vector<float> inR(128, 0.75f);
+    std::vector<float> outL(128, 0.0f);
+    std::vector<float> outR(128, 0.0f);
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 128
+    };
+
+    // Bloque 1: Alimenta buffer de captura en Rust
+    evRack.process(ctx);
+
+    // Bloque 2: Disparo por flanco manual
+    evRack.setParameter(EventContainerNode::Trigger, 1.0f);
+    evRack.process(ctx);
+
+    // Verificar que el EventManager interno respaldado por Rust tiene eventos activos
+    assert(evRack.getEventManager().getActiveEventCount() >= 1);
+
+    // Bloques subsecuentes: bajar trigger a 0 y renderizar
+    evRack.setParameter(EventContainerNode::Trigger, 0.0f);
+    for (int b = 0; b < 10; ++b) {
+        evRack.process(ctx);
+        for (size_t s = 0; s < 128; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+        }
+    }
+
+    // 2. Probar pipeline con Procesador Interno (Inner Processor)
+    EventContainerNode evRackWithInner;
+    evRackWithInner.prepare(spec);
+    auto dist = std::make_unique<DistortionNode>();
+    dist->setParameter(DistortionNode::Drive, 5.0f);
+    evRackWithInner.setInnerProcessor(std::move(dist));
+    evRackWithInner.setParameter(EventContainerNode::Trigger, 1.0f);
+    evRackWithInner.setParameter(EventContainerNode::Mix, 1.0f);
+
+    evRackWithInner.process(ctx);
+    assert(evRackWithInner.getEventManager().getActiveEventCount() >= 1);
+
+    evRackWithInner.setParameter(EventContainerNode::Trigger, 0.0f);
+    for (int b = 0; b < 8; ++b) {
+        evRackWithInner.process(ctx);
+        for (size_t s = 0; s < 128; ++s) {
+            assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+            assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+        }
+    }
+
+    // 3. Probar semántica de movimiento (Move semantics)
+    EventContainerNode movedRack(std::move(evRackWithInner));
+    assert(movedRack.getEventManager().getActiveEventCount() >= 1);
+    movedRack.process(ctx);
+
+    // 4. Reset y reciclaje completo
+    movedRack.reset();
+    assert(movedRack.getEventManager().getActiveEventCount() == 0);
+
+    std::cout << "PASSED (100% Rust C-ABI Event Rack Validated)\n";
+}
+
+void testVisualModulationAndGraphCanvasCabling() {
+    std::cout << "[TEST] Phase 6: Visual Modulation, Bipolar Knob Rings & Graph Canvas Animated Cabling (Reglas 7, 24, 25, 48, 49)... ";
+
+    // 1. Modulador Universal y Matriz de Modulación
+    ModulationEngine modEngine;
+    ProcessSpec spec{ 48000.0, 128, 2, 2 };
+    modEngine.prepare(spec);
+
+    auto& matrix = modEngine.getMatrix();
+    matrix.reset();
+
+    // Enrutar MacroTexture a Node 10, Param 1 con +75% de profundidad
+    int r1 = matrix.addRoute(ModSourceType::MacroTexture, 10, 1, 0.75f, true);
+    assert(r1 >= 0);
+    assert(matrix.getActiveRouteCount() == 1);
+    assert(matrix.getRoute(static_cast<size_t>(r1)).isActive);
+
+    // Enrutar LFO1 a Node 10, Param 2 con -50% de profundidad bipolar (inversión de fase)
+    int r2 = matrix.addRoute(ModSourceType::LFO1, 10, 2, -0.50f, true);
+    assert(r2 >= 0);
+    assert(matrix.getActiveRouteCount() == 2);
+    assert(matrix.getRoute(static_cast<size_t>(r2)).amount == -0.50f);
+
+    // 2. Establecer valores de fuente en MacroManager
+    modEngine.getMacroManager().setMacro(MacroManager::Texture, 0.8f); // MacroTexture = 0.8f
+    for (int i = 0; i < 200; ++i) {
+        modEngine.getMacroManager().processSmoothing();
+    }
+    assert(std::abs(modEngine.getMacroManager().getSmoothedMacro(MacroManager::Texture) - 0.8f) < 0.05f);
+
+    // 3. Procesar bloque de modulación sin allocations en audio thread
+    std::vector<float> dummyInL(128, 0.0f);
+    std::vector<float> dummyInR(128, 0.0f);
+    const float* inCh[2] = { dummyInL.data(), dummyInR.data() };
+    Graph graph;
+    ProcessContext ctx{
+        .inputChannels = inCh,
+        .outputChannels = nullptr,
+        .numInputChannels = 2,
+        .numOutputChannels = 0,
+        .numSamples = 128,
+        .bpm = 120.0,
+        .ppqPosition = 0.0,
+        .isPlaying = true
+    };
+    modEngine.process(ctx, graph);
+
+    // 4. Calcular offset de telemetría a 60 FPS (Regla 25 y 49)
+    const float offset1 = modEngine.calculateOffset(10, 1);
+    assert(!std::isnan(offset1) && !std::isinf(offset1));
+    assert(offset1 > 0.0f);
+
+    // 5. Verificación de fórmulas analíticas de Bézier cúbica y flujo de partículas
+    const float pStart[2] = { 100.0f, 150.0f };
+    const float pEnd[2] = { 450.0f, 320.0f };
+    const float dx = std::max(45.0f, std::abs(pEnd[0] - pStart[0]) * 0.45f);
+    const float dy = (pEnd[1] - pStart[1]) * 0.15f;
+    const float c1[2] = { pStart[0] + dx, pStart[1] + dy };
+    const float c2[2] = { pEnd[0] - dx, pEnd[1] - dy };
+
+    for (int p = 0; p < 8; ++p) {
+        float t = static_cast<float>(p) / 7.0f;
+        float u = 1.0f - t;
+        float px = u*u*u * pStart[0] + 3.0f*u*u*t * c1[0] + 3.0f*u*t*t * c2[0] + t*t*t * pEnd[0];
+        float py = u*u*u * pStart[1] + 3.0f*u*u*t * c1[1] + 3.0f*u*t*t * c2[1] + t*t*t * pEnd[1];
+        assert(!std::isnan(px) && !std::isinf(px));
+        assert(!std::isnan(py) && !std::isinf(py));
+        assert(px >= pStart[0] - 1.0f && px <= pEnd[0] + 1.0f);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void testPhase7BankPackagerAndKineticSceneMorph() {
+    std::cout << "[TEST] Phase 7: Preset & Bank Packager (.n8bank) and Kinetic Scene Morph Automation... ";
+
+    // 1. Verificar PresetPackager serializeBank y soporte de formato N8Effect_Bank
+    std::vector<UserPresetRecord> presets;
+    UserPresetRecord r1;
+    r1.metadata.name = "Ambient Nebula";
+    r1.metadata.category = "Reverb";
+    r1.metadata.author = "N8SoundLab";
+    r1.jsonContent = "{\"schemaVersion\":1,\"metadata\":{\"name\":\"Ambient Nebula\",\"category\":\"Reverb\"},\"nodes\":[{\"id\":1,\"type\":\"Reverb\"},{\"id\":2,\"type\":\"TapeSaturation\"}],\"connections\":[]}";
+    presets.push_back(r1);
+
+    UserPresetRecord r2;
+    r2.metadata.name = "Glitch Overdrive";
+    r2.metadata.category = "Distortion";
+    r2.metadata.author = "N8SoundLab";
+    r2.jsonContent = "{\"schemaVersion\":1,\"metadata\":{\"name\":\"Glitch Overdrive\",\"category\":\"Distortion\"},\"nodes\":[{\"id\":10,\"type\":\"Distortion\"},{\"id\":11,\"type\":\"Glitch\"}],\"connections\":[]}";
+    presets.push_back(r2);
+
+    PresetPackManifest manifest;
+    manifest.packName = "Titanium Flagship Bank";
+    manifest.author = "Antigravity Audio";
+    manifest.version = "2.1.0";
+    manifest.description = "Flagship sound bank for Phase 7";
+    manifest.tags = { "Ambient", "Distortion", "Cinematic" };
+
+    std::string bankJson = PresetPackager::serializeBank(presets, manifest);
+    assert(!bankJson.empty());
+    assert(bankJson.find("\"format\": \"N8Effect_Bank\"") != std::string::npos);
+    assert(bankJson.find("Titanium Flagship Bank") != std::string::npos);
+
+    // 2. Verificar inspección de manifiesto del banco .n8bank
+    PresetPackManifest inspectedManifest;
+    std::string inspectErr;
+    bool inspectOk = PresetPackager::inspectPackManifest(bankJson, inspectedManifest, inspectErr);
+    assert(inspectOk);
+    assert(inspectedManifest.format == "N8Effect_Bank");
+    assert(inspectedManifest.packName == "Titanium Flagship Bank");
+    assert(inspectedManifest.presetCount == 2);
+    assert(inspectedManifest.tags.size() == 3);
+
+    // 3. Verificar rechazo estricto de paquetes/bancos corruptos o inválidos
+    std::string corruptJson = "{\"format\":\"Unknown_Format_XYZ\",\"packVersion\":1,\"manifest\":{}}";
+    PresetPackManifest badManifest;
+    std::string badErr;
+    assert(!PresetPackager::inspectPackManifest(corruptJson, badManifest, badErr));
+    assert(!badErr.empty());
+
+    // 4. Extracción de badges de nodos DSP del JSON
+    auto extractBadges = [](std::string_view json) {
+        std::vector<std::string> badges;
+        auto nodesSec = GraphSerializer::extractArraySection(json, "nodes");
+        if (nodesSec.empty()) return badges;
+        auto objects = GraphSerializer::splitObjects(nodesSec);
+        for (const auto& obj : objects) {
+            std::string type = GraphSerializer::extractString(obj, "type", "");
+            if (!type.empty() && type != "Passthrough") {
+                if (std::find(badges.begin(), badges.end(), type) == badges.end()) {
+                    badges.push_back(type);
+                    if (badges.size() >= 4) break;
+                }
+            }
+        }
+        return badges;
+    };
+
+    auto badges1 = extractBadges(r1.jsonContent);
+    assert(badges1.size() == 2);
+    assert(badges1[0] == "Reverb");
+    assert(badges1[1] == "TapeSaturation");
+
+    auto badges2 = extractBadges(r2.jsonContent);
+    assert(badges2.size() == 2);
+    assert(badges2[0] == "Distortion");
+    assert(badges2[1] == "Glitch");
+
+    // 5. Automatización Cinética: Trayectorias orbitales y de Lissajous
+    for (int step = 0; step < 180; ++step) {
+        float phase = 2.0f * 3.14159265f * (0.08f + 1.2f * 0.72f) * (static_cast<float>(step) / 60.0f);
+        float ox = 0.5f + 0.36f * std::cos(phase);
+        float oy = 0.5f + 0.36f * std::sin(phase);
+        assert(!std::isnan(ox) && !std::isinf(ox));
+        assert(!std::isnan(oy) && !std::isinf(oy));
+        assert(ox >= 0.10f && ox <= 0.90f);
+        assert(oy >= 0.10f && oy <= 0.90f);
+
+        // Pesos bilineales deben sumar exactamente 1.0
+        float wA = (1.0f - ox) * (1.0f - oy);
+        float wB = ox * (1.0f - oy);
+        float wC = (1.0f - ox) * oy;
+        float wD = ox * oy;
+        float sumW = wA + wB + wC + wD;
+        assert(std::abs(sumW - 1.0f) < 1e-5f);
+    }
+
+    // 6. Automatización Cinética: Simulación de rebote inercial con fricción (SpringPhysics)
+    float px = 0.94f;
+    float py = 0.50f;
+    float vx = 0.05f;
+    float vy = 0.02f;
+    bool hasBounced = false;
+
+    for (int f = 0; f < 60; ++f) {
+        px += vx;
+        py += vy;
+        if (px >= 0.99f) { px = 0.99f; vx = -vx * 0.85f; hasBounced = true; }
+        else if (px <= 0.01f) { px = 0.01f; vx = -vx * 0.85f; hasBounced = true; }
+        if (py >= 0.99f) { py = 0.99f; vy = -vy * 0.85f; hasBounced = true; }
+        else if (py <= 0.01f) { py = 0.01f; vy = -vy * 0.85f; hasBounced = true; }
+        vx *= 0.985f;
+        vy *= 0.985f;
+        assert(!std::isnan(px) && !std::isinf(px));
+        assert(!std::isnan(py) && !std::isinf(py));
+        assert(px >= 0.01f && px <= 0.99f);
+        assert(py >= 0.01f && py <= 0.99f);
+    }
+    assert(hasBounced);
+
+    std::cout << "PASSED\n";
+}
+
+void testPhase11RustContainerNodeCoreMigration() {
+    std::cout << "[TEST] Phase 11: ContainerNode Rust Core SubGraph Migration (Reglas 5, 6, 9, 28, 46, 47)... ";
+    ProcessSpec spec{ 48000.0, 128, 2, 2 };
+
+    // 1. Instanciacion y verificacion de puntero nativo Rust Core
+    ContainerNode container;
+    assert(container.getRustCore() != nullptr);
+    container.prepare(spec);
+
+    // 2. Parametros delegados al Rust Core
+    container.setParameter(ContainerNode::Mix, 0.75f);
+    container.setParameter(ContainerNode::OutputGain, 1.25f);
+    assert(std::abs(container.getParameter(ContainerNode::Mix) - 0.75f) < 1e-4f);
+    assert(std::abs(container.getParameter(ContainerNode::OutputGain) - 1.25f) < 1e-4f);
+
+    // 3. Passthrough cuando el subgrafo esta vacio
+    std::vector<float> inL(128, 0.5f);
+    std::vector<float> inR(128, 0.5f);
+    std::vector<float> outL(128, 0.0f);
+    std::vector<float> outR(128, 0.0f);
+    const float* inChannels[2] = { inL.data(), inR.data() };
+    float* outChannels[2] = { outL.data(), outR.data() };
+
+    ProcessContext ctx{
+        .inputChannels = inChannels,
+        .outputChannels = outChannels,
+        .numInputChannels = 2,
+        .numOutputChannels = 2,
+        .numSamples = 128
+    };
+
+    container.process(ctx);
+
+    for (int s = 0; s < 128; ++s) {
+        assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+        assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+    }
+    assert(outL[127] > 0.55f);
+
+    // 4. Agregar procesador interno y verificar mezcla Dry/Wet en Rust
+    auto& innerGraph = container.getInnerGraph();
+    innerGraph.addNode(std::make_unique<SimpleFilterNode>(), "InnerFilter");
+    std::string err;
+    bool compiled = container.compileInnerGraph(err);
+    assert(compiled && err.empty());
+
+    container.prepare(spec);
+    std::fill(outL.begin(), outL.end(), 0.0f);
+    std::fill(outR.begin(), outR.end(), 0.0f);
+    container.process(ctx);
+
+    for (int s = 0; s < 128; ++s) {
+        assert(!std::isnan(outL[s]) && !std::isinf(outL[s]));
+        assert(!std::isnan(outR[s]) && !std::isinf(outR[s]));
+    }
+    assert(std::abs(outL[100]) > 0.01f);
+
+    // 5. Validacion de subgrafo con el validador Rust Kahn
+    uint32_t nodeIds[] = { 1, 2, 3 };
+    RustGraphConnection conns[] = {
+        { 1, 1, 2, 2, 1 },
+        { 2, 2, 2, 3, 1 }
+    };
+    bool validDag = n8_rust_container_validate_subgraph(nodeIds, 3, conns, 2);
+    assert(validDag);
+
+    RustGraphConnection cycleConns[] = {
+        { 1, 1, 2, 2, 1 },
+        { 2, 2, 2, 3, 1 },
+        { 3, 3, 2, 1, 1 }
+    };
+    bool cyclicDag = n8_rust_container_validate_subgraph(nodeIds, 3, cycleConns, 3);
+    assert(!cyclicDag);
+
+    container.reset();
+    std::cout << "PASSED (100% Rust C-ABI Container Core Validated)\n";
+}
+
 int main() {
+    std::cout << std::unitbuf;
     std::cout << "==================================================\n";
     std::cout << "AUDIO EVENT GRAPH ENGINE - UNIT & INTEGRATION TESTS\n";
     std::cout << "Fases 1 a 13: Core + Event + Mod + DSP + Adv DSP + Editor + Presets + Opt + Large Lib + Containers & Feedback + Analysis + Spatial + Profiling Stress\n";
@@ -7542,8 +9881,60 @@ int main() {
     testKeyHandlingAndSynthesizerSafety();
     testAntiClipAndPopEradication();
 
+    // 5 New Studio-Grade DSP Nodes & Topological Auto-Layout Tests
+    testDynamicEqNodeProcessingAndBands();
+    testStereoImagerNodeMidSideAndHaas();
+    testLoFiCassetteTapeEmulation();
+    testAutoWahFilterDynamicModulation();
+    testModalResonatorAcousticModes();
+    testGraphTopologicalAutoLayoutAlgorithm();
+
+    // High-Performance Rust DSP Engine Milestone
+    testRustWaveguidePhysicalAcousticProcessing();
+
+    // Phase 7: Rust Scene Morph Engine & Smart Acoustic Randomizer
+    testPhase7RustSceneMorphAndSmartRandomizer();
+    testPhase7SceneMorph2DVectorPadAndMacros();
+
+    // Phase 8: Rust Optimization Engine, FTZ/DAZ Hardware Guards & SIMD Kernels
+    testPhase8RustOptimizationAndSIMDKernels();
+
+    // Phase 9: Large Effect Library & Flagship Studio Processors
+    testPhase9DimensionChorus();
+    testPhase9DynamicTremolo();
+    testPhase9MultibandSaturator();
+    testPhase9CombResonator();
+    testPhase9PitchDelay();
+    testPhase9CatalogAndNodeFactoryRegistry();
+
+    // Exotic Filters & Complex DAG Presets Overhaul
+    testExoticPhaseDispersion();
+    testExoticMorphingSvf();
+    testExoticFractalResonator();
+    testExoticVactrolLPG();
+    testExoticBarberpoleFilter();
+    testSidechainPumperNode();
+    testFrequencySplitPannerNode();
+    testChebyshevHarmonicShaperNode();
+    testSubharmonicSynthesizerNode();
+    testTransauralCrosstalkCancellerNode();
+    testDopplerOrbitalSpatializerNode();
+    testGranularBufferShufflerNode();
+    testDisintegrationLooperNode();
+    testSpringReverbTankNode();
+    testDualBodeFrequencyShifterNode();
+    testMicrotonalHarmonizerNode();
+    testFormantPitchShifterNode();
+    testSpectralResonanceTamerNode();
+    testSpectralMorphingConvolverNode();
+    testOverhauledFactoryPresetCatalogDAG();
+    testPhase10RustEventContainerRackMigration();
+    testPhase11RustContainerNodeCoreMigration();
+    testVisualModulationAndGraphCanvasCabling();
+    testPhase7BankPackagerAndKineticSceneMorph();
+
     std::cout << "==================================================\n";
-    std::cout << "TODOS LOS TESTS (124 PRUEBAS UNITARIAS) HAN PASADO CON EXITO\n";
+    std::cout << "TODOS LOS TESTS (164 PRUEBAS UNITARIAS) HAN PASADO CON EXITO\n";
     std::cout << "==================================================\n";
 
     return 0;

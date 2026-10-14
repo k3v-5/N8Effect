@@ -31,7 +31,25 @@ struct BrowserPresetItem {
     bool favorite{ false };
     std::array<float, 8> macros{ 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
     std::string jsonContent;
+    std::vector<std::string> compositionBadges;
 };
+
+inline std::vector<std::string> extractNodeBadgesFromJson(std::string_view json) {
+    std::vector<std::string> badges;
+    auto nodesSec = GraphSerializer::extractArraySection(json, "nodes");
+    if (nodesSec.empty()) return badges;
+    auto objects = GraphSerializer::splitObjects(nodesSec);
+    for (const auto& obj : objects) {
+        std::string type = GraphSerializer::extractString(obj, "type", "");
+        if (!type.empty() && type != "Passthrough") {
+            if (std::find(badges.begin(), badges.end(), type) == badges.end()) {
+                badges.push_back(type);
+                if (badges.size() >= 4) break;
+            }
+        }
+    }
+    return badges;
+}
 
 /**
  * @brief Suite de Navegación de Presets Profesional de 3 Columnas inspirada en Arturia y FL Studio FLEX (Reglas 21, 23, 27).
@@ -225,6 +243,18 @@ public:
         importPackBtn_.onClick = [this]() { promptImportPack(); };
         addAndMakeVisible(importPackBtn_);
 
+        exportBankBtn_.setButtonText("EXPORT .n8bank");
+        exportBankBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff121824));
+        exportBankBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff00d4ff));
+        exportBankBtn_.onClick = [this]() { promptExportBank(); };
+        addAndMakeVisible(exportBankBtn_);
+
+        importBankBtn_.setButtonText("IMPORT .n8bank");
+        importBankBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff121824));
+        importBankBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff00ffcc));
+        importBankBtn_.onClick = [this]() { promptImportBank(); };
+        addAndMakeVisible(importBankBtn_);
+
         // Inicializar ruta de presets de usuario en AppData
         auto appDataDir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
                               .getChildFile("N8Audio")
@@ -257,6 +287,7 @@ public:
             item.description = GraphSerializer::extractString(factoryList[i].jsonContent, "description", factoryList[i].category);
             item.favorite = (sessionFactoryFavorites_.count(item.name) > 0);
             item.jsonContent = factoryList[i].jsonContent;
+            item.compositionBadges = extractNodeBadgesFromJson(item.jsonContent);
 
             // Extraer macros
             const auto macSec = GraphSerializer::extractArraySection(item.jsonContent, "macros");
@@ -295,6 +326,7 @@ public:
             if (item.tags.empty()) item.tags.push_back("User");
             item.favorite = userList[i].metadata.favorite;
             item.jsonContent = userList[i].jsonContent;
+            item.compositionBadges = extractNodeBadgesFromJson(item.jsonContent);
 
             const auto macSec = GraphSerializer::extractArraySection(item.jsonContent, "macros");
             if (!macSec.empty()) {
@@ -398,7 +430,7 @@ public:
         area.removeFromLeft(10.0f);
 
         // 5. Tags de Estilo (#Ambient #3D)
-        auto tagsArea = area.removeFromLeft(150.0f);
+        auto tagsArea = area.removeFromLeft(140.0f);
         juce::String tagStr;
         for (size_t t = 0; t < std::min(item.tags.size(), size_t{ 3 }); ++t) {
             tagStr += "#" + juce::String(item.tags[t]) + " ";
@@ -406,6 +438,23 @@ public:
         g.setFont(juce::FontOptions(9.5f, juce::Font::plain));
         g.setColour(juce::Colour(0xff718096));
         g.drawText(tagStr, tagsArea, juce::Justification::centredLeft, true);
+
+        // 5b. Micro-badges de Composición DSP en la Fila
+        if (!item.compositionBadges.empty()) {
+            auto compArea = area.removeFromLeft(130.0f);
+            for (size_t b = 0; b < std::min(item.compositionBadges.size(), size_t{ 2 }); ++b) {
+                float bw = juce::GlyphArrangement::getStringWidth(juce::Font(juce::FontOptions(8.0f, juce::Font::plain)), item.compositionBadges[b]) + 8.0f;
+                auto bRect = compArea.removeFromLeft(bw).reduced(1.0f, 6.0f);
+                compArea.removeFromLeft(3.0f);
+                g.setColour(juce::Colour(0xff121824));
+                g.fillRoundedRectangle(bRect, 2.0f);
+                g.setColour(juce::Colour(0xff2d3748));
+                g.drawRoundedRectangle(bRect, 2.0f, 0.6f);
+                g.setFont(juce::FontOptions(8.0f, juce::Font::plain));
+                g.setColour(juce::Colour(0xff94a3b8));
+                g.drawText(item.compositionBadges[b], bRect, juce::Justification::centred, false);
+            }
+        }
 
         // 6. Autor e Insignia de Banco
         g.setFont(juce::FontOptions(10.0f, juce::Font::plain));
@@ -571,9 +620,14 @@ public:
         closeBtn_.setBounds(col3.getX() + col3.getWidth() - 22, col3.getY(), 22, 22);
 
         // Botones inferiores de Columna 3
+        auto utilBar3 = col3.removeFromBottom(22);
+        exportPackBtn_.setBounds(utilBar3.removeFromLeft((utilBar3.getWidth() - 4) / 2));
+        importPackBtn_.setBounds(utilBar3);
+
+        col3.removeFromBottom(4);
         auto utilBar2 = col3.removeFromBottom(22);
-        exportPackBtn_.setBounds(utilBar2.removeFromLeft((utilBar2.getWidth() - 4) / 2));
-        importPackBtn_.setBounds(utilBar2);
+        exportBankBtn_.setBounds(utilBar2.removeFromLeft((utilBar2.getWidth() - 4) / 2));
+        importBankBtn_.setBounds(utilBar2);
 
         col3.removeFromBottom(4);
         auto utilBar1 = col3.removeFromBottom(22);
@@ -735,6 +789,28 @@ private:
             drawMacroGauge(g, leftCol, macroNames[i * 2], item.macros[static_cast<size_t>(i * 2)], catColor);
             drawMacroGauge(g, rightCol, macroNames[i * 2 + 1], item.macros[static_cast<size_t>(i * 2 + 1)], catColor);
             cardArea.removeFromTop(2.0f);
+        }
+
+        // 7. Badges de Composición del Grafo DSP
+        if (!item.compositionBadges.empty()) {
+            cardArea.removeFromTop(4.0f);
+            g.setFont(juce::FontOptions(8.5f, juce::Font::bold));
+            g.setColour(juce::Colour(0xff64748b));
+            g.drawText("GRAPH COMPOSITION (DSP NODES)", cardArea.removeFromTop(14.0f), juce::Justification::centredLeft);
+
+            auto badgeRow = cardArea.removeFromTop(18.0f);
+            for (const auto& nodeType : item.compositionBadges) {
+                float badgeW = juce::GlyphArrangement::getStringWidth(juce::Font(juce::FontOptions(8.0f, juce::Font::bold)), nodeType) + 12.0f;
+                auto badgeRect = badgeRow.removeFromLeft(badgeW).reduced(1.0f, 1.0f);
+                badgeRow.removeFromLeft(4.0f);
+                g.setColour(juce::Colour(0xff101522));
+                g.fillRoundedRectangle(badgeRect, 3.0f);
+                g.setColour(catColor.withAlpha(0.6f));
+                g.drawRoundedRectangle(badgeRect, 3.0f, 0.8f);
+                g.setFont(juce::FontOptions(8.0f, juce::Font::plain));
+                g.setColour(juce::Colour(0xffcbd5e1));
+                g.drawText(nodeType, badgeRect, juce::Justification::centred, false);
+            }
         }
     }
 
@@ -1177,6 +1253,57 @@ private:
         });
     }
 
+    void promptExportBank() {
+        fileChooser_ = std::make_unique<juce::FileChooser>(
+            "Export N8 Preset Bank (.n8bank)",
+            juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+            "*.n8bank");
+
+        const auto browserFlags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles;
+        fileChooser_->launchAsync(browserFlags, [this](const juce::FileChooser& fc) {
+            const auto file = fc.getResult();
+            if (file != juce::File{}) {
+                auto& userBank = processor_.getPresetManager().getUserBank();
+                PresetPackManifest manifest;
+                manifest.packName = file.getFileNameWithoutExtension().toStdString();
+                manifest.author = "User";
+                manifest.description = "N8Effect Studio Sound Bank";
+                manifest.tags = { "Bank", "Studio", "Presets" };
+
+                std::string err;
+                if (!PresetPackager::exportBank(userBank.getPresets(), manifest, file.getFullPathName().toStdString(), err)) {
+                    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Export Bank Error", err);
+                } else {
+                    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon, "Export Success", "Preset bank (.n8bank) exported successfully!");
+                }
+            }
+        });
+    }
+
+    void promptImportBank() {
+        fileChooser_ = std::make_unique<juce::FileChooser>(
+            "Import N8 Preset Bank (.n8bank)",
+            juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+            "*.n8bank");
+
+        const auto browserFlags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+        fileChooser_->launchAsync(browserFlags, [this](const juce::FileChooser& fc) {
+            const auto file = fc.getResult();
+            if (file.existsAsFile()) {
+                auto& userBank = processor_.getPresetManager().getUserBank();
+                PackImportReport report;
+                if (PresetPackager::importBank(file.getFullPathName().toStdString(), userBank.getDirectory(), DuplicatePolicy::RenameWithSuffix, report)) {
+                    reloadPresets();
+                    juce::String msg = "Successfully imported " + juce::String(report.imported) + " presets from bank!";
+                    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon, "Import Success", msg);
+                } else {
+                    std::string err = report.errors.empty() ? "Failed to parse bank" : report.errors[0];
+                    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Import Error", err);
+                }
+            }
+        });
+    }
+
     void revealUserPresetDirectory() {
         const auto path = processor_.getPresetManager().getUserBank().getDirectory();
         juce::File(path).revealToUser();
@@ -1220,6 +1347,8 @@ private:
     juce::TextButton revealBtn_;
     juce::TextButton exportPackBtn_;
     juce::TextButton importPackBtn_;
+    juce::TextButton exportBankBtn_;
+    juce::TextButton importBankBtn_;
 
     std::unique_ptr<juce::FileChooser> fileChooser_;
     std::function<void()> onPresetLoaded_;

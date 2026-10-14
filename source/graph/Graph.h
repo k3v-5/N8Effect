@@ -12,6 +12,7 @@
 #include <cstdint>
 #include "AudioProcessorNode.h"
 #include "../modulation/NodeAutomationSequencer.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -373,47 +374,38 @@ public:
         sortedNodeIds.clear();
         outErrorMessage.clear();
 
-        // Calcular grado de entrada (in-degree)
-        std::unordered_map<NodeId, int> inDegree;
-        std::unordered_map<NodeId, std::vector<NodeId>> adjList;
+        if (nodes_.empty()) return true;
 
+        std::vector<uint32_t> nodeIds;
+        nodeIds.reserve(nodes_.size());
         for (const auto& [id, _] : nodes_) {
-            inDegree[id] = 0;
-            adjList[id] = {};
+            nodeIds.push_back(id);
         }
 
-        for (const auto& conn : connections_) {
-            if (!nodes_.contains(conn.sourceNodeId) || !nodes_.contains(conn.destNodeId)) {
-                outErrorMessage = "Conexión a un nodo inexistente detectada.";
-                return false;
-            }
-            adjList[conn.sourceNodeId].push_back(conn.destNodeId);
-            inDegree[conn.destNodeId]++;
+        std::vector<RustGraphConnection> rustConns;
+        rustConns.reserve(connections_.size());
+        for (const auto& c : connections_) {
+            rustConns.push_back(RustGraphConnection{
+                .id = c.id,
+                .source_node_id = c.sourceNodeId,
+                .source_pin_id = c.sourcePinId,
+                .dest_node_id = c.destNodeId,
+                .dest_pin_id = c.destPinId
+            });
         }
 
-        // Algoritmo de Kahn
-        std::queue<NodeId> zeroInDegreeQueue;
-        for (const auto& [id, degree] : inDegree) {
-            if (degree == 0) {
-                zeroInDegreeQueue.push(id);
-            }
-        }
+        sortedNodeIds.resize(nodeIds.size());
+        const bool valid = n8_rust_graph_validate_and_topological_sort(
+            nodeIds.data(),
+            static_cast<uint32_t>(nodeIds.size()),
+            rustConns.data(),
+            static_cast<uint32_t>(rustConns.size()),
+            sortedNodeIds.data()
+        );
 
-        while (!zeroInDegreeQueue.empty()) {
-            NodeId u = zeroInDegreeQueue.front();
-            zeroInDegreeQueue.pop();
-            sortedNodeIds.push_back(u);
-
-            for (NodeId v : adjList[u]) {
-                inDegree[v]--;
-                if (inDegree[v] == 0) {
-                    zeroInDegreeQueue.push(v);
-                }
-            }
-        }
-
-        if (sortedNodeIds.size() != nodes_.size()) {
-            outErrorMessage = "Ciclo no controlado detectado en el grafo.";
+        if (!valid) {
+            sortedNodeIds.clear();
+            outErrorMessage = "Ciclo no controlado o conexión a nodo inexistente detectada en el grafo.";
             return false;
         }
 
@@ -423,7 +415,7 @@ public:
     /**
      * @brief Valida predictivamente si agregar una conexion dirigida (srcNode -> destNode)
      * crearia un ciclo en el grafo DAG (Reglas 4, 15, 28, 29).
-     * Busqueda en anchura (BFS) rapida desde destNode para comprobar si puede alcanzar srcNode.
+     * Delegado al motor Rust con búsqueda BFS optimizada y cero allocations dinámicas.
      */
     bool wouldCreateCycle(NodeId srcNode, NodeId destNode) const noexcept {
         if (srcNode == destNode || srcNode == InvalidNodeId || destNode == InvalidNodeId) {
@@ -433,32 +425,32 @@ public:
             return true;
         }
 
-        std::vector<NodeId> queue;
-        queue.reserve(nodes_.size());
-        queue.push_back(destNode);
-
-        std::unordered_set<NodeId> visited;
-        visited.reserve(nodes_.size());
-        visited.insert(destNode);
-
-        size_t head = 0;
-        while (head < queue.size()) {
-            NodeId current = queue[head++];
-            if (current == srcNode) {
-                return true;
-            }
-
-            for (const auto& conn : connections_) {
-                if (conn.sourceNodeId == current) {
-                    if (!visited.contains(conn.destNodeId)) {
-                        visited.insert(conn.destNodeId);
-                        queue.push_back(conn.destNodeId);
-                    }
-                }
-            }
+        std::vector<uint32_t> nodeIds;
+        nodeIds.reserve(nodes_.size());
+        for (const auto& [id, _] : nodes_) {
+            nodeIds.push_back(id);
         }
 
-        return false;
+        std::vector<RustGraphConnection> rustConns;
+        rustConns.reserve(connections_.size());
+        for (const auto& c : connections_) {
+            rustConns.push_back(RustGraphConnection{
+                .id = c.id,
+                .source_node_id = c.sourceNodeId,
+                .source_pin_id = c.sourcePinId,
+                .dest_node_id = c.destNodeId,
+                .dest_pin_id = c.destPinId
+            });
+        }
+
+        return n8_rust_graph_would_create_cycle(
+            srcNode,
+            destNode,
+            nodeIds.data(),
+            static_cast<uint32_t>(nodeIds.size()),
+            rustConns.data(),
+            static_cast<uint32_t>(rustConns.size())
+        );
     }
 
 private:

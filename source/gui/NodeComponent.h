@@ -81,6 +81,18 @@ public:
                 return juce::Colour(0xff818cf8); // Indigo for Oversampling HQ
             case NodeType::SamplePlayer:
                 return juce::Colour(0xffa0e000); // Lime green for Synth & Sampler
+            case NodeType::DynamicEq:
+                return juce::Colour(0xff06b6d4); // Cyan / Aqua for Dynamic EQ
+            case NodeType::StereoImager:
+                return juce::Colour(0xff10b981); // Emerald for Spatial & Stereo
+            case NodeType::LoFiCassette:
+                return juce::Colour(0xffff5500); // Vintage Amber / Orange for Lo-Fi Tape
+            case NodeType::AutoWahFilter:
+                return juce::Colour(0xffa855f7); // Purple / Violet for Auto-Wah
+            case NodeType::ModalResonator:
+                return juce::Colour(0xfff59e0b); // Golden Amber for Modal Resonator
+            case NodeType::RustWaveguide:
+                return juce::Colour(0xffff6b4a); // Rust / Flame Orange
             default:
                 return juce::Colour(0xff94a3b8); // Slate silver
         }
@@ -88,7 +100,13 @@ public:
 
     static juce::String getCategorySubtitle(NodeType type) {
         switch (type) {
+            case NodeType::RustWaveguide: return "RUST // DUAL WAVEGUIDE";
             case NodeType::SamplePlayer: return "SAMPLER // WAV PLAYER";
+            case NodeType::DynamicEq: return "DYNAMIC EQ // 4-BAND";
+            case NodeType::StereoImager: return "STEREO // M/S & HAAS";
+            case NodeType::LoFiCassette: return "LO-FI // CASSETTE & DRIVE";
+            case NodeType::AutoWahFilter: return "AUTO-WAH // ENVELOPE";
+            case NodeType::ModalResonator: return "MODAL // 8-MODE BODY";
             case NodeType::Filter: return "FILTER // BIQUAD";
             case NodeType::ParametricEQ: return "EQUALIZER // 4-BAND";
             case NodeType::FormantFilter: return "FORMANT // VOWEL";
@@ -293,6 +311,70 @@ public:
                 curvePath.quadraticTo(x + w * 0.75f, y + h - 6.0f, x + w - 4.0f, midY);
                 break;
             }
+            case NodeType::DynamicEq: {
+                curvePath.startNewSubPath(x + 3.0f, midY + 2.0f);
+                curvePath.quadraticTo(x + w * 0.2f, midY - 6.0f, x + w * 0.35f, midY);
+                curvePath.quadraticTo(x + w * 0.5f, midY - 10.0f, x + w * 0.65f, midY);
+                curvePath.quadraticTo(x + w * 0.8f, midY + 4.0f, x + w - 3.0f, midY - 8.0f);
+                g.setColour(accentColour.withAlpha(0.9f));
+                g.fillEllipse(x + w * 0.2f - 2.0f, midY - 7.0f, 4.0f, 4.0f);
+                g.fillEllipse(x + w * 0.5f - 2.0f, midY - 11.0f, 4.0f, 4.0f);
+                g.fillEllipse(x + w * 0.8f - 2.0f, midY + 3.0f, 4.0f, 4.0f);
+                break;
+            }
+            case NodeType::StereoImager: {
+                g.setColour(accentColour.withAlpha(0.25f));
+                g.drawEllipse(x + w * 0.5f - w * 0.35f, midY - h * 0.35f, w * 0.7f, h * 0.7f, 1.0f);
+                curvePath.startNewSubPath(x + w * 0.5f - w * 0.28f, midY + h * 0.25f);
+                curvePath.lineTo(x + w * 0.5f + w * 0.28f, midY - h * 0.25f);
+                curvePath.startNewSubPath(x + w * 0.5f - w * 0.28f, midY - h * 0.25f);
+                curvePath.lineTo(x + w * 0.5f + w * 0.28f, midY + h * 0.25f);
+                break;
+            }
+            case NodeType::LoFiCassette: {
+                g.setColour(accentColour.withAlpha(0.5f));
+                g.drawEllipse(x + w * 0.25f - 5.0f, midY - 5.0f, 10.0f, 10.0f, 1.0f);
+                g.drawEllipse(x + w * 0.75f - 5.0f, midY - 5.0f, 10.0f, 10.0f, 1.0f);
+                curvePath.startNewSubPath(x + 4.0f, midY + 7.0f);
+                for (int p = 0; p < 8; ++p) {
+                    float px = x + 4.0f + static_cast<float>(p) * (w - 8.0f) / 7.0f;
+                    float py = midY + 7.0f + (p % 2 == 0 ? -2.5f : 2.5f);
+                    curvePath.lineTo(px, py);
+                }
+                break;
+            }
+            case NodeType::AutoWahFilter: {
+                curvePath.startNewSubPath(x + 3.0f, y + h - 5.0f);
+                curvePath.lineTo(x + w * 0.35f, y + h - 6.0f);
+                curvePath.quadraticTo(x + w * 0.55f, y + 4.0f, x + w * 0.65f, y + h - 6.0f);
+                curvePath.lineTo(x + w - 3.0f, y + h - 5.0f);
+                break;
+            }
+            case NodeType::ModalResonator: {
+                for (int m = 0; m < 8; ++m) {
+                    float mx = x + 6.0f + static_cast<float>(m) * (w - 12.0f) / 7.0f;
+                    float decayVal = std::exp(-static_cast<float>(m) * 0.38f);
+                    float mHeight = (h - 8.0f) * decayVal;
+                    g.setColour(accentColour.withAlpha(0.85f));
+                    g.fillRect(mx - 1.0f, y + h - 4.0f - mHeight, 2.0f, mHeight);
+                }
+                return;
+            }
+            case NodeType::RustWaveguide: {
+                curvePath.startNewSubPath(x + 3.0f, midY - 5.0f);
+                for (int pt = 1; pt <= 8; ++pt) {
+                    float px = x + 3.0f + (w - 6.0f) * (static_cast<float>(pt) / 8.0f);
+                    float py = midY - 5.0f + (pt % 2 == 1 ? -4.0f : 4.0f) * std::exp(-static_cast<float>(pt) * 0.22f);
+                    curvePath.lineTo(px, py);
+                }
+                curvePath.startNewSubPath(x + 3.0f, midY + 5.0f);
+                for (int pt = 1; pt <= 8; ++pt) {
+                    float px = x + 3.0f + (w - 6.0f) * (static_cast<float>(pt) / 8.0f);
+                    float py = midY + 5.0f + (pt % 2 == 1 ? 4.0f : -4.0f) * std::exp(-static_cast<float>(pt) * 0.22f);
+                    curvePath.lineTo(px, py);
+                }
+                break;
+            }
             case NodeType::Compressor:
             case NodeType::Multiband:
             case NodeType::BrickwallLimiter:
@@ -464,6 +546,30 @@ public:
         for (size_t i = 0; i < sliderParamIds_.size(); ++i) {
             if (sliderParamIds_[i] == pid && i < sliders_.size()) {
                 return sliders_[i].get();
+            }
+        }
+        return nullptr;
+    }
+
+    juce::Point<float> getSliderCenterInCanvas(ParameterId pid) const noexcept {
+        if (auto* slider = getSliderForParameter(pid)) {
+            const auto localKnob = slider->getKnobCenterInLocal();
+            const auto sliderPos = slider->getPosition().toFloat();
+            return getPosition().toFloat() + sliderPos + localKnob;
+        }
+        return getBounds().getCentre().toFloat();
+    }
+
+    ModulationSlider* findSliderNearCanvasPos(juce::Point<float> canvasPos, ParameterId& outPid, float tolerance = 20.0f) const noexcept {
+        const auto localPos = canvasPos - getPosition().toFloat();
+        for (size_t i = 0; i < sliders_.size() && i < sliderParamIds_.size(); ++i) {
+            auto* slider = sliders_[i].get();
+            if (slider != nullptr && slider->isVisible()) {
+                const auto sliderBounds = slider->getBounds().toFloat();
+                if (sliderBounds.expanded(tolerance).contains(localPos)) {
+                    outPid = sliderParamIds_[i];
+                    return slider;
+                }
             }
         }
         return nullptr;

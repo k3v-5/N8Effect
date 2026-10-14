@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdint>
 #include "../core/Types.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 #include "TransientDetector.h"
 #include "PitchTracker.h"
 #include "SpectralFeatureExtractor.h"
@@ -32,131 +33,106 @@ struct AnalysisSnapshot {
  * Extrae características acústicas y perceptuales del audio entrante para auto-disparar eventos
  * y modular parámetros universales en tiempo real sin allocations de memoria.
  * Incluye Silence Gating (< -70 dBFS / 0.0003 RMS) para bypass completo de YIN y FFT en reposo.
+ * Toda la coordinación, mezcla mono y algoritmos de análisis se ejecutan en el núcleo Rust.
  */
 class AnalysisEngine {
 public:
-    AnalysisEngine() = default;
+    AnalysisEngine() {
+        rustCore_ = n8_rust_analysis_engine_create(44100.0, 512);
+        rebindSubDetectors();
+    }
 
-    void prepare(const ProcessSpec& spec) {
+    ~AnalysisEngine() {
+        if (rustCore_) {
+            n8_rust_analysis_engine_destroy(rustCore_);
+            rustCore_ = nullptr;
+        }
+    }
+
+    AnalysisEngine(const AnalysisEngine&) = delete;
+    AnalysisEngine& operator=(const AnalysisEngine&) = delete;
+
+    AnalysisEngine(AnalysisEngine&& other) noexcept
+        : spec_(other.spec_)
+        , snapshot_(other.snapshot_)
+        , rustCore_(other.rustCore_)
+    {
+        other.rustCore_ = nullptr;
+        rebindSubDetectors();
+    }
+
+    AnalysisEngine& operator=(AnalysisEngine&& other) noexcept {
+        if (this != &other) {
+            if (rustCore_) {
+                n8_rust_analysis_engine_destroy(rustCore_);
+            }
+            spec_ = other.spec_;
+            snapshot_ = other.snapshot_;
+            rustCore_ = other.rustCore_;
+            other.rustCore_ = nullptr;
+            rebindSubDetectors();
+        }
+        return *this;
+    }
+
+    void prepare(const ProcessSpec& spec) noexcept {
         spec_ = spec;
-        monoBuffer_.assign(spec.maximumBlockSize, 0.0f);
-
-        transientDetector_.prepare(spec.sampleRate);
-        pitchTracker_.prepare(spec.sampleRate);
-        spectralExtractor_.prepare(spec.sampleRate, 1024, 256);
-
+        if (rustCore_) {
+            n8_rust_analysis_engine_prepare(rustCore_, spec.sampleRate, spec.maximumBlockSize);
+        }
         reset();
     }
 
     void reset() noexcept {
-        std::fill(monoBuffer_.begin(), monoBuffer_.end(), 0.0f);
-        transientDetector_.reset();
-        pitchTracker_.reset();
-        spectralExtractor_.reset();
+        if (rustCore_) {
+            n8_rust_analysis_engine_reset(rustCore_);
+        }
         snapshot_ = AnalysisSnapshot{};
-        wasSilent_ = true;
     }
 
-    // Procesa un bloque de audio de entrada multicanal con suma mono y análisis desacoplado (Reglas 1 y 9)
     void process(const float* const* inputChannels, uint32_t numChannels, uint32_t numSamples) noexcept {
-        if (inputChannels == nullptr || numChannels == 0 || numSamples == 0) {
-            snapshot_.isTransient = false;
-            snapshot_.onsetStrength = 0.0f;
-            snapshot_.pitchClarity = 0.0f;
-            snapshot_.clarity = 0.0f;
-            snapshot_.energy = 0.0f;
-            snapshot_.spectralFlux = 0.0f;
-            snapshot_.spectralFlatness = 0.0f;
-            wasSilent_ = true;
-            return;
+        if (rustCore_) {
+            n8_rust_analysis_engine_process(rustCore_, inputChannels, numChannels, numSamples);
+            RustAnalysisSnapshot rustSnap;
+            n8_rust_analysis_engine_get_snapshot(rustCore_, &rustSnap);
+            snapshot_.onsetStrength = rustSnap.onset_strength;
+            snapshot_.isTransient = rustSnap.is_transient;
+            snapshot_.pitchHz = rustSnap.pitch_hz;
+            snapshot_.pitchClarity = rustSnap.pitch_clarity;
+            snapshot_.clarity = rustSnap.clarity;
+            snapshot_.pitchMidi = rustSnap.pitch_midi;
+            snapshot_.pitchNormalized = rustSnap.pitch_normalized;
+            snapshot_.spectralCentroid = rustSnap.spectral_centroid;
+            snapshot_.spectralFlux = rustSnap.spectral_flux;
+            snapshot_.spectralFlatness = rustSnap.spectral_flatness;
+            snapshot_.energy = rustSnap.energy;
         }
-
-        const uint32_t samplesToProcess = std::min(numSamples, static_cast<uint32_t>(monoBuffer_.size()));
-
-        // 1. Suma mono para análisis acústico neutral y cálculo de energía RMS del bloque
-        float sumSq = 0.0f;
-        if (numChannels == 1 || inputChannels[1] == nullptr) {
-            const float* in0 = inputChannels[0];
-            for (uint32_t s = 0; s < samplesToProcess; ++s) {
-                const float val = in0[s];
-                monoBuffer_[s] = val;
-                sumSq += val * val;
-            }
-        } else {
-            const float* in0 = inputChannels[0];
-            const float* in1 = inputChannels[1];
-            for (uint32_t s = 0; s < samplesToProcess; ++s) {
-                const float val = 0.5f * (in0[s] + in1[s]);
-                monoBuffer_[s] = val;
-                sumSq += val * val;
-            }
-        }
-
-        const float rms = (samplesToProcess > 0)
-            ? std::sqrt(sumSq / static_cast<float>(samplesToProcess))
-            : 0.0f;
-        const bool isSilent = (rms < 0.0003f); // Umbral de silencio < -70.45 dBFS (Regla 47)
-
-        if (isSilent) {
-            // Silence Gating: decaimiento suave en transientes y bypass completo de YIN y FFT
-            transientDetector_.process(nullptr, 0);
-
-            snapshot_.isTransient = false;
-            snapshot_.onsetStrength = 0.0f;
-            snapshot_.pitchClarity = 0.0f;
-            snapshot_.clarity = 0.0f;
-            snapshot_.energy = 0.0f;
-            snapshot_.spectralFlux = 0.0f;
-            snapshot_.spectralFlatness = 0.0f;
-            // Preservar snapshot_.pitchHz, snapshot_.pitchMidi, snapshot_.pitchNormalized y snapshot_.spectralCentroid
-            // para evitar saltos o discontinuidades audibles en parámetros modulados (Regla 35)
-            wasSilent_ = true;
-            return;
-        }
-
-        // Si el audio pasa de silencio a activo, reiniciar suavemente el detector para evitar falsos transitorios de borde
-        if (wasSilent_) {
-            transientDetector_.reset();
-            wasSilent_ = false;
-        }
-
-        // 2. Ejecutar analizadores en audio activo
-        transientDetector_.process(monoBuffer_.data(), samplesToProcess);
-        pitchTracker_.process(monoBuffer_.data(), samplesToProcess);
-        spectralExtractor_.process(monoBuffer_.data(), samplesToProcess);
-
-        // 3. Actualizar snapshot atómico/thread-safe para modulación y GUI
-        snapshot_.onsetStrength = transientDetector_.getOnsetStrength();
-        snapshot_.isTransient = transientDetector_.isTransientDetected();
-
-        snapshot_.pitchHz = pitchTracker_.getFundamentalHz();
-        snapshot_.pitchClarity = pitchTracker_.getClarity();
-        snapshot_.clarity = pitchTracker_.getClarity();
-        snapshot_.pitchMidi = pitchTracker_.getMidiNote();
-        snapshot_.pitchNormalized = pitchTracker_.getPitchNormalized();
-
-        snapshot_.spectralCentroid = spectralExtractor_.getSpectralCentroid();
-        snapshot_.spectralFlux = spectralExtractor_.getSpectralFlux();
-        snapshot_.spectralFlatness = spectralExtractor_.getSpectralFlatness();
-        snapshot_.energy = spectralExtractor_.getEnergy();
     }
 
-    const AnalysisSnapshot& getSnapshot() const noexcept { return snapshot_; }
+    const AnalysisSnapshot& getSnapshot() const noexcept {
+        return snapshot_;
+    }
 
     TransientDetector& getTransientDetector() noexcept { return transientDetector_; }
     PitchTracker& getPitchTracker() noexcept { return pitchTracker_; }
     SpectralFeatureExtractor& getSpectralExtractor() noexcept { return spectralExtractor_; }
 
 private:
+    void rebindSubDetectors() noexcept {
+        if (rustCore_) {
+            transientDetector_ = TransientDetector(n8_rust_analysis_engine_get_transient_detector(rustCore_), false);
+            pitchTracker_ = PitchTracker(n8_rust_analysis_engine_get_pitch_tracker(rustCore_), false);
+            spectralExtractor_ = SpectralFeatureExtractor(n8_rust_analysis_engine_get_spectral_extractor(rustCore_), false);
+        }
+    }
+
     ProcessSpec spec_{ 44100.0, 512, 2, 2 };
-    std::vector<float> monoBuffer_;
-
-    TransientDetector transientDetector_;
-    PitchTracker pitchTracker_;
-    SpectralFeatureExtractor spectralExtractor_;
-
     AnalysisSnapshot snapshot_;
-    bool wasSilent_{ true };
+    RustAnalysisEngine* rustCore_{ nullptr };
+
+    TransientDetector transientDetector_{ nullptr, false };
+    PitchTracker pitchTracker_{ nullptr, false };
+    SpectralFeatureExtractor spectralExtractor_{ nullptr, false };
 };
 
 } // namespace audio_graph

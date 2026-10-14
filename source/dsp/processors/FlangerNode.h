@@ -2,19 +2,18 @@
 
 #include <cmath>
 #include <array>
-#include <vector>
 #include <span>
 #include <algorithm>
-#include <numbers>
 #include "../../graph/AudioProcessorNode.h"
 #include "../../graph/NodeFactory.h"
 #include "../core/DenormalGuards.h"
-#include "../core/FastMath.h"
+#include "../rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
  * @brief Procesador Flanger con Feedback Bipolar y Peine Profundo (Reglas 5, 8, 14, 34, 46, 47)
+ * Acelerado con núcleo en Rust de alto rendimiento.
  */
 class FlangerNode : public AudioProcessorNode {
 public:
@@ -35,131 +34,99 @@ public:
         params_[2] = { DelayMs, "Delay", 2.0f, 0.2f, 10.0f, true };
         params_[3] = { Feedback, "Feedback", 0.7f, -0.95f, 0.95f, true };
         params_[4] = { Mix, "Mix", 0.5f, 0.0f, 1.0f, true };
+
+        rustInstance_ = n8_rust_flanger_create(44100.0f);
+    }
+
+    ~FlangerNode() override {
+        if (rustInstance_) {
+            n8_rust_flanger_destroy(rustInstance_);
+            rustInstance_ = nullptr;
+        }
+    }
+
+    FlangerNode(const FlangerNode&) = delete;
+    FlangerNode& operator=(const FlangerNode&) = delete;
+
+    FlangerNode(FlangerNode&& other) noexcept
+        : pins_(other.pins_), params_(other.params_), spec_(other.spec_), rustInstance_(other.rustInstance_) {
+        other.rustInstance_ = nullptr;
+    }
+
+    FlangerNode& operator=(FlangerNode&& other) noexcept {
+        if (this != &other) {
+            if (rustInstance_) {
+                n8_rust_flanger_destroy(rustInstance_);
+            }
+            pins_ = other.pins_;
+            params_ = other.params_;
+            spec_ = other.spec_;
+            rustInstance_ = other.rustInstance_;
+            other.rustInstance_ = nullptr;
+        }
+        return *this;
     }
 
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
-        // Bounded delay buffer: máximo 20 ms a 192 kHz = 3840 muestras (Regla 47)
-        maxDelaySamples_ = static_cast<size_t>(spec.sampleRate * 0.02);
-        delayBuffers_[0].assign(maxDelaySamples_, 0.0f);
-        delayBuffers_[1].assign(maxDelaySamples_, 0.0f);
-        writeIndex_ = 0;
-        lfoPhase_ = 0.0f;
-        feedbackSample_.fill(0.0f);
+        const float sr = spec.sampleRate > 0.0 ? static_cast<float>(spec.sampleRate) : 44100.0f;
+        if (rustInstance_) {
+            n8_rust_flanger_prepare(rustInstance_, sr);
+        }
     }
 
     void reset() override {
-        for (auto& buf : delayBuffers_) std::fill(buf.begin(), buf.end(), 0.0f);
-        feedbackSample_.fill(0.0f);
-        writeIndex_ = 0;
-        lfoPhase_ = 0.0f;
-    }
-
-    void process(ProcessContext& context) override {
-        ScopedDenormalGuard guard;
-
-        if (delayBuffers_[0].empty()) return;
-
-        const float rate = targetRate_;
-        const float depth = targetDepth_;
-        const float baseDelayMs = targetDelayMs_;
-        const float feedback = targetFeedback_;
-        const float mix = targetMix_;
-
-        const float lfoInc = (2.0f * std::numbers::pi_v<float> * rate) / static_cast<float>(spec_.sampleRate);
-        const float maxModMs = baseDelayMs * depth * 0.85f;
-
-        const uint32_t channels = std::min(context.numOutputChannels, static_cast<uint32_t>(2));
-
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            // LFO triangular/senoidal suave
-            const float lfoL = 0.5f + 0.5f * std::sin(lfoPhase_);
-            const float lfoR = 0.5f + 0.5f * std::sin(lfoPhase_ + std::numbers::pi_v<float> * 0.5f);
-
-            for (uint32_t ch = 0; ch < channels; ++ch) {
-                const float in = (ch < context.numInputChannels && context.inputChannels[ch] != nullptr)
-                    ? context.inputChannels[ch][s]
-                    : 0.0f;
-
-                const float lfoVal = (ch == 0) ? lfoL : lfoR;
-                const float totalDelayMs = std::max(0.1f, baseDelayMs + maxModMs * (2.0f * lfoVal - 1.0f));
-                const float delaySamples = totalDelayMs * 0.001f * static_cast<float>(spec_.sampleRate);
-
-                // Escribir en buffer de retardo con feedback saturado
-                const float writeVal = in + feedbackSample_[ch] * feedback;
-                delayBuffers_[ch][writeIndex_] = FastMath::fastSoftClip(writeVal);
-
-                // Lectura con interpolación lineal
-                const float wet = readInterpolated(ch, delaySamples);
-                feedbackSample_[ch] = wet;
-
-                // Salida combinada
-                context.outputChannels[ch][s] = (1.0f - mix) * in + mix * wet;
-            }
-
-            writeIndex_ = (writeIndex_ + 1) % maxDelaySamples_;
-            lfoPhase_ += lfoInc;
-            if (lfoPhase_ >= 2.0f * std::numbers::pi_v<float>) {
-                lfoPhase_ -= 2.0f * std::numbers::pi_v<float>;
-            }
-        }
-    }
-
-    void setParameter(ParameterId id, float value) override {
-        switch (id) {
-            case Rate: targetRate_ = std::clamp(value, 0.05f, 5.0f); break;
-            case Depth: targetDepth_ = std::clamp(value, 0.0f, 1.0f); break;
-            case DelayMs: targetDelayMs_ = std::clamp(value, 0.2f, 10.0f); break;
-            case Feedback: targetFeedback_ = std::clamp(value, -0.95f, 0.95f); break;
-            case Mix: targetMix_ = std::clamp(value, 0.0f, 1.0f); break;
-        }
-    }
-
-    float getParameter(ParameterId id) const override {
-        switch (id) {
-            case Rate: return targetRate_;
-            case Depth: return targetDepth_;
-            case DelayMs: return targetDelayMs_;
-            case Feedback: return targetFeedback_;
-            case Mix: return targetMix_;
-            default: return 0.0f;
+        if (rustInstance_) {
+            n8_rust_flanger_reset(rustInstance_);
         }
     }
 
     NodeType getType() const override { return NodeType::Flanger; }
     const char* getName() const override { return "Flanger"; }
 
+    void process(ProcessContext& context) override {
+        ScopedDenormalGuard guard;
+        if (!rustInstance_ || context.numSamples == 0) return;
+
+        const float* inL = (context.numInputChannels > 0 && context.inputChannels != nullptr) ? context.inputChannels[0] : nullptr;
+        const float* inR = (context.numInputChannels > 1 && context.inputChannels != nullptr) ? context.inputChannels[1] : inL;
+
+        float* outL = (context.numOutputChannels > 0 && context.outputChannels != nullptr) ? context.outputChannels[0] : nullptr;
+        float* outR = (context.numOutputChannels > 1 && context.outputChannels != nullptr) ? context.outputChannels[1] : nullptr;
+
+        if (!inL || !outL) return;
+
+        n8_rust_flanger_process(
+            rustInstance_,
+            inL,
+            inR,
+            outL,
+            outR,
+            static_cast<uint32_t>(context.numSamples)
+        );
+    }
+
+    void setParameter(ParameterId id, float value) override {
+        if (rustInstance_) {
+            n8_rust_flanger_set_parameter(rustInstance_, id, value);
+        }
+    }
+
+    float getParameter(ParameterId id) const override {
+        if (rustInstance_) {
+            return n8_rust_flanger_get_parameter(rustInstance_, id);
+        }
+        return 0.0f;
+    }
+
     std::span<const PinDescriptor> getPins() const override { return pins_; }
     std::span<const ParameterInfo> getParameters() const override { return params_; }
 
 private:
-    float readInterpolated(size_t ch, float delaySamples) const noexcept {
-        const float readPos = static_cast<float>(writeIndex_) - delaySamples;
-        float wrappedPos = std::fmod(readPos, static_cast<float>(maxDelaySamples_));
-        if (wrappedPos < 0.0f) wrappedPos += static_cast<float>(maxDelaySamples_);
-
-        const size_t idx0 = static_cast<size_t>(wrappedPos);
-        const size_t idx1 = (idx0 + 1) % maxDelaySamples_;
-        const float frac = wrappedPos - static_cast<float>(idx0);
-
-        return (1.0f - frac) * delayBuffers_[ch][idx0] + frac * delayBuffers_[ch][idx1];
-    }
-
     ProcessSpec spec_;
-    size_t maxDelaySamples_{ 1920 };
-    std::array<std::vector<float>, 2> delayBuffers_;
-    size_t writeIndex_{ 0 };
-    std::array<float, 2> feedbackSample_{ 0.0f, 0.0f };
-    float lfoPhase_{ 0.0f };
-
-    float targetRate_{ 0.25f };
-    float targetDepth_{ 0.8f };
-    float targetDelayMs_{ 2.0f };
-    float targetFeedback_{ 0.7f };
-    float targetMix_{ 0.5f };
-
     std::array<PinDescriptor, 2> pins_;
     std::array<ParameterInfo, 5> params_;
+    RustFlanger* rustInstance_{ nullptr };
 };
 
 inline AutoRegisterNode<FlangerNode> registerFlanger(NodeType::Flanger, "flanger", "Modulation");

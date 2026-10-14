@@ -4,6 +4,7 @@
 #include <string>
 #include <chrono>
 #include "GraphSerializer.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -33,13 +34,46 @@ struct UndoActionCheckpoint {
 
 /**
  * @brief Gestor de Historial Gráfico Undo / Redo con Timeline de Acciones y Time-Travel (Reglas 21, 22, 47).
- * Mantiene una pila acotada de checkpoints cronológicos y permite saltar directamente a cualquier punto
- * del historial sin requerir desacer paso por paso.
+ * Acelerado por n8_rust_core con capacidad acotada, saltos en el tiempo directos y cero fugas de memoria.
  */
 class GraphUndoManager {
 public:
     explicit GraphUndoManager(size_t maxHistorySteps = 32)
-        : maxSteps_(maxHistorySteps) {}
+        : maxSteps_(maxHistorySteps)
+    {
+        rustCore_ = n8_rust_graph_undo_manager_create(maxHistorySteps);
+    }
+
+    ~GraphUndoManager() {
+        if (rustCore_) {
+            n8_rust_graph_undo_manager_destroy(rustCore_);
+            rustCore_ = nullptr;
+        }
+    }
+
+    GraphUndoManager(const GraphUndoManager&) = delete;
+    GraphUndoManager& operator=(const GraphUndoManager&) = delete;
+
+    GraphUndoManager(GraphUndoManager&& other) noexcept
+        : maxSteps_(other.maxSteps_),
+          rustCore_(other.rustCore_),
+          cachedTimeline_(std::move(other.cachedTimeline_))
+    {
+        other.rustCore_ = nullptr;
+    }
+
+    GraphUndoManager& operator=(GraphUndoManager&& other) noexcept {
+        if (this != &other) {
+            if (rustCore_) {
+                n8_rust_graph_undo_manager_destroy(rustCore_);
+            }
+            maxSteps_ = other.maxSteps_;
+            rustCore_ = other.rustCore_;
+            cachedTimeline_ = std::move(other.cachedTimeline_);
+            other.rustCore_ = nullptr;
+        }
+        return *this;
+    }
 
     void pushAction(std::string description,
                     ActionCategory category,
@@ -51,24 +85,15 @@ public:
         const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
 
-        // Si estábamos en el pasado y se realiza una nueva acción, truncar el futuro
-        if (!timeline_.empty() && currentIndex_ + 1 < timeline_.size()) {
-            timeline_.erase(timeline_.begin() + static_cast<ptrdiff_t>(currentIndex_ + 1), timeline_.end());
+        if (rustCore_) {
+            n8_rust_graph_undo_manager_push_action(
+                rustCore_,
+                description.c_str(),
+                static_cast<uint8_t>(category),
+                serialized.c_str(),
+                now
+            );
         }
-
-        timeline_.push_back({
-            .description = std::move(description),
-            .category = category,
-            .timestampMs = now,
-            .serializedState = std::move(serialized)
-        });
-
-        // Control estricto de memoria acotada (Regla 47)
-        if (timeline_.size() > maxSteps_) {
-            timeline_.erase(timeline_.begin());
-        }
-
-        currentIndex_ = timeline_.size() - 1;
     }
 
     void pushState(const Graph& graph,
@@ -79,71 +104,132 @@ public:
     }
 
     [[nodiscard]] bool canUndo() const noexcept {
-        return !timeline_.empty() && currentIndex_ > 0;
+        return rustCore_ && n8_rust_graph_undo_manager_can_undo(rustCore_);
     }
 
     [[nodiscard]] bool canRedo() const noexcept {
-        return !timeline_.empty() && (currentIndex_ + 1 < timeline_.size());
+        return rustCore_ && n8_rust_graph_undo_manager_can_redo(rustCore_);
     }
 
     bool undo(Graph& outGraph, PresetMetadata& outMeta, std::array<float, 8>& outMacros) {
         if (!canUndo()) return false;
 
-        currentIndex_--;
-        const std::string& prevState = timeline_[currentIndex_].serializedState;
+        size_t currentIdx = n8_rust_graph_undo_manager_get_current_index(rustCore_);
+        if (currentIdx == 0) return false;
+        size_t stateLen = n8_rust_graph_undo_manager_get_state_len(rustCore_, currentIdx - 1);
+        std::string stateBuf;
+        stateBuf.resize(stateLen + 1);
+
+        if (!n8_rust_graph_undo_manager_undo(rustCore_, stateBuf.data(), stateBuf.size())) {
+            return false;
+        }
+        stateBuf.resize(stateLen);
+
         std::string err;
-        return GraphSerializer::deserialize(prevState, outGraph, outMeta, outMacros, err);
+        return GraphSerializer::deserialize(stateBuf, outGraph, outMeta, outMacros, err);
     }
 
     bool redo(Graph& outGraph, PresetMetadata& outMeta, std::array<float, 8>& outMacros) {
         if (!canRedo()) return false;
 
-        currentIndex_++;
-        const std::string& nextState = timeline_[currentIndex_].serializedState;
+        size_t currentIdx = n8_rust_graph_undo_manager_get_current_index(rustCore_);
+        size_t stateLen = n8_rust_graph_undo_manager_get_state_len(rustCore_, currentIdx + 1);
+        std::string stateBuf;
+        stateBuf.resize(stateLen + 1);
+
+        if (!n8_rust_graph_undo_manager_redo(rustCore_, stateBuf.data(), stateBuf.size())) {
+            return false;
+        }
+        stateBuf.resize(stateLen);
+
         std::string err;
-        return GraphSerializer::deserialize(nextState, outGraph, outMeta, outMacros, err);
+        return GraphSerializer::deserialize(stateBuf, outGraph, outMeta, outMacros, err);
     }
 
     bool jumpToStep(size_t targetIndex, Graph& outGraph, PresetMetadata& outMeta, std::array<float, 8>& outMacros) {
-        if (targetIndex >= timeline_.size() || targetIndex == currentIndex_) return false;
+        if (!rustCore_) return false;
+        size_t total = n8_rust_graph_undo_manager_get_history_size(rustCore_);
+        size_t cur = n8_rust_graph_undo_manager_get_current_index(rustCore_);
+        if (targetIndex >= total || targetIndex == cur) return false;
 
-        currentIndex_ = targetIndex;
-        const std::string& targetState = timeline_[currentIndex_].serializedState;
+        size_t stateLen = n8_rust_graph_undo_manager_get_state_len(rustCore_, targetIndex);
+        std::string stateBuf;
+        stateBuf.resize(stateLen + 1);
+
+        if (!n8_rust_graph_undo_manager_jump_to_step(rustCore_, targetIndex, stateBuf.data(), stateBuf.size())) {
+            return false;
+        }
+        stateBuf.resize(stateLen);
+
         std::string err;
-        return GraphSerializer::deserialize(targetState, outGraph, outMeta, outMacros, err);
+        return GraphSerializer::deserialize(stateBuf, outGraph, outMeta, outMacros, err);
     }
 
     [[nodiscard]] size_t getCurrentIndex() const noexcept {
-        return currentIndex_;
+        return rustCore_ ? n8_rust_graph_undo_manager_get_current_index(rustCore_) : 0;
     }
 
     [[nodiscard]] size_t getHistorySize() const noexcept {
-        return timeline_.size();
+        return rustCore_ ? n8_rust_graph_undo_manager_get_history_size(rustCore_) : 0;
     }
 
-    [[nodiscard]] const std::vector<UndoActionCheckpoint>& getTimeline() const noexcept {
-        return timeline_;
+    [[nodiscard]] const std::vector<UndoActionCheckpoint>& getTimeline() const {
+        if (!rustCore_) {
+            cachedTimeline_.clear();
+            return cachedTimeline_;
+        }
+        const size_t count = n8_rust_graph_undo_manager_get_history_size(rustCore_);
+        cachedTimeline_.resize(count);
+        char descBuf[256];
+        for (size_t i = 0; i < count; ++i) {
+            uint8_t cat = 0;
+            int64_t ts = 0;
+            size_t stateLen = 0;
+            n8_rust_graph_undo_manager_get_checkpoint_info(
+                rustCore_, i, descBuf, sizeof(descBuf), &cat, &ts, &stateLen
+            );
+            cachedTimeline_[i].description = descBuf;
+            cachedTimeline_[i].category = static_cast<ActionCategory>(cat);
+            cachedTimeline_[i].timestampMs = ts;
+            cachedTimeline_[i].serializedState.resize(stateLen + 1);
+            if (stateLen > 0) {
+                n8_rust_graph_undo_manager_get_checkpoint_state(
+                    rustCore_, i, cachedTimeline_[i].serializedState.data(), stateLen + 1
+                );
+            }
+            cachedTimeline_[i].serializedState.resize(stateLen);
+        }
+        return cachedTimeline_;
     }
 
     [[nodiscard]] std::string getNextUndoDescription() const {
         if (!canUndo()) return "";
-        return timeline_[currentIndex_].description;
+        char buf[256] = { 0 };
+        n8_rust_graph_undo_manager_get_next_undo_description(rustCore_, buf, sizeof(buf));
+        return std::string(buf);
     }
 
     [[nodiscard]] std::string getNextRedoDescription() const {
         if (!canRedo()) return "";
-        return timeline_[currentIndex_ + 1].description;
+        char buf[256] = { 0 };
+        n8_rust_graph_undo_manager_get_next_redo_description(rustCore_, buf, sizeof(buf));
+        return std::string(buf);
     }
 
     void clear() noexcept {
-        timeline_.clear();
-        currentIndex_ = 0;
+        if (rustCore_) {
+            n8_rust_graph_undo_manager_clear(rustCore_);
+        }
+        cachedTimeline_.clear();
     }
+
+    [[nodiscard]] RustGraphUndoManager* getRustCore() noexcept { return rustCore_; }
+    [[nodiscard]] const RustGraphUndoManager* getRustCore() const noexcept { return rustCore_; }
 
 private:
     size_t maxSteps_{ 32 };
-    std::vector<UndoActionCheckpoint> timeline_;
-    size_t currentIndex_{ 0 };
+    RustGraphUndoManager* rustCore_{ nullptr };
+    mutable std::vector<UndoActionCheckpoint> cachedTimeline_;
 };
 
 } // namespace audio_graph

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include "GraphSerializer.h"
 #include "UserPresetBank.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -24,6 +25,7 @@ struct PresetPackManifest {
     std::string version{ "1.0.0" };
     std::string createdAt{ "" };
     std::vector<std::string> tags{};
+    std::string format{ "N8Effect_PresetPack" };
     size_t presetCount{ 0 };
 };
 
@@ -49,49 +51,60 @@ struct PackImportReport {
 };
 
 /**
- * @brief Gestor de Empaquetado, Exportación e Importación de Paquetes de Presets .n8pack (Reglas 21, 27).
- * Empaqueta colecciones completas de presets con metadatos y manifiesto en un único archivo
- * autocontenido de intercambio.
+ * @brief Gestor de Empaquetado, Exportación e Importación de Paquetes y Bancos de Presets .n8pack y .n8bank (Reglas 21, 27).
+ * Acelerado por Rust n8_rust_core para serialización JSON, validación de manifiestos y desempaquetado de presets.
  */
 class PresetPackager {
 public:
     static constexpr uint32_t CurrentPackVersion = 1;
 
     static std::string serializePack(const std::vector<UserPresetRecord>& presets,
+                                     const PresetPackManifest& manifest,
+                                     const std::string& format = "N8Effect_PresetPack")
+    {
+        std::string tagsCsv;
+        for (size_t i = 0; i < manifest.tags.size(); ++i) {
+            tagsCsv += manifest.tags[i];
+            if (i + 1 < manifest.tags.size()) tagsCsv += ",";
+        }
+
+        RustPackBuilder* builder = n8_rust_pack_builder_create(
+            format.c_str(),
+            manifest.packName.c_str(),
+            manifest.author.c_str(),
+            manifest.description.c_str(),
+            manifest.version.c_str(),
+            manifest.createdAt.c_str(),
+            tagsCsv.c_str()
+        );
+
+        if (!builder) return "{}";
+
+        for (const auto& rec : presets) {
+            n8_rust_pack_builder_add_preset(
+                builder,
+                rec.metadata.name.c_str(),
+                rec.metadata.category.c_str(),
+                rec.metadata.author.c_str(),
+                rec.jsonContent.c_str()
+            );
+        }
+
+        std::vector<char> buf(presets.size() * 2048 + 4096, 0);
+        size_t required = n8_rust_pack_builder_serialize(builder, buf.data(), buf.size());
+        if (required >= buf.size()) {
+            buf.resize(required + 1, 0);
+            n8_rust_pack_builder_serialize(builder, buf.data(), buf.size());
+        }
+
+        n8_rust_pack_builder_destroy(builder);
+        return std::string(buf.data());
+    }
+
+    static std::string serializeBank(const std::vector<UserPresetRecord>& presets,
                                      const PresetPackManifest& manifest)
     {
-        std::ostringstream ss;
-        ss << "{\n";
-        ss << "  \"format\": \"N8Effect_PresetPack\",\n";
-        ss << "  \"packVersion\": " << CurrentPackVersion << ",\n";
-        ss << "  \"manifest\": {\n";
-        ss << "    \"packName\": \"" << GraphSerializer::escapeJson(manifest.packName) << "\",\n";
-        ss << "    \"author\": \"" << GraphSerializer::escapeJson(manifest.author) << "\",\n";
-        ss << "    \"description\": \"" << GraphSerializer::escapeJson(manifest.description) << "\",\n";
-        ss << "    \"version\": \"" << GraphSerializer::escapeJson(manifest.version) << "\",\n";
-        ss << "    \"createdAt\": \"" << GraphSerializer::escapeJson(manifest.createdAt) << "\",\n";
-        ss << "    \"presetCount\": " << presets.size() << ",\n";
-        ss << "    \"tags\": [";
-        for (size_t i = 0; i < manifest.tags.size(); ++i) {
-            ss << "\"" << GraphSerializer::escapeJson(manifest.tags[i]) << "\"" << (i + 1 < manifest.tags.size() ? ", " : "");
-        }
-        ss << "]\n";
-        ss << "  },\n";
-
-        ss << "  \"presets\": [\n";
-        for (size_t i = 0; i < presets.size(); ++i) {
-            const auto& rec = presets[i];
-            ss << "    {\n";
-            ss << "      \"name\": \"" << GraphSerializer::escapeJson(rec.metadata.name) << "\",\n";
-            ss << "      \"category\": \"" << GraphSerializer::escapeJson(rec.metadata.category) << "\",\n";
-            ss << "      \"author\": \"" << GraphSerializer::escapeJson(rec.metadata.author) << "\",\n";
-            ss << "      \"content\": \"" << GraphSerializer::escapeJson(rec.jsonContent) << "\"\n";
-            ss << "    }" << (i + 1 < presets.size() ? ",\n" : "\n");
-        }
-        ss << "  ]\n";
-        ss << "}\n";
-
-        return ss.str();
+        return serializePack(presets, manifest, "N8Effect_Bank");
     }
 
     static bool exportPack(const std::vector<UserPresetRecord>& presets,
@@ -109,7 +122,7 @@ public:
             manifest.createdAt = "2026-09-24";
         }
 
-        std::string json = serializePack(presets, manifest);
+        std::string json = serializePack(presets, manifest, "N8Effect_PresetPack");
 
         std::error_code ec;
         auto parentPath = std::filesystem::path(destinationFilePath).parent_path();
@@ -128,29 +141,90 @@ public:
         return true;
     }
 
+    static bool exportBank(const std::vector<UserPresetRecord>& presets,
+                           PresetPackManifest manifest,
+                           const std::string& destinationFilePath,
+                           std::string& outError)
+    {
+        if (presets.empty()) {
+            outError = "Cannot export empty preset bank";
+            return false;
+        }
+
+        manifest.presetCount = presets.size();
+        if (manifest.createdAt.empty()) {
+            manifest.createdAt = "2026-09-24";
+        }
+
+        std::string json = serializeBank(presets, manifest);
+
+        std::error_code ec;
+        auto parentPath = std::filesystem::path(destinationFilePath).parent_path();
+        if (!parentPath.empty() && !std::filesystem::exists(parentPath, ec)) {
+            std::filesystem::create_directories(parentPath, ec);
+        }
+
+        std::ofstream outFile(destinationFilePath, std::ios::out | std::ios::trunc | std::ios::binary);
+        if (!outFile.is_open()) {
+            outError = "Failed to open destination bank file for writing: " + destinationFilePath;
+            return false;
+        }
+
+        outFile.write(json.data(), static_cast<std::streamsize>(json.size()));
+        outFile.close();
+        return true;
+    }
+
     static bool inspectPackManifest(std::string_view packContent,
                                     PresetPackManifest& outManifest,
                                     std::string& outError)
     {
-        std::string format = GraphSerializer::extractString(packContent, "format", "");
-        if (format != "N8Effect_PresetPack") {
-            outError = "Invalid pack format: missing or unrecognized 'format' header";
+        std::string contentStr(packContent);
+        char formatBuf[64] = { 0 };
+        uint32_t packVer = 1;
+        char nameBuf[256] = { 0 };
+        char authorBuf[256] = { 0 };
+        char descBuf[1024] = { 0 };
+        char verBuf[64] = { 0 };
+        char createdBuf[64] = { 0 };
+        size_t count = 0;
+        char tagsBuf[1024] = { 0 };
+        char errBuf[512] = { 0 };
+
+        bool ok = n8_rust_preset_packager_inspect_manifest(
+            contentStr.c_str(),
+            formatBuf, sizeof(formatBuf),
+            &packVer,
+            nameBuf, sizeof(nameBuf),
+            authorBuf, sizeof(authorBuf),
+            descBuf, sizeof(descBuf),
+            verBuf, sizeof(verBuf),
+            createdBuf, sizeof(createdBuf),
+            &count,
+            tagsBuf, sizeof(tagsBuf),
+            errBuf, sizeof(errBuf)
+        );
+
+        if (!ok) {
+            outError = errBuf;
             return false;
         }
 
-        auto manifestObj = GraphSerializer::extractObjectSection(packContent, "manifest");
-        if (manifestObj.empty()) {
-            outError = "Corrupted pack: missing 'manifest' section";
-            return false;
-        }
+        outManifest.format = formatBuf;
+        outManifest.packVersion = packVer;
+        outManifest.packName = nameBuf;
+        outManifest.author = authorBuf;
+        outManifest.description = descBuf;
+        outManifest.version = verBuf;
+        outManifest.createdAt = createdBuf;
+        outManifest.presetCount = count;
 
-        outManifest.packVersion = GraphSerializer::extractUInt(packContent, "packVersion", 1);
-        outManifest.packName = GraphSerializer::extractString(manifestObj, "packName", "Untitled Pack");
-        outManifest.author = GraphSerializer::extractString(manifestObj, "author", "Unknown");
-        outManifest.description = GraphSerializer::extractString(manifestObj, "description", "");
-        outManifest.version = GraphSerializer::extractString(manifestObj, "version", "1.0.0");
-        outManifest.createdAt = GraphSerializer::extractString(manifestObj, "createdAt", "");
-        outManifest.presetCount = GraphSerializer::extractUInt(manifestObj, "presetCount", 0);
+        outManifest.tags.clear();
+        std::stringstream ss(tagsBuf);
+        std::string tag;
+        while (std::getline(ss, tag, ',')) {
+            if (!tag.empty()) outManifest.tags.push_back(tag);
+        }
 
         return true;
     }
@@ -172,21 +246,49 @@ public:
             std::filesystem::create_directories(targetDirectory, ec);
         }
 
-        auto presetsArray = GraphSerializer::extractArraySection(packContent, "presets");
-        if (presetsArray.empty()) {
-            report.errors.push_back("No presets array found in pack");
+        std::string contentStr(packContent);
+        RustPackExtractor* extractor = n8_rust_pack_extractor_create(contentStr.c_str());
+        if (!extractor) {
+            report.errors.push_back("Failed to create Rust pack extractor");
             return false;
         }
 
-        auto presetObjects = GraphSerializer::splitObjects(presetsArray);
-        report.totalFound = presetObjects.size();
+        size_t total = n8_rust_pack_extractor_get_count(extractor);
+        report.totalFound = total;
 
-        for (const auto& obj : presetObjects) {
-            std::string name = GraphSerializer::extractString(obj, "name", "Imported Preset");
-            std::string content = unescapeJson(GraphSerializer::extractString(obj, "content", ""));
+        if (total == 0) {
+            report.errors.push_back("No presets array found in pack");
+            n8_rust_pack_extractor_destroy(extractor);
+            return false;
+        }
+
+        char nameBuf[256];
+        char catBuf[256];
+        char authorBuf[256];
+
+        for (size_t i = 0; i < total; ++i) {
+            size_t contentLen = 0;
+            if (!n8_rust_pack_extractor_get_preset_info(
+                extractor, i,
+                nameBuf, sizeof(nameBuf),
+                catBuf, sizeof(catBuf),
+                authorBuf, sizeof(authorBuf),
+                &contentLen
+            )) {
+                report.errors.push_back("Failed to query preset index: " + std::to_string(i));
+                continue;
+            }
+
+            std::string content;
+            content.resize(contentLen + 1, 0);
+            if (!n8_rust_pack_extractor_get_preset_content(extractor, i, content.data(), content.size())) {
+                report.errors.push_back(std::string("Failed to extract content for: ") + nameBuf);
+                continue;
+            }
+            content.resize(contentLen);
 
             if (content.empty()) {
-                report.errors.push_back("Empty content for preset: " + name);
+                report.errors.push_back(std::string("Empty content for preset: ") + nameBuf);
                 continue;
             }
 
@@ -196,11 +298,11 @@ public:
             std::array<float, 8> dummyMacros{};
             std::string parseErr;
             if (!GraphSerializer::deserialize(content, dummyGraph, dummyMeta, dummyMacros, parseErr)) {
-                report.errors.push_back("Preset parsing failed for '" + name + "': " + parseErr);
+                report.errors.push_back(std::string("Preset parsing failed for '") + nameBuf + "': " + parseErr);
                 continue;
             }
 
-            std::string safeName = sanitizeFilename(name);
+            std::string safeName = sanitizeFilename(nameBuf);
             auto targetPath = std::filesystem::path(targetDirectory) / (safeName + ".n8preset");
 
             if (std::filesystem::exists(targetPath, ec)) {
@@ -225,12 +327,13 @@ public:
             if (outFile.is_open()) {
                 outFile.write(content.data(), static_cast<std::streamsize>(content.size()));
                 outFile.close();
-                report.importedNames.push_back(name);
+                report.importedNames.push_back(nameBuf);
             } else {
                 report.errors.push_back("Failed to write preset to disk: " + targetPath.string());
             }
         }
 
+        n8_rust_pack_extractor_destroy(extractor);
         return report.imported > 0 || report.overwritten > 0;
     }
 
@@ -252,6 +355,14 @@ public:
         return importPackContent(content, targetDirectory, policy, report);
     }
 
+    static bool importBank(const std::string& bankFilePath,
+                           const std::string& targetDirectory,
+                           DuplicatePolicy policy,
+                           PackImportReport& report)
+    {
+        return importPack(bankFilePath, targetDirectory, policy, report);
+    }
+
 private:
     static std::string sanitizeFilename(std::string_view name) {
         std::string res;
@@ -263,25 +374,6 @@ private:
             }
         }
         if (res.empty()) res = "Untitled";
-        return res;
-    }
-
-    static std::string unescapeJson(std::string_view str) {
-        std::string res;
-        res.reserve(str.size());
-        for (size_t i = 0; i < str.size(); ++i) {
-            if (str[i] == '\\' && i + 1 < str.size()) {
-                char next = str[i + 1];
-                if (next == '"') { res += '"'; i++; }
-                else if (next == '\\') { res += '\\'; i++; }
-                else if (next == 'n') { res += '\n'; i++; }
-                else if (next == 'r') { res += '\r'; i++; }
-                else if (next == 't') { res += '\t'; i++; }
-                else { res += str[i]; }
-            } else {
-                res += str[i];
-            }
-        }
         return res;
     }
 };

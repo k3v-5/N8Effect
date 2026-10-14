@@ -8,44 +8,94 @@
 #include "EventCaptureBuffer.h"
 #include "EventPool.h"
 #include "EventTelemetryBuffer.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
  * @brief Administrador y Orquestador de Eventos en tiempo real (Reglas 2, 3, 10, 11, 12, 35, 46)
+ * Acelerado con núcleo en Rust de alto rendimiento.
  */
 class EventManager {
 public:
     static constexpr uint32_t MaxGenerations = 4; // Protección contra multiplicación exponencial (Regla 11 y 35)
 
-    EventManager() = default;
+    explicit EventManager(RustEventManager* existing = nullptr, bool owns = true)
+        : rustInstance_(existing != nullptr ? existing : n8_rust_event_manager_create()),
+          ownsCore_(existing == nullptr || owns),
+          captureBuffer_(nullptr, false),
+          eventPool_(nullptr, false),
+          telemetryBuffer_(nullptr, false)
+    {
+        syncSubWrappers();
+    }
+
+    ~EventManager() {
+        if (ownsCore_ && rustInstance_ != nullptr) {
+            n8_rust_event_manager_destroy(rustInstance_);
+            rustInstance_ = nullptr;
+        }
+    }
+
+    EventManager(const EventManager&) = delete;
+    EventManager& operator=(const EventManager&) = delete;
+
+    EventManager(EventManager&& other) noexcept
+        : rustInstance_(other.rustInstance_),
+          ownsCore_(other.ownsCore_),
+          sampleRate_(other.sampleRate_),
+          maxBlockSize_(other.maxBlockSize_),
+          captureBuffer_(std::move(other.captureBuffer_)),
+          eventPool_(std::move(other.eventPool_)),
+          telemetryBuffer_(std::move(other.telemetryBuffer_))
+    {
+        other.rustInstance_ = nullptr;
+        other.ownsCore_ = false;
+    }
+
+    EventManager& operator=(EventManager&& other) noexcept {
+        if (this != &other) {
+            if (ownsCore_ && rustInstance_ != nullptr) {
+                n8_rust_event_manager_destroy(rustInstance_);
+            }
+            rustInstance_ = other.rustInstance_;
+            ownsCore_ = other.ownsCore_;
+            sampleRate_ = other.sampleRate_;
+            maxBlockSize_ = other.maxBlockSize_;
+            captureBuffer_ = std::move(other.captureBuffer_);
+            eventPool_ = std::move(other.eventPool_);
+            telemetryBuffer_ = std::move(other.telemetryBuffer_);
+            other.rustInstance_ = nullptr;
+            other.ownsCore_ = false;
+        }
+        return *this;
+    }
 
     void prepare(double sampleRate, uint32_t maxBlockSize, size_t poolCapacity = EventPool::DefaultMaxEvents) {
         sampleRate_ = sampleRate;
         maxBlockSize_ = maxBlockSize;
 
-        captureBuffer_.prepare(sampleRate, 5.0, 2);
-        eventPool_.prepare(poolCapacity);
-
-        activeEvents_.clear();
-        activeEvents_.reserve(poolCapacity);
-
-        scratchL_.assign(maxBlockSize, 0.0f);
-        scratchR_.assign(maxBlockSize, 0.0f);
-
-        nextEventId_ = 1;
+        if (rustInstance_ != nullptr) {
+            n8_rust_event_manager_prepare(rustInstance_, sampleRate, maxBlockSize, poolCapacity);
+            syncSubWrappers();
+            eventPool_.prepare(poolCapacity);
+        }
     }
 
     void reset() noexcept {
-        captureBuffer_.reset();
-        eventPool_.reset();
-        activeEvents_.clear();
-        telemetryBuffer_.reset();
+        if (rustInstance_ != nullptr) {
+            n8_rust_event_manager_reset(rustInstance_);
+            eventPool_.reset();
+            telemetryBuffer_.reset();
+        }
     }
 
     // Registra audio entrante en el buffer de captura (Regla 9)
     void captureInputAudio(const float* const* input, uint32_t numChannels, uint32_t numSamples) noexcept {
-        captureBuffer_.write(input, numChannels, numSamples);
+        if (rustInstance_ == nullptr || input == nullptr || numSamples == 0) return;
+        const float* inL = (numChannels > 0) ? input[0] : nullptr;
+        const float* inR = (numChannels > 1) ? input[1] : inL;
+        n8_rust_event_manager_capture_input(rustInstance_, inL, inR, numSamples);
     }
 
     // Genera un nuevo evento primario (generación 0)
@@ -59,30 +109,26 @@ public:
                       SourceDisappearanceMode mode = SourceDisappearanceMode::Fade,
                       bool reverse = false) noexcept
     {
-        Event* event = eventPool_.acquire();
-        if (event == nullptr) {
-            return nullptr; // Límite de pool alcanzado de forma segura (Regla 11)
+        if (rustInstance_ == nullptr) return nullptr;
+
+        RustEvent* rEv = n8_rust_event_manager_spawn_event(
+            rustInstance_,
+            static_cast<uint16_t>(type),
+            captureOffsetSamples,
+            durationSamples,
+            pitchRatio,
+            gain,
+            pan,
+            sourceFollow,
+            static_cast<uint8_t>(mode),
+            reverse
+        );
+
+        if (rEv == nullptr) {
+            return nullptr;
         }
 
-        EventAttributes attrs;
-        attrs.id = nextEventId_++;
-        attrs.type = type;
-        attrs.pitchRatio = pitchRatio;
-        attrs.gain = gain;
-        attrs.pan = pan;
-        attrs.sourceFollow = sourceFollow;
-        attrs.disappearanceMode = mode;
-        attrs.generation = 0;
-        attrs.parentId = InvalidEventId;
-        attrs.energy = 1.0f;
-        attrs.attackSamples = static_cast<uint32_t>(sampleRate_ * 0.005); // 5ms ataque anti-click
-        attrs.releaseSamples = static_cast<uint32_t>(sampleRate_ * 0.020); // 20ms release anti-click
-
-        event->initialize(attrs, captureOffsetSamples, durationSamples, reverse);
-        event->start();
-
-        activeEvents_.push_back(event);
-        return event;
+        return eventPool_.getWrapperForRustEvent(rEv);
     }
 
     // Spawning de un evento hijo desde un evento padre (Reglas 35 y 36)
@@ -91,103 +137,87 @@ public:
                            float pitchMultiplier = 1.0f,
                            float energyDecay = 0.7f) noexcept
     {
-        const auto& parentAttrs = parent.getAttributes();
-        if (parentAttrs.generation >= MaxGenerations) {
-            return nullptr; // Límite de generaciones alcanzado (Regla 11)
-        }
+        if (rustInstance_ == nullptr || parent.getRustInstance() == nullptr) return nullptr;
 
-        Event* child = eventPool_.acquire();
+        RustEvent* child = n8_rust_event_manager_spawn_child_event(
+            rustInstance_,
+            parent.getRustInstance(),
+            offsetShiftSamples,
+            pitchMultiplier,
+            energyDecay
+        );
+
         if (child == nullptr) {
             return nullptr;
         }
 
-        EventAttributes attrs = parentAttrs;
-        attrs.id = nextEventId_++;
-        attrs.generation = parentAttrs.generation + 1;
-        attrs.parentId = parentAttrs.id;
-        attrs.energy = parentAttrs.energy * energyDecay;
-        attrs.pitchRatio = parentAttrs.pitchRatio * pitchMultiplier;
-        attrs.gain = parentAttrs.gain * attrs.energy;
-
-        child->initialize(attrs, offsetShiftSamples, parentAttrs.lifetimeSamples, false);
-        child->start();
-
-        activeEvents_.push_back(child);
-        return child;
+        return eventPool_.getWrapperForRustEvent(child);
     }
 
     // Renderiza todos los eventos activos hacia los buffers estéreo de salida (Regla 9 y 10, Punto 27)
     void render(float* outL, float* outR, uint32_t numSamples, float sourceLevel, int sourceSilenceOverride = -1) noexcept {
-        if (outL == nullptr || outR == nullptr || numSamples == 0) return;
-        if (activeEvents_.empty()) return; // Bypass de reposo: cero eventos activos (Reglas 9, 10, 47)
-
-        // Limpieza de buffers temporales
-        std::fill_n(scratchL_.data(), numSamples, 0.0f);
-        std::fill_n(scratchR_.data(), numSamples, 0.0f);
-
-        size_t i = 0;
-        while (i < activeEvents_.size()) {
-            Event* event = activeEvents_[i];
-
-            if (event != nullptr && event->isActive()) {
-                event->render(captureBuffer_, scratchL_.data(), scratchR_.data(), numSamples, sourceLevel, sourceSilenceOverride);
-
-                // Telemetría lock-free hacia la GUI (Reglas 9, 23, 26)
-                if (editorActive_.load(std::memory_order_relaxed)) {
-                    const auto& attrs = event->getAttributes();
-                    EventTelemetryItem tItem;
-                    tItem.pan = attrs.pan;
-                    tItem.pitchRatio = attrs.pitchRatio;
-                    tItem.energy = attrs.energy * attrs.gain;
-                    tItem.distance = attrs.distance;
-                    tItem.azimuth = attrs.azimuth;
-                    tItem.type = attrs.type;
-                    tItem.generation = static_cast<uint8_t>(attrs.generation);
-                    tItem.isAlive = true;
-                    telemetryBuffer_.push(tItem);
-                }
-
-                ++i;
-            } else {
-                // El evento ha muerto o terminado su ciclo de vida: devolver al pool (Regla 10)
-                eventPool_.release(event);
-
-                // O(1) swap and pop para remoción segura en tiempo real
-                activeEvents_[i] = activeEvents_.back();
-                activeEvents_.pop_back();
-            }
-        }
-
-        // Sumar al buffer final
-        for (uint32_t s = 0; s < numSamples; ++s) {
-            outL[s] += scratchL_[s];
-            outR[s] += scratchR_[s];
+        if (rustInstance_ != nullptr) {
+            n8_rust_event_manager_render(rustInstance_, outL, outR, numSamples, sourceLevel, sourceSilenceOverride);
         }
     }
 
-    void setEditorActive(bool active) noexcept { editorActive_.store(active, std::memory_order_relaxed); }
-    [[nodiscard]] bool isEditorActive() const noexcept { return editorActive_.load(std::memory_order_relaxed); }
+    void setEditorActive(bool active) noexcept {
+        if (rustInstance_ != nullptr) {
+            n8_rust_event_manager_set_editor_active(rustInstance_, active);
+        }
+    }
 
-    size_t getActiveEventCount() const noexcept { return activeEvents_.size(); }
-    size_t getPoolCapacity() const noexcept { return eventPool_.getCapacity(); }
+    [[nodiscard]] bool isEditorActive() const noexcept {
+        if (rustInstance_ != nullptr) {
+            return n8_rust_event_manager_is_editor_active(rustInstance_);
+        }
+        return false;
+    }
+
+    size_t getActiveEventCount() const noexcept {
+        if (rustInstance_ != nullptr) {
+            return n8_rust_event_manager_get_active_count(rustInstance_);
+        }
+        return 0;
+    }
+
+    size_t getPoolCapacity() const noexcept {
+        if (rustInstance_ != nullptr) {
+            return n8_rust_event_manager_get_pool_capacity(rustInstance_);
+        }
+        return 0;
+    }
+
     const EventCaptureBuffer& getCaptureBuffer() const noexcept { return captureBuffer_; }
+    EventCaptureBuffer& getCaptureBuffer() noexcept { return captureBuffer_; }
+
     EventTelemetryBuffer& getTelemetryBuffer() noexcept { return telemetryBuffer_; }
     const EventTelemetryBuffer& getTelemetryBuffer() const noexcept { return telemetryBuffer_; }
 
+    EventPool& getEventPool() noexcept { return eventPool_; }
+    const EventPool& getEventPool() const noexcept { return eventPool_; }
+
+    RustEventManager* getRustInstance() noexcept { return rustInstance_; }
+    const RustEventManager* getRustInstance() const noexcept { return rustInstance_; }
+
 private:
+    void syncSubWrappers() {
+        if (rustInstance_ != nullptr) {
+            captureBuffer_ = EventCaptureBuffer(n8_rust_event_manager_get_capture_buffer(rustInstance_), false);
+            eventPool_ = EventPool(n8_rust_event_manager_get_event_pool(rustInstance_), false);
+            telemetryBuffer_ = EventTelemetryBuffer(n8_rust_event_manager_get_telemetry_buffer(rustInstance_), false);
+        }
+    }
+
+    RustEventManager* rustInstance_{ nullptr };
+    bool ownsCore_{ true };
+
     double sampleRate_{ 44100.0 };
     uint32_t maxBlockSize_{ 512 };
-    uint32_t nextEventId_{ 1 };
-
-    std::atomic<bool> editorActive_{ false };
 
     EventCaptureBuffer captureBuffer_;
     EventPool eventPool_;
-    std::vector<Event*> activeEvents_;
     EventTelemetryBuffer telemetryBuffer_;
-
-    std::vector<float> scratchL_;
-    std::vector<float> scratchR_;
 };
 
 } // namespace audio_graph

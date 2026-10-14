@@ -4,18 +4,17 @@
 #include <array>
 #include <span>
 #include <algorithm>
-#include <numbers>
 #include "../../graph/AudioProcessorNode.h"
 #include "../../graph/NodeFactory.h"
 #include "../core/DenormalGuards.h"
-#include "../core/FastMath.h"
-#include "../core/BiquadFilter.h"
+#include "../rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
  * @brief Vocoder Clásico de 16 Bandas (Channel Vocoder)
  * Banco de filtros modulador/portadora con oscilador armónico interno (Reglas 5, 8, 14, 34, 46, 47)
+ * Acelerado con núcleo en Rust de alto rendimiento.
  */
 class VocoderNode : public AudioProcessorNode {
 public:
@@ -41,75 +40,81 @@ public:
         params_[3] = { BandQ, "Band Q", 6.0f, 1.5f, 15.0f, true };
         params_[4] = { ReleaseTime, "Release", 0.05f, 0.01f, 0.25f, true };
         params_[5] = { Mix, "Mix", 1.0f, 0.0f, 1.0f, true };
+
+        rustInstance_ = n8_rust_vocoder_create(44100.0);
     }
 
-    void prepare(const ProcessSpec& spec) override {
-        spec_ = spec;
-        oscPhase_ = 0.0;
-        rngState_ = 0x55AA1234u;
-        updateFilters();
-        reset();
-    }
-
-    void reset() override {
-        for (size_t b = 0; b < NumBands; ++b) {
-            modFilters_[b].reset();
-            carFilters_[b].reset();
-            envelopes_[b] = 0.0f;
-        }
-        oscPhase_ = 0.0;
-    }
-
-    void setParameter(ParameterId id, float value) override {
-        switch (id) {
-            case CarrierMode:  targetMode_ = static_cast<int>(std::round(value)); break;
-            case CarrierPitch: targetPitch_ = std::clamp(value, 35.0f, 500.0f); break;
-            case FormantShift: targetShift_ = std::clamp(value, 0.5f, 2.0f); updateFilters(); break;
-            case BandQ:        targetQ_ = std::clamp(value, 1.5f, 15.0f); updateFilters(); break;
-            case ReleaseTime:  targetRelease_ = std::clamp(value, 0.01f, 0.25f); updateCoeffs(); break;
-            case Mix:          targetMix_ = std::clamp(value, 0.0f, 1.0f); break;
-            default: break;
+    ~VocoderNode() override {
+        if (rustInstance_) {
+            n8_rust_vocoder_destroy(rustInstance_);
+            rustInstance_ = nullptr;
         }
     }
 
-    float getParameter(ParameterId id) const override {
-        switch (id) {
-            case CarrierMode:  return static_cast<float>(targetMode_);
-            case CarrierPitch: return targetPitch_;
-            case FormantShift: return targetShift_;
-            case BandQ:        return targetQ_;
-            case ReleaseTime:  return targetRelease_;
-            case Mix:          return targetMix_;
-            default:           return 0.0f;
+    VocoderNode(const VocoderNode&) = delete;
+    VocoderNode& operator=(const VocoderNode&) = delete;
+
+    VocoderNode(VocoderNode&& other) noexcept
+        : pins_(other.pins_), params_(other.params_), spec_(other.spec_), rustInstance_(other.rustInstance_) {
+        other.rustInstance_ = nullptr;
+    }
+
+    VocoderNode& operator=(VocoderNode&& other) noexcept {
+        if (this != &other) {
+            if (rustInstance_) {
+                n8_rust_vocoder_destroy(rustInstance_);
+            }
+            pins_ = other.pins_;
+            params_ = other.params_;
+            spec_ = other.spec_;
+            rustInstance_ = other.rustInstance_;
+            other.rustInstance_ = nullptr;
         }
+        return *this;
     }
 
     NodeType getType() const override { return NodeType::Vocoder; }
     const char* getName() const override { return "Channel Vocoder"; }
 
+    void prepare(const ProcessSpec& spec) override {
+        spec_ = spec;
+        if (rustInstance_) {
+            n8_rust_vocoder_prepare(rustInstance_, spec.sampleRate);
+        }
+    }
+
+    void reset() override {
+        if (rustInstance_) {
+            n8_rust_vocoder_reset(rustInstance_);
+        }
+    }
+
+    void setParameter(ParameterId id, float value) override {
+        if (rustInstance_) {
+            n8_rust_vocoder_set_parameter(rustInstance_, id, value);
+        }
+    }
+
+    float getParameter(ParameterId id) const override {
+        if (rustInstance_) {
+            return n8_rust_vocoder_get_parameter(rustInstance_, id);
+        }
+        return 0.0f;
+    }
+
     std::span<const PinDescriptor> getPins() const override { return pins_; }
     std::span<const ParameterInfo> getParameters() const override { return params_; }
 
     void process(ProcessContext& context) override {
-        ScopedDenormalGuard denormalGuard; // Regla 47
+        if (!rustInstance_ || context.numSamples == 0) return;
 
-        if (context.numSamples == 0) return;
-
-        const size_t numSamples = context.numSamples;
         const size_t numChannels = std::min<size_t>(context.numOutputChannels, 2);
-
         const float* inL = (context.numInputChannels > 0) ? context.inputChannels[0] : nullptr;
         const float* inR = (context.numInputChannels > 1) ? context.inputChannels[1] : inL;
         float* outL = (numChannels > 0) ? context.outputChannels[0] : nullptr;
         float* outR = (numChannels > 1) ? context.outputChannels[1] : outL;
 
-        const double sampleRate = spec_.sampleRate > 0.0 ? spec_.sampleRate : 44100.0;
-        const double phaseIncrement = static_cast<double>(targetPitch_) / sampleRate;
-
-        const int mode = targetMode_;
-        const float attCoeff = 0.25f; // Ataque rápido para consonantes claras (~4ms)
-        const float relCoeff = releaseCoeff_;
-        const float mix = targetMix_;
+        if (!outL || !inL) return;
 
         const bool hasSidechain = (context.numSidechainChannels > 0 && context.sidechainChannels != nullptr &&
                                    context.sidechainChannels[0] != nullptr && context.sidechainChannels != context.inputChannels);
@@ -117,128 +122,12 @@ public:
         const float* scRPtr = (hasSidechain && context.numSidechainChannels > 1 && context.sidechainChannels[1])
             ? context.sidechainChannels[1] : scLPtr;
 
-        for (size_t s = 0; s < numSamples; ++s) {
-            const float rawInL = inL ? inL[s] : 0.0f;
-            const float rawInR = inR ? inR[s] : rawInL;
-
-            float modSample = 0.0f;
-            float carSample = 0.0f;
-
-            if (hasSidechain) {
-                // Entrada Sidechain modular: Audio In es la Portadora (Carrier) y Sidechain In es el Modulador (Voz)
-                const float rawScL = scLPtr ? scLPtr[s] : 0.0f;
-                const float rawScR = scRPtr ? scRPtr[s] : rawScL;
-                modSample = 0.5f * (rawScL + rawScR);
-                carSample = 0.5f * (rawInL + rawInR);
-            } else {
-                // 1. Determinar señal moduladora (voz/ritmo de entrada)
-                modSample = (mode == 3) ? rawInL : 0.5f * (rawInL + rawInR);
-
-                // 2. Generar o tomar señal portadora (Carrier)
-                switch (mode) {
-                    case 0: // Sierra interna rica en armónicos pares e impares
-                        carSample = static_cast<float>(2.0 * oscPhase_ - 1.0);
-                        break;
-                    case 1: // Pulso/Cuadrada interna
-                        carSample = (oscPhase_ < 0.5) ? 0.9f : -0.9f;
-                        break;
-                    case 2: // Ruido blanco (Vocoder susurrante)
-                        carSample = nextNoise();
-                        break;
-                    case 3: // Entrada estéreo: L = Modulador, R = Portadora
-                        carSample = rawInR;
-                        break;
-                    default:
-                        carSample = static_cast<float>(2.0 * oscPhase_ - 1.0);
-                        break;
-                }
-            }
-
-            oscPhase_ += phaseIncrement;
-            if (oscPhase_ >= 1.0) oscPhase_ -= 1.0;
-
-            // 3. Procesar las 16 bandas del banco de filtros
-            float vocodedOut = 0.0f;
-
-            for (size_t b = 0; b < NumBands; ++b) {
-                // Filtrar modulador y extraer amplitud
-                const float modBand = modFilters_[b].processSample(modSample);
-                const float modMag = std::abs(modBand);
-
-                // Seguidor de envolvente por banda
-                if (modMag > envelopes_[b]) {
-                    envelopes_[b] += attCoeff * (modMag - envelopes_[b]);
-                } else {
-                    envelopes_[b] += relCoeff * (modMag - envelopes_[b]);
-                }
-
-                // Filtrar portadora en la misma banda (o desplazada en formante)
-                const float carBand = carFilters_[b].processSample(carSample);
-
-                // Modular la portadora por la envolvente del modulador
-                vocodedOut += carBand * envelopes_[b];
-            }
-
-            // Normalización y ganancia de síntesis
-            const float wet = FastMath::fastTanh(vocodedOut * 4.5f) * 1.3f;
-
-            if (outL) outL[s] = (1.0f - mix) * rawInL + mix * wet;
-            if (outR) outR[s] = (1.0f - mix) * rawInR + mix * wet;
-        }
+        n8_rust_vocoder_process(rustInstance_, inL, inR, scLPtr, scRPtr, outL, outR, context.numSamples);
     }
 
 private:
-    float nextNoise() noexcept {
-        rngState_ ^= (rngState_ << 13);
-        rngState_ ^= (rngState_ >> 17);
-        rngState_ ^= (rngState_ << 5);
-        return (static_cast<float>(rngState_ & 0x7FFFFFFF) / 1073741824.0f) - 1.0f;
-    }
-
-    void updateCoeffs() noexcept {
-        const double sr = spec_.sampleRate > 0.0 ? spec_.sampleRate : 44100.0;
-        releaseCoeff_ = static_cast<float>(1.0 - std::exp(-1.0 / (static_cast<double>(targetRelease_) * sr)));
-    }
-
-    void updateFilters() noexcept {
-        const double sr = spec_.sampleRate > 0.0 ? spec_.sampleRate : 44100.0;
-        const double nyquist = sr * 0.48;
-
-        // Distribución logarítmica de las 16 frecuencias centrales entre 140 Hz y 6800 Hz
-        constexpr double minFreq = 140.0;
-        constexpr double maxFreq = 6800.0;
-
-        for (size_t b = 0; b < NumBands; ++b) {
-            const double t = static_cast<double>(b) / static_cast<double>(NumBands - 1);
-            const double fc = minFreq * std::pow(maxFreq / minFreq, t);
-
-            // Modulator bandpass
-            modFilters_[b].setCoefficients(BiquadFilter::Type::Bandpass, sr, static_cast<float>(std::min(fc, nyquist)), targetQ_);
-
-            // Carrier bandpass con desplazamiento de formantes
-            const double carFc = std::min(fc * static_cast<double>(targetShift_), nyquist);
-            carFilters_[b].setCoefficients(BiquadFilter::Type::Bandpass, sr, static_cast<float>(carFc), targetQ_);
-        }
-
-        updateCoeffs();
-    }
-
-    ProcessSpec spec_;
-    std::array<BiquadFilter, NumBands> modFilters_;
-    std::array<BiquadFilter, NumBands> carFilters_;
-    std::array<float, NumBands> envelopes_{ 0.0f };
-
-    double oscPhase_{ 0.0 };
-    uint32_t rngState_{ 0x55AA1234u };
-    float releaseCoeff_{ 0.01f };
-
-    int targetMode_{ 0 };
-    float targetPitch_{ 110.0f };
-    float targetShift_{ 1.0f };
-    float targetQ_{ 6.0f };
-    float targetRelease_{ 0.05f };
-    float targetMix_{ 1.0f };
-
+    RustVocoder* rustInstance_{ nullptr };
+    ProcessSpec spec_{ 44100.0, 256, 2, 2 };
     std::array<PinDescriptor, 3> pins_;
     std::array<ParameterInfo, 6> params_;
 };

@@ -1,0 +1,50 @@
+==================================================
+AUDIO EVENT GRAPH ENGINE - UNIT & INTEGRATION TESTS
+Fases 1 a 13: Core + Event + Mod + DSP + Adv DSP + Editor + Presets + Opt + Large Lib + Containers & Feedback + Analysis + Spatial + Profiling Stress
+==================================================
+[TEST] AudioBufferPool (Reglas 9 y 10)... PASSED
+[TEST] Graph Topological Sort & Cycle Detection (Reglas 4, 28, 29)... PASSED
+[TEST] DSP Nodes Correctness & NaN/Inf Protection (Reglas 14, 34, 38)... PASSED
+[TEST] EventPool 1024 Capacity & Recycled Allocations (Reglas 9, 10, 11)... PASSED
+[TEST] Event Explicit Lifecycle State Machine (Regla 2)... PASSED
+[TEST] Source Following (0.0 to 1.0) and Disappearance Modes (Regla 3)... PASSED
+[TEST] Event Spawning & Maximum Generations Protection (Reglas 11, 35)... PASSED
+[TEST] Dual World Dry Isolation & Zero Corruption (Reglas 1 y 17)... PASSED (Fidelidad Dry verificada, maxDiff = 0.0399606)
+[TEST] LFO Shapes & DAW Host PPQ Synchronization (Reglas 7, 28, 37)... PASSED
+[TEST] ADSR Envelope Generator Phases (Reglas 7, 46)... PASSED
+[TEST] Step Sequencer with Glide and Probability (Reglas 7, 29, 37)... PASSED
+[TEST] Audio Follower Dynamics Tracking (Reglas 7, 46)... PASSED
+[TEST] Modulation Matrix & Engine Dispatch (Reglas 7, 8, 25, 46)... PASSED
+[TEST] CompressorNode VCA Dynamics & Soft-Knee (Reglas 5, 8, 11, 34)... PASSED
+[TEST] ParametricEQNode Cascaded Biquads (Reglas 5, 12, 38)... PASSED
+[TEST] DistortionNode Multi-Model Waveshaping (Reglas 5, 13, 34)... PASSED
+[TEST] AdvancedDelayNode Ping-Pong & Tail Management (Reglas 12, 18)... PASSED
+[TEST] ReverbNode 4-Line FDN & Householder Diffusion (Reglas 5, 18, 34)... PASSED
+[TEST] PitchShifterNode Dual-Head Crossfade (Reglas 5, 14, 34)... PASSED
+[TEST] FFTEngine Cooley-Tukey Roundtrip & SpectralProcessorNode (Reglas 19, 32, 46)... PASSED
+[TEST] GrainPool 128 Capacity & Zero Allocation Recycling (Reglas 9, 10, 11)... PASSED
+[TEST] GranularNode Cloud Synthesis & Windowing (Reglas 5, 8, 10, 35)... PASSED
+[TEST] SpectralFreezeNode Frozen Drone & Smear (Reglas 5, 18, 19, 32)... PASSED
+[TEST] ResonatorBankNode Modal & Harmonic Resonance (Reglas 5, 12, 18, 38)... PASSED
+[TEST] GlitchNode Buffer Slicing & Anti-Click Smoothing (Reglas 5, 35, 37)... PASSED
+[TEST] LinkwitzRileyCrossover3Way LR4 Flat Magnitude Sum (Reglas 32, 33, 46)... PASSED
+[TEST] MultibandDynamicsNode OTT Upward/Downward Dynamics (Reglas 5, 32, 34)... PASSED
+[TEST] Dynamic Graph Editing, Cycle Rejection & Plan Compilation (Reglas 4, 28, 29, 30)... PASSED
+[TEST] Graph Serialization / Deserialization Roundtrip (Reglas 21 y 22)... PASSED
+[TEST] Preset Schema Version Migration (Regla 21)... PASSED
+[TEST] Scene Capture & Anti-Click Morphing (Reglas 7, 21, 35)... PASSED
+[TEST] Graph Undo / Redo Stack & Factory Presets (Reglas 21 y 22)... PASSED
+[TEST] Hardware Anti-Denormal Guards & Tail Safety (Reglas 34 y 47)... PASSED
+[TEST] FastMath Padé Approximations & Numerical Accuracy (Reglas 34 y 47)... PASSED
+[TEST] Execution Plan Buffer Reuse & Bounded Memory Footprint (Reglas 4, 9 y 47)... PASSED
+[TEST] PhaserNode 6-Stage Allpass Sweeping & Feedback (Reglas 5, 8, 14, 34)... PASSED
+[TEST] ChorusNode 4-Voice Multi-Phase Stereo Spread (Reglas 5, 8, 14, 34)... PASSED
+[TEST] FlangerNode Comb Filtering & Bipolar Inversion (Reglas 5, 8, 14, 34)... PASSED
+[TEST] RingModulatorNode 4-Quadrant Carrier Multiplication (Reglas 5, 8, 14, 34)... PASSED
+[TEST] FrequencyShifterNode Hilbert 90-Degree Allpass SSB (Reglas 5, 8, 14, 34)... PASSED
+[TEST] TapeSaturationNode Magnetic Warmth & Wow/Flutter (Reglas 5, 8, 14, 34, 47)... PASSED
+[TEST] ContainerNode Subgraph Nesting & Execution (Reglas 5, 6, 9, 28, 46, 47)... PASSED
+[TEST] FeedbackContainerNode Anti-Runaway Protection (Reglas 6, 11, 12, 34, 46, 47)... PASSED
+[TEST] EventContainerNode Event Rack Lifecycle (Reglas 2, 3, 6, 9, 10, 46, 47)... PASSED
+[TEST] TransientDetector Sensitivity & Refractory Logic (Reglas 1, 7, 9, 34, 46)... PASSED
+[TEST] PitchTracker YIN Sub-Sample Fundamental Detection (Reglas 1, 7, 34, 46, 47)... PASSED (Detected 440.062 Hz, 

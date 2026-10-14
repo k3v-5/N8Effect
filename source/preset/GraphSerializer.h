@@ -11,6 +11,7 @@
 #include "../core/Types.h"
 #include "../graph/Graph.h"
 #include "../graph/NodeFactory.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -343,15 +344,15 @@ public:
     }
 
     static std::string escapeJson(std::string_view str) {
-        std::string res;
-        res.reserve(str.size());
-        for (char c : str) {
-            if (c == '"') res += "\\\"";
-            else if (c == '\\') res += "\\\\";
-            else if (c == '\n') res += "\\n";
-            else res += c;
+        if (str.empty()) return {};
+        std::string s(str);
+        std::vector<char> buf(s.size() * 2 + 16, 0);
+        size_t len = n8_rust_graph_serializer_escape(s.c_str(), buf.data(), buf.size());
+        if (len >= buf.size()) {
+            buf.resize(len + 1, 0);
+            n8_rust_graph_serializer_escape(s.c_str(), buf.data(), buf.size());
         }
-        return res;
+        return std::string(buf.data());
     }
 
     static std::string_view extractKey(std::string_view json, std::string_view key) {
@@ -370,32 +371,29 @@ public:
     }
 
     static std::string extractString(std::string_view json, std::string_view key, const std::string& defaultVal) {
-        auto val = extractKey(json, key);
-        if (val.empty() || val[0] != '"') return defaultVal;
-
-        auto end = val.find('"', 1);
-        if (end == std::string_view::npos) return defaultVal;
-        return std::string(val.substr(1, end - 1));
+        if (json.empty() || key.empty()) return defaultVal;
+        std::string j(json);
+        std::string k(key);
+        std::vector<char> buf(4096, 0);
+        size_t len = n8_rust_graph_serializer_extract_string(j.c_str(), k.c_str(), defaultVal.c_str(), buf.data(), buf.size());
+        if (len > 0) {
+            return std::string(buf.data());
+        }
+        return defaultVal;
     }
 
     static uint32_t extractUInt(std::string_view json, std::string_view key, uint32_t defaultVal) {
-        auto val = extractKey(json, key);
-        if (val.empty()) return defaultVal;
-
-        uint32_t res = defaultVal;
-        std::from_chars(val.data(), val.data() + val.size(), res);
-        return res;
+        if (json.empty() || key.empty()) return defaultVal;
+        std::string j(json);
+        std::string k(key);
+        return n8_rust_graph_serializer_extract_uint(j.c_str(), k.c_str(), defaultVal);
     }
 
     static float extractFloat(std::string_view json, std::string_view key, float defaultVal) {
-        auto val = extractKey(json, key);
-        if (val.empty()) return defaultVal;
-
-        try {
-            return std::stof(std::string(val));
-        } catch (...) {
-            return defaultVal;
-        }
+        if (json.empty() || key.empty()) return defaultVal;
+        std::string j(json);
+        std::string k(key);
+        return n8_rust_graph_serializer_extract_float(j.c_str(), k.c_str(), defaultVal);
     }
 
     static std::string_view extractArraySection(std::string_view json, std::string_view key) {
@@ -452,22 +450,17 @@ public:
     }
 
     static std::vector<float> parseNumberList(std::string_view text) {
-        std::vector<float> nums;
-        std::string current;
-        for (char c : text) {
-            if ((c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+') {
-                current += c;
-            } else if (c == ',' || c == ' ' || c == '\n') {
-                if (!current.empty()) {
-                    try { nums.push_back(std::stof(current)); } catch (...) {}
-                    current.clear();
-                }
-            }
+        if (text.empty()) return {};
+        std::string t(text);
+        std::vector<float> buf(256, 0.0f);
+        size_t count = n8_rust_graph_serializer_parse_number_list(t.c_str(), buf.data(), buf.size());
+        if (count > buf.size()) {
+            buf.resize(count);
+            n8_rust_graph_serializer_parse_number_list(t.c_str(), buf.data(), buf.size());
+        } else {
+            buf.resize(count);
         }
-        if (!current.empty()) {
-            try { nums.push_back(std::stof(current)); } catch (...) {}
-        }
-        return nums;
+        return buf;
     }
 
     static std::vector<std::pair<ParameterId, float>> parseKeyValueFloats(std::string_view text) {

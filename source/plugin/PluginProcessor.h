@@ -16,12 +16,14 @@
 
 #include "../dsp/core/TestInputSynthesizer.h"
 
+struct RustGraphPlanExchanger;
+
 namespace audio_graph {
 
 class N8AudioProcessor : public juce::AudioProcessor {
 public:
     N8AudioProcessor();
-    ~N8AudioProcessor() override = default;
+    ~N8AudioProcessor() override;
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
@@ -121,6 +123,7 @@ private:
     ExecutionPlan planA_;
     ExecutionPlan planB_;
     std::atomic<const ExecutionPlan*> activePlan_{ nullptr };
+    ::RustGraphPlanExchanger* rustPlanExchanger_{ nullptr };
     PresetManager presetManager_;
     SceneManager sceneManager_;
     GraphUndoManager undoManager_;
@@ -137,6 +140,8 @@ private:
     std::atomic<float>* wetParam_{ nullptr };
     std::atomic<float>* concurrencyParam_{ nullptr };
     std::array<std::atomic<float>*, 8> macroParams_{ nullptr };
+    std::atomic<float>* morphXParam_{ nullptr };
+    std::atomic<float>* morphYParam_{ nullptr };
 
     // Orden lineal de efectos para SequentialStripComponent
     std::vector<NodeId> linearNodeOrder_;

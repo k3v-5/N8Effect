@@ -6,10 +6,8 @@
 #include <algorithm>
 #include "../../graph/AudioProcessorNode.h"
 #include "../../graph/NodeFactory.h"
-#include "../core/BiquadFilter.h"
-#include "../core/EnvelopeDetector.h"
 #include "../core/DenormalGuards.h"
-#include "../core/FastMath.h"
+#include "../rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -18,6 +16,7 @@ namespace audio_graph {
  * Permite degradación digital de alta fidelidad: reducción de profundidad de bits (2 a 16 bits),
  * diezma de frecuencia de muestreo (Sample Rate Decimator), fluctuación estocástica de reloj (Jitter),
  * saturación de entrada (Drive) y filtro suavizador post-aliasing.
+ * Acelerado con núcleo en Rust de alto rendimiento.
  */
 class BitcrusherNode : public AudioProcessorNode {
 public:
@@ -40,38 +39,56 @@ public:
         params_[3] = { AntiAliasing, "Post Filter", 0.0f, 0.0f, 1.0f, true };
         params_[4] = { Drive, "Drive", 0.0f, 0.0f, 24.0f, true };
         params_[5] = { Mix, "Mix", 1.0f, 0.0f, 1.0f, true };
+
+        rustInstance_ = n8_rust_bitcrusher_create(44100.0f);
+    }
+
+    ~BitcrusherNode() override {
+        if (rustInstance_) {
+            n8_rust_bitcrusher_destroy(rustInstance_);
+            rustInstance_ = nullptr;
+        }
+    }
+
+    BitcrusherNode(const BitcrusherNode&) = delete;
+    BitcrusherNode& operator=(const BitcrusherNode&) = delete;
+
+    BitcrusherNode(BitcrusherNode&& other) noexcept
+        : pins_(other.pins_), params_(other.params_), spec_(other.spec_), rustInstance_(other.rustInstance_) {
+        other.rustInstance_ = nullptr;
+    }
+
+    BitcrusherNode& operator=(BitcrusherNode&& other) noexcept {
+        if (this != &other) {
+            if (rustInstance_) {
+                n8_rust_bitcrusher_destroy(rustInstance_);
+            }
+            pins_ = other.pins_;
+            params_ = other.params_;
+            spec_ = other.spec_;
+            rustInstance_ = other.rustInstance_;
+            other.rustInstance_ = nullptr;
+        }
+        return *this;
     }
 
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
-        phaseAcc_ = 0.0f;
-        heldSampleL_ = 0.0f;
-        heldSampleR_ = 0.0f;
-        rngState_ = 0x12345678u;
-
-        updateFilter();
+        const float sr = spec.sampleRate > 0.0 ? static_cast<float>(spec.sampleRate) : 44100.0f;
+        if (rustInstance_) {
+            n8_rust_bitcrusher_prepare(rustInstance_, sr);
+        }
     }
 
     void reset() override {
-        phaseAcc_ = 0.0f;
-        heldSampleL_ = 0.0f;
-        heldSampleR_ = 0.0f;
-        postFilter_[0].reset();
-        postFilter_[1].reset();
+        if (rustInstance_) {
+            n8_rust_bitcrusher_reset(rustInstance_);
+        }
     }
 
     void process(ProcessContext& context) override {
         ScopedDenormalGuard guard;
-
-        const float driveGain = EnvelopeDetector::dbToLinear(targetDrive_);
-        const float bits = std::clamp(targetBitDepth_, 2.0f, 16.0f);
-        const float numLevels = std::pow(2.0f, bits - 1.0f);
-        const float invLevels = 1.0f / numLevels;
-        const float downsampleFactor = std::max(1.0f, targetDownsample_);
-        const float jitterAmount = targetJitter_;
-        const float mix = targetMix_;
-
-        const bool useFilter = targetAntiAliasing_ > 0.02f;
+        if (!rustInstance_ || context.numSamples == 0) return;
 
         const float* inL = (context.numInputChannels > 0 && context.inputChannels[0]) ? context.inputChannels[0] : nullptr;
         const float* inR = (context.numInputChannels > 1 && context.inputChannels[1]) ? context.inputChannels[1] : inL;
@@ -79,84 +96,29 @@ public:
         float* outL = (context.numOutputChannels > 0 && context.outputChannels[0]) ? context.outputChannels[0] : nullptr;
         float* outR = (context.numOutputChannels > 1 && context.outputChannels[1]) ? context.outputChannels[1] : nullptr;
 
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            const float rawInL = inL ? inL[s] : 0.0f;
-            const float rawInR = inR ? inR[s] : 0.0f;
+        if (!inL || !outL) return;
 
-            // 1. Acumulador de fase para diezmado de sample rate (Sample-and-Hold)
-            phaseAcc_ += 1.0f;
-
-            // Jitter estocástico sobre el umbral de disparo
-            float jitterOffset = 0.0f;
-            if (jitterAmount > 0.001f) {
-                rngState_ = rngState_ * 1664525u + 1013904223u;
-                jitterOffset = (static_cast<float>(rngState_ & 0xFFFF) / 65535.0f - 0.5f) * jitterAmount * 2.0f;
-            }
-
-            if (phaseAcc_ >= (downsampleFactor + jitterOffset)) {
-                phaseAcc_ -= downsampleFactor;
-                if (phaseAcc_ < 0.0f) phaseAcc_ = 0.0f;
-
-                // 2. Saturación suave de entrada (Drive)
-                float drivenL = rawInL * driveGain;
-                float drivenR = rawInR * driveGain;
-                if (targetDrive_ > 0.1f) {
-                    drivenL = FastMath::fastTanh(drivenL);
-                    drivenR = FastMath::fastTanh(drivenR);
-                } else {
-                    drivenL = FastMath::fastSoftClip(drivenL);
-                    drivenR = FastMath::fastSoftClip(drivenR);
-                }
-
-                // 3. Cuantización de profundidad de bits
-                // y = round(x * (2^(B-1))) / (2^(B-1))
-                drivenL = std::clamp(drivenL, -1.0f, 1.0f);
-                drivenR = std::clamp(drivenR, -1.0f, 1.0f);
-
-                heldSampleL_ = std::round(drivenL * numLevels) * invLevels;
-                heldSampleR_ = std::round(drivenR * numLevels) * invLevels;
-            }
-
-            float wetL = heldSampleL_;
-            float wetR = heldSampleR_;
-
-            // 4. Filtro pasa-bajos opcional post-aliasing
-            if (useFilter) {
-                wetL = postFilter_[0].processSample(wetL);
-                wetR = postFilter_[1].processSample(wetR);
-            }
-
-            // 5. Mezcla Dry/Wet
-            if (outL) outL[s] = (1.0f - mix) * rawInL + mix * wetL;
-            if (outR) outR[s] = (1.0f - mix) * rawInR + mix * wetR;
-        }
+        n8_rust_bitcrusher_process(
+            rustInstance_,
+            inL,
+            inR,
+            outL,
+            outR,
+            static_cast<uint32_t>(context.numSamples)
+        );
     }
 
     void setParameter(ParameterId id, float value) override {
-        switch (id) {
-            case BitDepth: targetBitDepth_ = std::clamp(value, 2.0f, 16.0f); break;
-            case Downsample: targetDownsample_ = std::clamp(value, 1.0f, 50.0f); break;
-            case Jitter: targetJitter_ = std::clamp(value, 0.0f, 1.0f); break;
-            case AntiAliasing: {
-                targetAntiAliasing_ = std::clamp(value, 0.0f, 1.0f);
-                updateFilter();
-                break;
-            }
-            case Drive: targetDrive_ = std::clamp(value, 0.0f, 24.0f); break;
-            case Mix: targetMix_ = std::clamp(value, 0.0f, 1.0f); break;
+        if (rustInstance_) {
+            n8_rust_bitcrusher_set_parameter(rustInstance_, id, value);
         }
     }
 
     float getParameter(ParameterId id) const override {
-        switch (id) {
-            case BitDepth: return targetBitDepth_;
-            case Downsample: return targetDownsample_;
-            case Jitter: return targetJitter_;
-            case AntiAliasing: return targetAntiAliasing_;
-            case Drive: return targetDrive_;
-            case Mix: return targetMix_;
-            default: return 0.0f;
+        if (rustInstance_) {
+            return n8_rust_bitcrusher_get_parameter(rustInstance_, id);
         }
+        return 0.0f;
     }
 
     NodeType getType() const override { return NodeType::Bitcrusher; }
@@ -166,32 +128,10 @@ public:
     std::span<const ParameterInfo> getParameters() const override { return params_; }
 
 private:
-    void updateFilter() noexcept {
-        const double sr = spec_.sampleRate > 0.0 ? spec_.sampleRate : 44100.0;
-        // Filtro pasa-bajos suave: mapea AntiAliasing 0..1 a frecuencia de 18kHz bajando a 1.5kHz
-        const float cutoff = 18000.0f * std::pow(1500.0f / 18000.0f, targetAntiAliasing_);
-        for (auto& f : postFilter_) {
-            f.setCoefficients(BiquadFilter::Type::Lowpass, sr, cutoff, 0.707f);
-        }
-    }
-
     ProcessSpec spec_;
-    float phaseAcc_{ 0.0f };
-    float heldSampleL_{ 0.0f };
-    float heldSampleR_{ 0.0f };
-    uint32_t rngState_{ 0x12345678u };
-
-    std::array<BiquadFilter, 2> postFilter_;
-
-    float targetBitDepth_{ 8.0f };
-    float targetDownsample_{ 4.0f };
-    float targetJitter_{ 0.05f };
-    float targetAntiAliasing_{ 0.0f };
-    float targetDrive_{ 0.0f };
-    float targetMix_{ 1.0f };
-
     std::array<PinDescriptor, 2> pins_;
     std::array<ParameterInfo, 6> params_;
+    RustBitcrusher* rustInstance_{ nullptr };
 };
 
 inline AutoRegisterNode<BitcrusherNode> registerBitcrusher(NodeType::Bitcrusher, "bitcrusher", "Distortion");

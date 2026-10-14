@@ -3,6 +3,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdint>
+#include "../rust_core/include/n8_rust_core.h"
 
 #if defined(__AVX2__)
 #include <immintrin.h>
@@ -290,6 +291,40 @@ public:
         for (; s < numSamples; ++s) {
             buffer[s] = flushDenormal(buffer[s]);
         }
+    }
+
+    // =========================================================================
+    // Rust-Backed SIMD & Optimization Engine Kernels (Phase 8, Rules 9, 34, 47)
+    // =========================================================================
+
+    static inline void vecPadéTanhRust(const float* in, float* out, size_t numSamples) noexcept {
+        if (!in || !out || numSamples == 0) return;
+        n8_rust_opt_vec_pade_tanh(in, out, static_cast<uint32_t>(numSamples));
+    }
+
+    static inline void vecMultiplyAddRust(const float* a, const float* b, const float* c, float* out, size_t numSamples) noexcept {
+        if (!a || !b || !c || !out || numSamples == 0) return;
+        n8_rust_opt_vec_multiply_add(a, b, c, out, static_cast<uint32_t>(numSamples));
+    }
+
+    static inline void vecApplyGainRust(const float* in, float* out, float gain, size_t numSamples) noexcept {
+        if (!in || !out || numSamples == 0) return;
+        n8_rust_opt_vec_apply_gain(in, out, gain, static_cast<uint32_t>(numSamples));
+    }
+
+    static inline void vecMixRust(const float* dry, const float* wet, float* out, float mix, size_t numSamples) noexcept {
+        if (!dry || !wet || !out || numSamples == 0) return;
+        n8_rust_opt_vec_mix(dry, wet, out, mix, static_cast<uint32_t>(numSamples));
+    }
+
+    static inline void vecFlushDenormalsRust(float* buffer, size_t numSamples) noexcept {
+        if (!buffer || numSamples == 0) return;
+        n8_rust_opt_vec_flush_denormals(buffer, static_cast<uint32_t>(numSamples));
+    }
+
+    static inline void vecSoftClipRust(const float* in, float* out, size_t numSamples) noexcept {
+        if (!in || !out || numSamples == 0) return;
+        n8_rust_opt_vec_soft_clip(in, out, static_cast<uint32_t>(numSamples));
     }
 };
 

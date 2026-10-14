@@ -4,16 +4,16 @@
 #include <array>
 #include <span>
 #include <algorithm>
-#include <numbers>
 #include "../../graph/AudioProcessorNode.h"
 #include "../../graph/NodeFactory.h"
 #include "../core/DenormalGuards.h"
-#include "../core/FastMath.h"
+#include "../rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
  * @brief Modulador en Anillo de 4 Cuadrantes con Oscilador Multiforma (Reglas 5, 8, 14, 34, 46, 47)
+ * Acelerado con núcleo en Rust de alto rendimiento.
  */
 class RingModulatorNode : public AudioProcessorNode {
 public:
@@ -32,105 +32,99 @@ public:
         params_[1] = { Waveform, "Wave", 0.0f, 0.0f, 3.0f, false };
         params_[2] = { CarrierBleed, "Bleed", 0.0f, 0.0f, 1.0f, true };
         params_[3] = { Mix, "Mix", 1.0f, 0.0f, 1.0f, true };
+
+        rustInstance_ = n8_rust_ring_modulator_create(44100.0f);
+    }
+
+    ~RingModulatorNode() override {
+        if (rustInstance_) {
+            n8_rust_ring_modulator_destroy(rustInstance_);
+            rustInstance_ = nullptr;
+        }
+    }
+
+    RingModulatorNode(const RingModulatorNode&) = delete;
+    RingModulatorNode& operator=(const RingModulatorNode&) = delete;
+
+    RingModulatorNode(RingModulatorNode&& other) noexcept
+        : pins_(other.pins_), params_(other.params_), spec_(other.spec_), rustInstance_(other.rustInstance_) {
+        other.rustInstance_ = nullptr;
+    }
+
+    RingModulatorNode& operator=(RingModulatorNode&& other) noexcept {
+        if (this != &other) {
+            if (rustInstance_) {
+                n8_rust_ring_modulator_destroy(rustInstance_);
+            }
+            pins_ = other.pins_;
+            params_ = other.params_;
+            spec_ = other.spec_;
+            rustInstance_ = other.rustInstance_;
+            other.rustInstance_ = nullptr;
+        }
+        return *this;
     }
 
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
-        reset();
+        const float sr = spec.sampleRate > 0.0 ? static_cast<float>(spec.sampleRate) : 44100.0f;
+        if (rustInstance_) {
+            n8_rust_ring_modulator_prepare(rustInstance_, sr);
+        }
     }
 
     void reset() override {
-        carrierPhase_ = 0.0f;
-    }
-
-    void process(ProcessContext& context) override {
-        ScopedDenormalGuard guard;
-
-        const float freq = targetFreq_;
-        const int wave = targetWave_;
-        const float bleed = targetBleed_;
-        const float mix = targetMix_;
-
-        const float phaseInc = (2.0f * std::numbers::pi_v<float> * freq) / static_cast<float>(spec_.sampleRate);
-        const uint32_t channels = std::min(context.numOutputChannels, static_cast<uint32_t>(2));
-
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            // Generar forma de onda portadora
-            float carrier = 0.0f;
-            const float normPhase = carrierPhase_ / (2.0f * std::numbers::pi_v<float>); // 0..1
-
-            switch (wave) {
-                case 0: // Seno
-                    carrier = std::sin(carrierPhase_);
-                    break;
-                case 1: // Triángulo
-                    carrier = (normPhase < 0.5f) ? (4.0f * normPhase - 1.0f) : (3.0f - 4.0f * normPhase);
-                    break;
-                case 2: // Sierra
-                    carrier = 2.0f * normPhase - 1.0f;
-                    break;
-                case 3: // Cuadrada
-                    carrier = (normPhase < 0.5f) ? 1.0f : -1.0f;
-                    break;
-                default:
-                    carrier = std::sin(carrierPhase_);
-                    break;
-            }
-
-            for (uint32_t ch = 0; ch < channels; ++ch) {
-                const float in = (ch < context.numInputChannels && context.inputChannels[ch] != nullptr)
-                    ? context.inputChannels[ch][s]
-                    : 0.0f;
-
-                // Modulación en 4 cuadrantes balanceada con carrier bleed
-                const float ringMod = in * carrier + bleed * carrier * 0.2f;
-
-                context.outputChannels[ch][s] = (1.0f - mix) * in + mix * ringMod;
-            }
-
-            carrierPhase_ += phaseInc;
-            if (carrierPhase_ >= 2.0f * std::numbers::pi_v<float>) {
-                carrierPhase_ -= 2.0f * std::numbers::pi_v<float>;
-            }
-        }
-    }
-
-    void setParameter(ParameterId id, float value) override {
-        switch (id) {
-            case Frequency: targetFreq_ = std::clamp(value, 1.0f, 5000.0f); break;
-            case Waveform: targetWave_ = std::clamp(static_cast<int>(std::round(value)), 0, 3); break;
-            case CarrierBleed: targetBleed_ = std::clamp(value, 0.0f, 1.0f); break;
-            case Mix: targetMix_ = std::clamp(value, 0.0f, 1.0f); break;
-        }
-    }
-
-    float getParameter(ParameterId id) const override {
-        switch (id) {
-            case Frequency: return targetFreq_;
-            case Waveform: return static_cast<float>(targetWave_);
-            case CarrierBleed: return targetBleed_;
-            case Mix: return targetMix_;
-            default: return 0.0f;
+        if (rustInstance_) {
+            n8_rust_ring_modulator_reset(rustInstance_);
         }
     }
 
     NodeType getType() const override { return NodeType::RingModulator; }
     const char* getName() const override { return "RingModulator"; }
 
+    void process(ProcessContext& context) override {
+        ScopedDenormalGuard guard;
+        if (!rustInstance_ || context.numSamples == 0) return;
+
+        const float* inL = (context.numInputChannels > 0 && context.inputChannels != nullptr) ? context.inputChannels[0] : nullptr;
+        const float* inR = (context.numInputChannels > 1 && context.inputChannels != nullptr) ? context.inputChannels[1] : inL;
+
+        float* outL = (context.numOutputChannels > 0 && context.outputChannels != nullptr) ? context.outputChannels[0] : nullptr;
+        float* outR = (context.numOutputChannels > 1 && context.outputChannels != nullptr) ? context.outputChannels[1] : nullptr;
+
+        if (!inL || !outL) return;
+
+        n8_rust_ring_modulator_process(
+            rustInstance_,
+            inL,
+            inR,
+            outL,
+            outR,
+            static_cast<uint32_t>(context.numSamples)
+        );
+    }
+
+    void setParameter(ParameterId id, float value) override {
+        if (rustInstance_) {
+            n8_rust_ring_modulator_set_parameter(rustInstance_, id, value);
+        }
+    }
+
+    float getParameter(ParameterId id) const override {
+        if (rustInstance_) {
+            return n8_rust_ring_modulator_get_parameter(rustInstance_, id);
+        }
+        return 0.0f;
+    }
+
     std::span<const PinDescriptor> getPins() const override { return pins_; }
     std::span<const ParameterInfo> getParameters() const override { return params_; }
 
 private:
     ProcessSpec spec_;
-    float carrierPhase_{ 0.0f };
-
-    float targetFreq_{ 440.0f };
-    int targetWave_{ 0 };
-    float targetBleed_{ 0.0f };
-    float targetMix_{ 1.0f };
-
     std::array<PinDescriptor, 2> pins_;
     std::array<ParameterInfo, 4> params_;
+    RustRingModulator* rustInstance_{ nullptr };
 };
 
 inline AutoRegisterNode<RingModulatorNode> registerRingModulator(NodeType::RingModulator, "ringmod", "Modulation");

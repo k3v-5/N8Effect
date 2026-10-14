@@ -11,6 +11,7 @@
 #include "GraphExecutor.h"
 #include "NodeFactory.h"
 #include "../dsp/core/DenormalGuards.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 #include "../preset/GraphSerializer.h"
 
 namespace audio_graph {
@@ -19,6 +20,8 @@ namespace audio_graph {
  * @brief Contenedor de Subgrafos Jerárquicos Anidados (Reglas 5, 6, 9, 28, 46, 47).
  * Encapsula un subgrafo completo (Graph, ExecutionPlan, GraphExecutor) dentro de un único
  * AudioProcessorNode, permitiendo modularidad multinivel sin duplicación de código DSP.
+ * Acelerado mediante el núcleo nativo en Rust (RustContainerCore) para enrutamiento,
+ * suavizado anti-click, mezcla Dry/Wet, passthrough multicanal y validación de subgrafos.
  */
 class ContainerNode : public AudioProcessorNode {
 public:
@@ -27,13 +30,25 @@ public:
         OutputGain = 2
     };
 
-    ContainerNode() {
+    ContainerNode()
+        : rustCore_(n8_rust_container_create(44100.0f))
+    {
         pins_[0] = { 1, "Audio In", PinType::AudioInput, PinDataType::AudioStereo };
         pins_[1] = { 2, "Audio Out", PinType::AudioOutput, PinDataType::AudioStereo };
 
         params_[0] = { Mix, "Mix", 1.0f, 0.0f, 1.0f, true };
         params_[1] = { OutputGain, "Gain", 1.0f, 0.0f, 2.0f, true };
     }
+
+    ~ContainerNode() override {
+        if (rustCore_) {
+            n8_rust_container_free(rustCore_);
+            rustCore_ = nullptr;
+        }
+    }
+
+    ContainerNode(const ContainerNode&) = delete;
+    ContainerNode& operator=(const ContainerNode&) = delete;
 
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
@@ -49,6 +64,10 @@ public:
             }
         }
 
+        if (rustCore_) {
+            n8_rust_container_prepare(rustCore_, static_cast<float>(spec.sampleRate), spec.maximumBlockSize);
+        }
+
         currentMix_ = targetMix_;
         currentGain_ = targetGain_;
     }
@@ -59,6 +78,9 @@ public:
             if (node && node->processor) {
                 node->processor->reset();
             }
+        }
+        if (rustCore_) {
+            n8_rust_container_reset(rustCore_);
         }
         currentMix_ = targetMix_;
         currentGain_ = targetGain_;
@@ -100,16 +122,25 @@ public:
 
     void process(ProcessContext& context) override {
         ScopedDenormalGuard denormalGuard; // Reglas 34 y 47
-        const float alpha = 0.005f;        // Anti-click smoothing (Regla 35)
 
         // Si el subgrafo está vacío, opera como passthrough transparente
         if (innerPlan_.isEmpty()) {
-            for (uint32_t s = 0; s < context.numSamples; ++s) {
-                currentGain_ += alpha * (targetGain_ - currentGain_);
-                for (uint32_t ch = 0; ch < context.numOutputChannels; ++ch) {
-                    float inSample = (ch < context.numInputChannels && context.inputChannels[ch] != nullptr)
-                        ? context.inputChannels[ch][s] : 0.0f;
-                    context.outputChannels[ch][s] = inSample * currentGain_;
+            if (rustCore_) {
+                n8_rust_container_process_channels_passthrough(
+                    rustCore_,
+                    context.inputChannels, context.numInputChannels,
+                    context.outputChannels, context.numOutputChannels,
+                    context.numSamples
+                );
+            } else {
+                const float alpha = 0.005f; // Anti-click smoothing (Regla 35)
+                for (uint32_t s = 0; s < context.numSamples; ++s) {
+                    currentGain_ += alpha * (targetGain_ - currentGain_);
+                    for (uint32_t ch = 0; ch < context.numOutputChannels; ++ch) {
+                        float inSample = (ch < context.numInputChannels && context.inputChannels[ch] != nullptr)
+                            ? context.inputChannels[ch][s] : 0.0f;
+                        context.outputChannels[ch][s] = inSample * currentGain_;
+                    }
                 }
             }
             return;
@@ -118,19 +149,31 @@ public:
         // Ejecutar el subgrafo interno en tiempo real con cero allocations (Regla 9)
         innerExecutor_.process(innerPlan_, context, innerOutputBuffer_);
 
-        // Mezcla Dry/Wet y ganancia de salida suavizada
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            currentMix_ += alpha * (targetMix_ - currentMix_);
-            currentGain_ += alpha * (targetGain_ - currentGain_);
+        // Mezcla Dry/Wet y ganancia de salida suavizada delegado al núcleo Rust
+        if (rustCore_) {
+            const float* const* wetChannels = innerOutputBuffer_.getArrayOfReadPointers();
+            n8_rust_container_process_channels_mix(
+                rustCore_,
+                context.inputChannels, context.numInputChannels,
+                wetChannels, innerOutputBuffer_.getNumChannels(),
+                context.outputChannels, context.numOutputChannels,
+                context.numSamples
+            );
+        } else {
+            const float alpha = 0.005f; // Anti-click smoothing (Regla 35)
+            for (uint32_t s = 0; s < context.numSamples; ++s) {
+                currentMix_ += alpha * (targetMix_ - currentMix_);
+                currentGain_ += alpha * (targetGain_ - currentGain_);
 
-            for (uint32_t ch = 0; ch < context.numOutputChannels; ++ch) {
-                float dry = (ch < context.numInputChannels && context.inputChannels[ch] != nullptr)
-                    ? context.inputChannels[ch][s] : 0.0f;
-                float wet = (ch < innerOutputBuffer_.getNumChannels())
-                    ? innerOutputBuffer_.getReadPointer(ch)[s] : 0.0f;
+                for (uint32_t ch = 0; ch < context.numOutputChannels; ++ch) {
+                    float dry = (ch < context.numInputChannels && context.inputChannels[ch] != nullptr)
+                        ? context.inputChannels[ch][s] : 0.0f;
+                    float wet = (ch < innerOutputBuffer_.getNumChannels())
+                        ? innerOutputBuffer_.getReadPointer(ch)[s] : 0.0f;
 
-                float mixed = dry + currentMix_ * (wet - dry);
-                context.outputChannels[ch][s] = mixed * currentGain_;
+                    float mixed = dry + currentMix_ * (wet - dry);
+                    context.outputChannels[ch][s] = mixed * currentGain_;
+                }
             }
         }
     }
@@ -138,13 +181,23 @@ public:
     void setParameter(ParameterId id, float value) override {
         if (id == Mix) targetMix_ = std::clamp(value, 0.0f, 1.0f);
         else if (id == OutputGain) targetGain_ = std::clamp(value, 0.0f, 2.0f);
+
+        if (rustCore_) {
+            n8_rust_container_set_parameter(rustCore_, id, value);
+        }
     }
 
     float getParameter(ParameterId id) const override {
+        if (rustCore_) {
+            return n8_rust_container_get_parameter(rustCore_, id);
+        }
         if (id == Mix) return targetMix_;
         if (id == OutputGain) return targetGain_;
         return 0.0f;
     }
+
+    RustContainerCore* getRustCore() noexcept { return rustCore_; }
+    const RustContainerCore* getRustCore() const noexcept { return rustCore_; }
 
     NodeType getType() const override { return NodeType::Container; }
     const char* getName() const override { return "Container"; }
@@ -158,6 +211,7 @@ private:
     ExecutionPlan innerPlan_;
     GraphExecutor innerExecutor_;
     PreallocatedBuffer innerOutputBuffer_;
+    RustContainerCore* rustCore_{ nullptr };
 
     float targetMix_{ 1.0f };
     float currentMix_{ 1.0f };

@@ -7,7 +7,9 @@
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
+#include <sstream>
 #include "GraphSerializer.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -22,14 +24,51 @@ struct UserPresetRecord {
 
 /**
  * @brief Gestor de persistencia física en disco e indexación reactiva por tags/categorías (Reglas 21, 27).
+ * Acelerado por Rust n8_rust_core para filtrado multi-atributo, ordenamiento y agregación de tags.
  * Opera en hilo de background o GUI, nunca en el audio thread.
  */
 class UserPresetBank {
 public:
-    UserPresetBank() = default;
+    UserPresetBank() {
+        rustCore_ = n8_rust_user_preset_bank_create();
+    }
+
+    ~UserPresetBank() {
+        if (rustCore_) {
+            n8_rust_user_preset_bank_destroy(rustCore_);
+            rustCore_ = nullptr;
+        }
+    }
+
+    UserPresetBank(const UserPresetBank&) = delete;
+    UserPresetBank& operator=(const UserPresetBank&) = delete;
+
+    UserPresetBank(UserPresetBank&& other) noexcept
+        : directory_(std::move(other.directory_)),
+          presets_(std::move(other.presets_)),
+          rustCore_(other.rustCore_)
+    {
+        other.rustCore_ = nullptr;
+    }
+
+    UserPresetBank& operator=(UserPresetBank&& other) noexcept {
+        if (this != &other) {
+            if (rustCore_) {
+                n8_rust_user_preset_bank_destroy(rustCore_);
+            }
+            directory_ = std::move(other.directory_);
+            presets_ = std::move(other.presets_);
+            rustCore_ = other.rustCore_;
+            other.rustCore_ = nullptr;
+        }
+        return *this;
+    }
 
     void setDirectory(const std::string& dirPath) {
         directory_ = dirPath;
+        if (rustCore_) {
+            n8_rust_user_preset_bank_set_directory(rustCore_, dirPath.c_str());
+        }
         std::error_code ec;
         if (!std::filesystem::exists(directory_, ec)) {
             std::filesystem::create_directories(directory_, ec);
@@ -43,6 +82,9 @@ public:
 
     void rescan() {
         presets_.clear();
+        if (rustCore_) {
+            n8_rust_user_preset_bank_clear(rustCore_);
+        }
         if (directory_.empty()) return;
 
         std::error_code ec;
@@ -64,6 +106,28 @@ public:
                     std::string err;
 
                     if (GraphSerializer::deserialize(content, dummyGraph, meta, dummyMacros, err)) {
+                        std::string tagsCsv;
+                        for (size_t t = 0; t < meta.tags.size(); ++t) {
+                            tagsCsv += meta.tags[t];
+                            if (t + 1 < meta.tags.size()) tagsCsv += ",";
+                        }
+
+                        if (rustCore_) {
+                            std::string verStr = std::to_string(meta.schemaVersion);
+                            n8_rust_user_preset_bank_add_preset(
+                                rustCore_,
+                                entry.path().string().c_str(),
+                                meta.name.c_str(),
+                                meta.category.c_str(),
+                                meta.author.c_str(),
+                                meta.description.c_str(),
+                                verStr.c_str(),
+                                tagsCsv.c_str(),
+                                meta.favorite,
+                                content.c_str()
+                            );
+                        }
+
                         UserPresetRecord rec;
                         rec.filePath = entry.path().string();
                         rec.metadata = meta;
@@ -74,7 +138,11 @@ public:
             }
         }
 
-        // Ordenar alfabéticamente por nombre
+        if (rustCore_) {
+            n8_rust_user_preset_bank_sort(rustCore_);
+        }
+
+        // Ordenar alfabéticamente por nombre en el cache C++
         std::sort(presets_.begin(), presets_.end(), [](const UserPresetRecord& a, const UserPresetRecord& b) {
             return toLower(a.metadata.name) < toLower(b.metadata.name);
         });
@@ -110,6 +178,9 @@ public:
 
         std::error_code ec;
         std::filesystem::remove(presets_[index].filePath, ec);
+        if (rustCore_) {
+            n8_rust_user_preset_bank_delete(rustCore_, index);
+        }
         presets_.erase(presets_.begin() + static_cast<ptrdiff_t>(index));
         return !ec;
     }
@@ -120,6 +191,10 @@ public:
         auto& rec = presets_[index];
         rec.metadata.favorite = !rec.metadata.favorite;
 
+        if (rustCore_) {
+            n8_rust_user_preset_bank_toggle_favorite(rustCore_, index);
+        }
+
         Graph dummyGraph;
         PresetMetadata dummyMeta;
         std::array<float, 8> dummyMacros{};
@@ -128,6 +203,10 @@ public:
         if (GraphSerializer::deserialize(rec.jsonContent, dummyGraph, dummyMeta, dummyMacros, err)) {
             dummyMeta.favorite = rec.metadata.favorite;
             rec.jsonContent = GraphSerializer::serialize(dummyGraph, dummyMeta, dummyMacros);
+
+            if (rustCore_) {
+                n8_rust_user_preset_bank_update_preset_json(rustCore_, index, rec.jsonContent.c_str());
+            }
 
             std::ofstream outFile(rec.filePath, std::ios::out | std::ios::trunc | std::ios::binary);
             if (outFile.is_open()) {
@@ -143,19 +222,35 @@ public:
                                const std::vector<std::string>& requiredTags,
                                bool favoritesOnly) const
     {
+        if (rustCore_) {
+            std::string tagsCsv;
+            for (size_t i = 0; i < requiredTags.size(); ++i) {
+                tagsCsv += requiredTags[i];
+                if (i + 1 < requiredTags.size()) tagsCsv += ",";
+            }
+
+            std::vector<size_t> matches(presets_.size());
+            size_t count = n8_rust_user_preset_bank_filter(
+                rustCore_,
+                query.c_str(),
+                category.c_str(),
+                tagsCsv.c_str(),
+                favoritesOnly,
+                matches.data(),
+                matches.size()
+            );
+            matches.resize(count);
+            return matches;
+        }
+
+        // Fallback C++
         std::vector<size_t> matches;
         const std::string qLower = toLower(query);
 
         for (size_t i = 0; i < presets_.size(); ++i) {
             const auto& meta = presets_[i].metadata;
-
-            if (favoritesOnly && !meta.favorite) {
-                continue;
-            }
-
-            if (!category.empty() && category != "All" && meta.category != category) {
-                continue;
-            }
+            if (favoritesOnly && !meta.favorite) continue;
+            if (!category.empty() && category != "All" && meta.category != category) continue;
 
             bool tagsMatch = true;
             for (const auto& reqTag : requiredTags) {
@@ -193,6 +288,23 @@ public:
     }
 
     std::vector<std::string> getAllTags() const {
+        if (rustCore_) {
+            std::vector<char> buf(4096, 0);
+            size_t len = n8_rust_user_preset_bank_get_tags_csv(rustCore_, buf.data(), buf.size());
+            if (len > buf.size()) {
+                buf.resize(len + 1, 0);
+                n8_rust_user_preset_bank_get_tags_csv(rustCore_, buf.data(), buf.size());
+            }
+            std::string csv(buf.data());
+            std::vector<std::string> tags;
+            std::stringstream ss(csv);
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                if (!item.empty()) tags.push_back(item);
+            }
+            return tags;
+        }
+
         std::vector<std::string> tags;
         for (const auto& p : presets_) {
             for (const auto& t : p.metadata.tags) {
@@ -206,6 +318,23 @@ public:
     }
 
     std::vector<std::string> getAllCategories() const {
+        if (rustCore_) {
+            std::vector<char> buf(4096, 0);
+            size_t len = n8_rust_user_preset_bank_get_categories_csv(rustCore_, buf.data(), buf.size());
+            if (len > buf.size()) {
+                buf.resize(len + 1, 0);
+                n8_rust_user_preset_bank_get_categories_csv(rustCore_, buf.data(), buf.size());
+            }
+            std::string csv(buf.data());
+            std::vector<std::string> cats;
+            std::stringstream ss(csv);
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                if (!item.empty()) cats.push_back(item);
+            }
+            return cats;
+        }
+
         std::vector<std::string> cats;
         for (const auto& p : presets_) {
             if (!p.metadata.category.empty() && std::find(cats.begin(), cats.end(), p.metadata.category) == cats.end()) {
@@ -230,6 +359,9 @@ public:
     size_t getPresetCount() const noexcept {
         return presets_.size();
     }
+
+    [[nodiscard]] RustUserPresetBank* getRustCore() noexcept { return rustCore_; }
+    [[nodiscard]] const RustUserPresetBank* getRustCore() const noexcept { return rustCore_; }
 
 private:
     static std::string toLower(std::string_view s) {
@@ -256,6 +388,7 @@ private:
 
     std::string directory_;
     std::vector<UserPresetRecord> presets_;
+    RustUserPresetBank* rustCore_{ nullptr };
 };
 
 } // namespace audio_graph

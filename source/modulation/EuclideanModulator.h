@@ -3,124 +3,116 @@
 #include <cmath>
 #include <algorithm>
 #include "ModulationTypes.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
  * @brief Generador Polirrítmico Euclidiano de Bjorklund (Reglas 7, 8, 37, 46, 47)
- * Distribuye K pulsos uniformemente en N pasos generando envolventes dinámicas de modulación.
+ * Delega la distribución euclidiana O(1) de pulsos y la envolvente al núcleo Rust.
  */
 class EuclideanModulator {
 public:
-    EuclideanModulator() = default;
+    explicit EuclideanModulator(RustEuclideanModulator* existing = nullptr, bool owns = true)
+        : rustCore_(existing ? existing : n8_rust_euclidean_modulator_create()), ownsCore_(owns)
+    {
+    }
+
+    ~EuclideanModulator() {
+        if (rustCore_ && ownsCore_) {
+            n8_rust_euclidean_modulator_destroy(rustCore_);
+            rustCore_ = nullptr;
+        }
+    }
+
+    EuclideanModulator(const EuclideanModulator&) = delete;
+    EuclideanModulator& operator=(const EuclideanModulator&) = delete;
+
+    EuclideanModulator(EuclideanModulator&& other) noexcept
+        : rustCore_(other.rustCore_), ownsCore_(other.ownsCore_)
+    {
+        other.rustCore_ = nullptr;
+        other.ownsCore_ = false;
+    }
+
+    EuclideanModulator& operator=(EuclideanModulator&& other) noexcept {
+        if (this != &other) {
+            if (rustCore_ && ownsCore_) {
+                n8_rust_euclidean_modulator_destroy(rustCore_);
+            }
+            rustCore_ = other.rustCore_;
+            ownsCore_ = other.ownsCore_;
+            other.rustCore_ = nullptr;
+            other.ownsCore_ = false;
+        }
+        return *this;
+    }
 
     void prepare(double sampleRate) noexcept {
-        sampleRate_ = (sampleRate > 0.0) ? sampleRate : 44100.0;
-        updateDecayCoeff();
-        reset();
+        if (rustCore_) {
+            n8_rust_euclidean_modulator_prepare(rustCore_, sampleRate);
+        }
     }
 
     void reset() noexcept {
-        currentEnv_ = 0.0f;
-        lastStep_ = -1;
-        phase_ = 0.0;
+        if (rustCore_) {
+            n8_rust_euclidean_modulator_reset(rustCore_);
+        }
     }
 
     void setSteps(int steps) noexcept {
-        steps_ = std::clamp(steps, 1, 32);
+        if (rustCore_) {
+            n8_rust_euclidean_modulator_set_steps(rustCore_, steps);
+        }
     }
 
     void setPulses(int pulses) noexcept {
-        pulses_ = std::clamp(pulses, 0, steps_);
+        if (rustCore_) {
+            n8_rust_euclidean_modulator_set_pulses(rustCore_, pulses);
+        }
     }
 
     void setRotation(int rotation) noexcept {
-        rotation_ = (rotation % steps_ + steps_) % steps_;
+        if (rustCore_) {
+            n8_rust_euclidean_modulator_set_rotation(rustCore_, rotation);
+        }
     }
 
     void setDecay(float seconds) noexcept {
-        decaySeconds_ = std::clamp(seconds, 0.01f, 2.0f);
-        updateDecayCoeff();
+        if (rustCore_) {
+            n8_rust_euclidean_modulator_set_decay(rustCore_, seconds);
+        }
     }
 
     void setSync(SyncDivision div, float freeBpm = 120.0f) noexcept {
-        syncDiv_ = div;
-        freeBpm_ = std::clamp(freeBpm, 20.0f, 300.0f);
+        if (rustCore_) {
+            n8_rust_euclidean_modulator_set_sync(rustCore_, static_cast<uint8_t>(div), freeBpm);
+        }
     }
 
     bool hasPulseAtStep(int step) const noexcept {
-        if (pulses_ <= 0) return false;
-        if (pulses_ >= steps_) return true;
-
-        const int rotated = (step + rotation_) % steps_;
-        // Algoritmo matemático directo O(1) de Bjorklund / Bresenham
-        return ((rotated * pulses_) % steps_) < pulses_;
+        if (rustCore_) {
+            return n8_rust_euclidean_modulator_has_pulse_at_step(rustCore_, step);
+        }
+        return false;
     }
 
     void processSample(double bpm, double ppq, bool isPlaying) noexcept {
-        int currentStep = 0;
-
-        if (syncDiv_ != SyncDivision::FreeHz && isPlaying && bpm > 1.0) {
-            // Sincronizado a subdivisión métrica del DAW
-            double stepsPerBeat = 4.0; // 1/16 por defecto
-            switch (syncDiv_) {
-                case SyncDivision::Quarter:     stepsPerBeat = 1.0; break;
-                case SyncDivision::Eighth:      stepsPerBeat = 2.0; break;
-                case SyncDivision::Sixteenth:   stepsPerBeat = 4.0; break;
-                case SyncDivision::ThirtySecond:stepsPerBeat = 8.0; break;
-                case SyncDivision::Triplet_Eighth: stepsPerBeat = 3.0; break;
-                default: stepsPerBeat = 4.0; break;
-            }
-
-            double totalSteps = ppq * stepsPerBeat;
-            currentStep = static_cast<int>(std::floor(totalSteps)) % steps_;
-            if (currentStep < 0) currentStep += steps_;
-        } else {
-            // Reloj interno autónomo
-            double beatRate = (freeBpm_ / 60.0) * 4.0; // 1/16th notes
-            phase_ += beatRate / sampleRate_;
-            if (phase_ >= 1.0) {
-                phase_ = std::fmod(phase_, 1.0);
-                internalStep_ = (internalStep_ + 1) % steps_;
-            }
-            currentStep = internalStep_;
+        if (rustCore_) {
+            n8_rust_euclidean_modulator_process_sample(rustCore_, bpm, ppq, isPlaying);
         }
-
-        // Detección de nuevo paso
-        if (currentStep != lastStep_) {
-            lastStep_ = currentStep;
-            if (hasPulseAtStep(currentStep)) {
-                // Disparo de pulso
-                currentEnv_ = 1.0f;
-            }
-        }
-
-        // Decaimiento exponencial analógico suave
-        currentEnv_ *= decayCoeff_;
-        if (currentEnv_ < 1e-5f) currentEnv_ = 0.0f;
     }
 
-    float getCurrentValue() const noexcept { return currentEnv_; }
+    float getCurrentValue() const noexcept {
+        if (rustCore_) {
+            return n8_rust_euclidean_modulator_get_current_value(rustCore_);
+        }
+        return 0.0f;
+    }
 
 private:
-    void updateDecayCoeff() noexcept {
-        decayCoeff_ = std::exp(-1.0f / (decaySeconds_ * static_cast<float>(sampleRate_)));
-    }
-
-    double sampleRate_{ 44100.0 };
-    int steps_{ 16 };
-    int pulses_{ 7 }; // Típico ritmo euclidiano (7 en 16)
-    int rotation_{ 0 };
-    float decaySeconds_{ 0.15f };
-    float decayCoeff_{ 0.999f };
-
-    SyncDivision syncDiv_{ SyncDivision::Sixteenth };
-    float freeBpm_{ 120.0f };
-
-    float currentEnv_{ 0.0f };
-    int lastStep_{ -1 };
-    int internalStep_{ 0 };
-    double phase_{ 0.0 };
+    RustEuclideanModulator* rustCore_{ nullptr };
+    bool ownsCore_{ true };
 };
 
 } // namespace audio_graph

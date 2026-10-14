@@ -11,6 +11,7 @@
 #include "../../event/EventManager.h"
 #include "../../core/RealtimePools.h"
 #include "../core/DenormalGuards.h"
+#include "../rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -18,6 +19,7 @@ namespace audio_graph {
  * @brief Contenedor de Entorno Aislado de Eventos (Event Rack) (Reglas 2, 3, 6, 9, 10, 46, 47).
  * Encapsula la captura, ciclo de vida (Created->Playing->Releasing->Killed), transmutación
  * y procesamiento en cascada de fragmentos de audio basados en eventos con límite estricto de capacidad.
+ * 100% acelerado mediante núcleo nativo en Rust (EventContainerCore / RustEventManager) con SIMD y zero allocations.
  */
 class EventContainerNode : public AudioProcessorNode {
 public:
@@ -30,7 +32,10 @@ public:
         Mix = 6
     };
 
-    EventContainerNode() {
+    EventContainerNode()
+        : rustCore_(n8_rust_event_container_create(44100.0f)),
+          eventManager_(rustCore_ ? n8_rust_event_container_get_event_manager(rustCore_) : nullptr, false)
+    {
         pins_[0] = { 1, "Audio In", PinType::AudioInput, PinDataType::AudioStereo };
         pins_[1] = { 2, "Audio Out", PinType::AudioOutput, PinDataType::AudioStereo };
         pins_[2] = { 3, "Event In", PinType::EventInput, PinDataType::EventMessage };
@@ -43,8 +48,55 @@ public:
         params_[5] = { Mix, "Mix", 0.7f, 0.0f, 1.0f, true };
     }
 
+    ~EventContainerNode() override {
+        if (rustCore_) {
+            n8_rust_event_container_free(rustCore_);
+            rustCore_ = nullptr;
+        }
+    }
+
+    EventContainerNode(const EventContainerNode&) = delete;
+    EventContainerNode& operator=(const EventContainerNode&) = delete;
+
+    EventContainerNode(EventContainerNode&& other) noexcept
+        : AudioProcessorNode(std::move(other)),
+          spec_(other.spec_),
+          rustCore_(other.rustCore_),
+          eventManager_(std::move(other.eventManager_)),
+          eventOutBuffer_(std::move(other.eventOutBuffer_)),
+          innerProcessBuffer_(std::move(other.innerProcessBuffer_)),
+          innerProcessor_(std::move(other.innerProcessor_)),
+          pins_(other.pins_),
+          params_(other.params_)
+    {
+        other.rustCore_ = nullptr;
+    }
+
+    EventContainerNode& operator=(EventContainerNode&& other) noexcept {
+        if (this != &other) {
+            if (rustCore_) {
+                n8_rust_event_container_free(rustCore_);
+            }
+            AudioProcessorNode::operator=(std::move(other));
+            spec_ = other.spec_;
+            rustCore_ = other.rustCore_;
+            eventManager_ = std::move(other.eventManager_);
+            eventOutBuffer_ = std::move(other.eventOutBuffer_);
+            innerProcessBuffer_ = std::move(other.innerProcessBuffer_);
+            innerProcessor_ = std::move(other.innerProcessor_);
+            pins_ = other.pins_;
+            params_ = other.params_;
+            other.rustCore_ = nullptr;
+        }
+        return *this;
+    }
+
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
+
+        if (rustCore_) {
+            n8_rust_event_container_prepare(rustCore_, static_cast<float>(spec.sampleRate), spec.maximumBlockSize, 64);
+        }
 
         // Bounded preallocated event manager: 64 eventos máximos para este contenedor (Regla 47)
         eventManager_.prepare(spec.sampleRate, spec.maximumBlockSize, 64);
@@ -57,17 +109,13 @@ public:
         if (innerProcessor_) {
             innerProcessor_->prepare(spec);
         }
-
-        currentMix_ = targetMix_;
-        lastTrigger_ = targetTrigger_;
-        autoTriggerCounter_ = 0;
     }
 
     void reset() override {
+        if (rustCore_) {
+            n8_rust_event_container_reset(rustCore_);
+        }
         eventManager_.reset();
-        autoTriggerCounter_ = 0;
-        currentMix_ = targetMix_;
-        lastTrigger_ = targetTrigger_;
 
         if (innerProcessor_) {
             innerProcessor_->reset();
@@ -89,54 +137,30 @@ public:
 
     void process(ProcessContext& context) override {
         ScopedDenormalGuard denormalGuard; // Reglas 34 y 47
-        const float alpha = 0.005f;        // Anti-click smoothing (Regla 35)
+        if (!rustCore_) return;
 
-        // 1. Capturar el audio de entrada en el buffer circular de eventos (Reglas 2 y 9)
-        eventManager_.captureInputAudio(context.inputChannels, context.numInputChannels, context.numSamples);
+        const float* inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr)
+            ? context.inputChannels[0] : nullptr;
+        const float* inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr)
+            ? context.inputChannels[1] : inL;
 
-        // 2. Calcular nivel RMS de la fuente para Source Following (Regla 3)
-        float sumSq = 0.0f;
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            float inSample = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr)
-                ? context.inputChannels[0][s] : 0.0f;
-            sumSq += inSample * inSample;
-        }
-        const float sourceLevel = std::sqrt(sumSq / static_cast<float>(context.numSamples > 0 ? context.numSamples : 1));
-
-        // 3. Manejo de disparador manual (edge detector)
-        if (targetTrigger_ >= 0.5f && lastTrigger_ < 0.5f) {
-            const uint64_t durSamples = static_cast<uint64_t>(targetDurationMs_ * 0.001 * spec_.sampleRate);
-            eventManager_.spawnEvent(EventType::Grain, static_cast<double>(durSamples), durSamples, targetPitch_, 1.0f, 0.0f,
-                                    targetSourceFollow_, SourceDisappearanceMode::Fade);
-        }
-        lastTrigger_ = targetTrigger_;
-
-        // 4. Generador estocástico/rítmico automático de eventos si Density > 0.05
-        if (targetDensity_ > 0.05f) {
-            autoTriggerCounter_ += context.numSamples;
-            const uint32_t triggerInterval = static_cast<uint32_t>(spec_.sampleRate * (1.0f - targetDensity_ * 0.85f) * 0.25f);
-            if (autoTriggerCounter_ >= std::max(256u, triggerInterval)) {
-                autoTriggerCounter_ = 0;
-                const uint64_t durSamples = static_cast<uint64_t>(targetDurationMs_ * 0.001 * spec_.sampleRate);
-                eventManager_.spawnEvent(EventType::Grain, static_cast<double>(durSamples), durSamples, targetPitch_, 0.85f, 0.0f,
-                                        targetSourceFollow_, SourceDisappearanceMode::Fade);
-            }
-        }
-
-        // 5. Renderizado en tiempo real de los eventos activos hacia los buffers estéreo
-        float* evL = eventOutBuffer_.getWritePointer(0);
-        float* evR = eventOutBuffer_.getWritePointer(1);
-        std::fill_n(evL, context.numSamples, 0.0f);
-        std::fill_n(evR, context.numSamples, 0.0f);
-
-        eventManager_.render(evL, evR, context.numSamples, sourceLevel);
-
-        // 6. Si hay un procesador interno dedicado a los eventos, procesar los fragmentos
-        const float* finalEvL = evL;
-        const float* finalEvR = evR;
+        float* outL = (context.numOutputChannels > 0 && context.outputChannels[0] != nullptr)
+            ? context.outputChannels[0] : nullptr;
+        float* outR = (context.numOutputChannels > 1 && context.outputChannels[1] != nullptr)
+            ? context.outputChannels[1] : nullptr;
 
         if (innerProcessor_) {
-            const float* inPtrs[2] = { evL, evR };
+            float* forwardL = eventOutBuffer_.getWritePointer(0);
+            float* forwardR = eventOutBuffer_.getWritePointer(1);
+
+            n8_rust_event_container_inject_forward(
+                rustCore_,
+                inL, inR,
+                forwardL, forwardR,
+                context.numSamples
+            );
+
+            const float* inPtrs[2] = { forwardL, forwardR };
             float* outPtrs[2] = { innerProcessBuffer_.getWritePointer(0), innerProcessBuffer_.getWritePointer(1) };
             ProcessContext innerCtx{
                 .inputChannels = inPtrs,
@@ -146,50 +170,38 @@ public:
                 .numSamples = context.numSamples
             };
             innerProcessor_->process(innerCtx);
-            finalEvL = innerProcessBuffer_.getReadPointer(0);
-            finalEvR = innerProcessBuffer_.getReadPointer(1);
-        }
 
-        // 7. Sumar hacia el bus húmedo/salida con mezcla suave (Reglas 17 y 35)
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            currentMix_ += alpha * (targetMix_ - currentMix_);
+            const float* wetL = innerProcessBuffer_.getReadPointer(0);
+            const float* wetR = innerProcessBuffer_.getReadPointer(1);
 
-            const float dryL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr)
-                ? context.inputChannels[0][s] : 0.0f;
-            const float dryR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr)
-                ? context.inputChannels[1][s] : dryL;
-
-            if (context.numOutputChannels > 0 && context.outputChannels[0] != nullptr) {
-                context.outputChannels[0][s] = dryL * (1.0f - currentMix_) + finalEvL[s] * currentMix_;
-            }
-            if (context.numOutputChannels > 1 && context.outputChannels[1] != nullptr) {
-                context.outputChannels[1][s] = dryR * (1.0f - currentMix_) + finalEvR[s] * currentMix_;
-            }
+            n8_rust_event_container_process_return(
+                rustCore_,
+                inL, inR,
+                wetL, wetR,
+                outL, outR,
+                context.numSamples
+            );
+        } else {
+            n8_rust_event_container_process(
+                rustCore_,
+                inL, inR,
+                outL, outR,
+                context.numSamples
+            );
         }
     }
 
     void setParameter(ParameterId id, float value) override {
-        switch (id) {
-            case Trigger:      targetTrigger_ = value; break;
-            case Density:      targetDensity_ = std::clamp(value, 0.0f, 1.0f); break;
-            case Pitch:        targetPitch_ = std::clamp(value, 0.25f, 4.0f); break;
-            case Duration:     targetDurationMs_ = std::clamp(value, 10.0f, 1000.0f); break;
-            case SourceFollow: targetSourceFollow_ = std::clamp(value, 0.0f, 1.0f); break;
-            case Mix:          targetMix_ = std::clamp(value, 0.0f, 1.0f); break;
-            default: break;
+        if (rustCore_) {
+            n8_rust_event_container_set_parameter(rustCore_, id, value);
         }
     }
 
     float getParameter(ParameterId id) const override {
-        switch (id) {
-            case Trigger:      return targetTrigger_;
-            case Density:      return targetDensity_;
-            case Pitch:        return targetPitch_;
-            case Duration:     return targetDurationMs_;
-            case SourceFollow: return targetSourceFollow_;
-            case Mix:          return targetMix_;
-            default: return 0.0f;
+        if (rustCore_) {
+            return n8_rust_event_container_get_parameter(rustCore_, id);
         }
+        return 0.0f;
     }
 
     NodeType getType() const override { return NodeType::EventContainer; }
@@ -200,21 +212,11 @@ public:
 
 private:
     ProcessSpec spec_{ 44100.0, 512, 2, 2 };
+    RustEventContainer* rustCore_{ nullptr };
     EventManager eventManager_;
     PreallocatedBuffer eventOutBuffer_;
     PreallocatedBuffer innerProcessBuffer_;
     std::unique_ptr<AudioProcessorNode> innerProcessor_;
-
-    float targetTrigger_{ 0.0f };
-    float lastTrigger_{ 0.0f };
-    float targetDensity_{ 0.5f };
-    float targetPitch_{ 1.0f };
-    float targetDurationMs_{ 150.0f };
-    float targetSourceFollow_{ 0.0f };
-    float targetMix_{ 0.7f };
-    float currentMix_{ 0.7f };
-
-    uint32_t autoTriggerCounter_{ 0 };
 
     std::array<PinDescriptor, 3> pins_;
     std::array<ParameterInfo, 6> params_;

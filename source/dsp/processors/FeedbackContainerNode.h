@@ -8,11 +8,9 @@
 #include <algorithm>
 #include "../../graph/AudioProcessorNode.h"
 #include "../../graph/NodeFactory.h"
-#include "../core/DelayLine.h"
-#include "../core/BiquadFilter.h"
 #include "../core/DenormalGuards.h"
-#include "../core/FastMath.h"
 #include "../../core/RealtimePools.h"
+#include "../rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -20,7 +18,7 @@ namespace audio_graph {
  * @brief Contenedor de Lazos de Realimentación Controlados con Protección Anti-Runaway (Reglas 6, 11, 12, 34, 46, 47).
  * Encapsula un lazo de feedback con retardo configurable, filtrado de amortiguamiento (damping),
  * bloqueo de continua (DC blocker), detector de energía RMS para limitación dinámica de sobre-ganancia
- * y saturación sigmoidal Padé (FastMath::fastTanh) para garantizar rigurosamente la estabilidad numérica.
+ * y saturación sigmoidal Padé delegados al núcleo Rust de alto rendimiento con aceleración SIMD AVX2.
  */
 class FeedbackContainerNode : public AudioProcessorNode {
 public:
@@ -41,51 +39,71 @@ public:
         params_[2] = { Damping, "Damping", 7000.0f, 1000.0f, 20000.0f, true };
         params_[3] = { Threshold, "Anti-Runaway Thresh", 1.0f, 0.5f, 1.5f, true };
         params_[4] = { Mix, "Mix", 0.5f, 0.0f, 1.0f, true };
+
+        rustCore_ = n8_rust_feedback_container_create(44100.0f);
+    }
+
+    ~FeedbackContainerNode() override {
+        if (rustCore_) {
+            n8_rust_feedback_container_free(rustCore_);
+            rustCore_ = nullptr;
+        }
+    }
+
+    FeedbackContainerNode(const FeedbackContainerNode&) = delete;
+    FeedbackContainerNode& operator=(const FeedbackContainerNode&) = delete;
+
+    FeedbackContainerNode(FeedbackContainerNode&& other) noexcept
+        : AudioProcessorNode(std::move(other)),
+          spec_(other.spec_),
+          pins_(other.pins_),
+          params_(other.params_),
+          forwardBuffer_(std::move(other.forwardBuffer_)),
+          innerBuffer_(std::move(other.innerBuffer_)),
+          innerProcessor_(std::move(other.innerProcessor_)),
+          rustCore_(other.rustCore_)
+    {
+        other.rustCore_ = nullptr;
+    }
+
+    FeedbackContainerNode& operator=(FeedbackContainerNode&& other) noexcept {
+        if (this != &other) {
+            if (rustCore_) {
+                n8_rust_feedback_container_free(rustCore_);
+            }
+            AudioProcessorNode::operator=(std::move(other));
+            spec_ = other.spec_;
+            pins_ = other.pins_;
+            params_ = other.params_;
+            forwardBuffer_ = std::move(other.forwardBuffer_);
+            innerBuffer_ = std::move(other.innerBuffer_);
+            innerProcessor_ = std::move(other.innerProcessor_);
+            rustCore_ = other.rustCore_;
+            other.rustCore_ = nullptr;
+        }
+        return *this;
     }
 
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
-        
-        // Bounded preallocated delay line: 550 ms máximo (Regla 47)
-        const size_t maxDelaySamples = static_cast<size_t>(spec.sampleRate * 0.55);
-        delayLine_[0].prepare(maxDelaySamples);
-        delayLine_[1].prepare(maxDelaySamples);
 
         const uint32_t bufferChannels = std::max(2u, static_cast<uint32_t>(spec.numOutputChannels));
         forwardBuffer_.prepare(bufferChannels, spec.maximumBlockSize);
         innerBuffer_.prepare(bufferChannels, spec.maximumBlockSize);
 
-        const double sr = spec.sampleRate > 0.0 ? spec.sampleRate : 44100.0;
-        agcAttackCoeff_ = static_cast<float>(1.0 - std::exp(-1.0 / (0.010 * sr)));  // 10 ms attack
-        agcReleaseCoeff_ = static_cast<float>(1.0 - std::exp(-1.0 / (0.200 * sr))); // 200 ms release
-
-        updateFilters();
-        reset();
+        if (rustCore_) {
+            n8_rust_feedback_container_prepare(rustCore_, static_cast<float>(spec.sampleRate));
+        }
 
         if (innerProcessor_) {
             innerProcessor_->prepare(spec);
         }
-
-        currentFeedback_ = targetFeedback_;
-        currentMix_ = targetMix_;
-        currentDelayMs_ = targetDelayMs_;
     }
 
     void reset() override {
-        delayLine_[0].reset();
-        delayLine_[1].reset();
-        dampingFilter_[0].reset();
-        dampingFilter_[1].reset();
-        dcBlocker_[0].reset();
-        dcBlocker_[1].reset();
-        rmsEnvelope_[0] = 0.0f;
-        rmsEnvelope_[1] = 0.0f;
-        agcGain_[0] = 1.0f;
-        agcGain_[1] = 1.0f;
-        currentFeedback_ = targetFeedback_;
-        currentMix_ = targetMix_;
-        currentDelayMs_ = targetDelayMs_;
-
+        if (rustCore_) {
+            n8_rust_feedback_container_reset(rustCore_);
+        }
         if (innerProcessor_) {
             innerProcessor_->reset();
         }
@@ -103,42 +121,27 @@ public:
 
     void process(ProcessContext& context) override {
         ScopedDenormalGuard denormalGuard; // Reglas 34 y 47
-        const float alpha = 0.005f;        // Anti-click smoothing (Regla 35)
+        if (!rustCore_) return;
 
-        // Factor de integración del detector RMS de envolvente
-        const float rmsAttack = 0.05f;
-        const float rmsRelease = 0.001f;
+        const float* inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr)
+            ? context.inputChannels[0] : nullptr;
+        const float* inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr)
+            ? context.inputChannels[1] : inL;
 
-        // Si tenemos un procesador interno, alimentamos su entrada con Audio In + Feedback
-        float* forwardL = forwardBuffer_.getWritePointer(0);
-        float* forwardR = forwardBuffer_.getWritePointer(1);
-
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            currentFeedback_ += alpha * (targetFeedback_ - currentFeedback_);
-            currentMix_ += alpha * (targetMix_ - currentMix_);
-            currentDelayMs_ += alpha * (targetDelayMs_ - currentDelayMs_);
-
-            const float delaySamples = (currentDelayMs_ * 0.001f) * static_cast<float>(spec_.sampleRate);
-
-            // 1. Leer muestras retroalimentadas desde las líneas de retardo (moduladas por el AGC dinámico)
-            const float fbReadL = delayLine_[0].readCubic(delaySamples);
-            const float fbReadR = delayLine_[1].readCubic(delaySamples);
-
-            const float inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr)
-                ? context.inputChannels[0][s] : 0.0f;
-            const float inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr)
-                ? context.inputChannels[1][s] : inL;
-
-            // Inyección al camino de avance con limitación adaptativa AGC (Punto 6)
-            forwardL[s] = inL + fbReadL * (currentFeedback_ * agcGain_[0]);
-            forwardR[s] = inR + fbReadR * (currentFeedback_ * agcGain_[1]);
-        }
-
-        // Si hay procesador interno en el lazo, procesar en bloque (Regla 6)
-        const float* wetSrcL = forwardL;
-        const float* wetSrcR = forwardR;
+        float* outL = (context.numOutputChannels > 0 && context.outputChannels[0] != nullptr)
+            ? context.outputChannels[0] : nullptr;
+        float* outR = (context.numOutputChannels > 1 && context.outputChannels[1] != nullptr)
+            ? context.outputChannels[1] : nullptr;
 
         if (innerProcessor_) {
+            // Si hay procesador interno en el lazo, alimentar su entrada mediante inject_forward
+            float* forwardL = forwardBuffer_.getWritePointer(0);
+            float* forwardR = forwardBuffer_.getWritePointer(1);
+
+            n8_rust_feedback_container_inject_forward(
+                rustCore_, inL, inR, forwardL, forwardR, context.numSamples
+            );
+
             const float* inPtrs[2] = { forwardL, forwardR };
             float* outPtrs[2] = { innerBuffer_.getWritePointer(0), innerBuffer_.getWritePointer(1) };
             ProcessContext innerCtx{
@@ -149,90 +152,32 @@ public:
                 .numSamples = context.numSamples
             };
             innerProcessor_->process(innerCtx);
-            wetSrcL = innerBuffer_.getReadPointer(0);
-            wetSrcR = innerBuffer_.getReadPointer(1);
-        }
 
-        // 2. Procesar señal de realimentación: Damping + DC Blocker + Dynamic AGC + Padé tanh (Reglas 11, 12, 47)
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            float sampleL = wetSrcL[s];
-            float sampleR = wetSrcR[s];
-
-            // Damping acústico pasa-bajos suave
-            sampleL = dampingFilter_[0].processSample(sampleL);
-            sampleR = dampingFilter_[1].processSample(sampleR);
-
-            // Bloqueo de componente continua (DC Blocker) suave
-            sampleL = dcBlocker_[0].processSample(sampleL);
-            sampleR = dcBlocker_[1].processSample(sampleR);
-
-            // Detección de energía RMS para protección anti-runaway y AGC dinámico suave (Reglas 11, 12, 34 y 35)
-            const float energyL = sampleL * sampleL;
-            const float energyR = sampleR * sampleR;
-
-            rmsEnvelope_[0] += (energyL > rmsEnvelope_[0] ? rmsAttack : rmsRelease) * (energyL - rmsEnvelope_[0]);
-            rmsEnvelope_[1] += (energyR > rmsEnvelope_[1] ? rmsAttack : rmsRelease) * (energyR - rmsEnvelope_[1]);
-
-            const float currentRmsL = std::sqrt(rmsEnvelope_[0]);
-            const float currentRmsR = std::sqrt(rmsEnvelope_[1]);
-
-            // AGC analógico dinámico continuo: modulación suave del loop gain (Punto 6)
-            const float targetAgcL = (currentRmsL > targetThreshold_)
-                ? (targetThreshold_ / (targetThreshold_ + 2.0f * (currentRmsL - targetThreshold_)))
-                : 1.0f;
-            const float targetAgcR = (currentRmsR > targetThreshold_)
-                ? (targetThreshold_ / (targetThreshold_ + 2.0f * (currentRmsR - targetThreshold_)))
-                : 1.0f;
-
-            agcGain_[0] += (targetAgcL < agcGain_[0] ? agcAttackCoeff_ : agcReleaseCoeff_) * (targetAgcL - agcGain_[0]);
-            agcGain_[1] += (targetAgcR < agcGain_[1] ? agcAttackCoeff_ : agcReleaseCoeff_) * (targetAgcR - agcGain_[1]);
-
-            sampleL *= agcGain_[0];
-            sampleR *= agcGain_[1];
-
-            // Saturador no lineal sigmoidal Padé: garantiza rango estricto [-1.0f, +1.0f] (Regla 47)
-            const float satL = FastMath::fastTanh(sampleL);
-            const float satR = FastMath::fastTanh(sampleR);
-
-            // Almacenar en la línea de retardo para el siguiente ciclo
-            delayLine_[0].write(satL);
-            delayLine_[1].write(satR);
-
-            // Mezcla Wet/Dry hacia la salida final del bloque
-            const float inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr)
-                ? context.inputChannels[0][s] : 0.0f;
-            const float inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr)
-                ? context.inputChannels[1][s] : inL;
-
-            if (context.numOutputChannels > 0 && context.outputChannels[0] != nullptr) {
-                context.outputChannels[0][s] = inL * (1.0f - currentMix_) + satL * currentMix_;
-            }
-            if (context.numOutputChannels > 1 && context.outputChannels[1] != nullptr) {
-                context.outputChannels[1][s] = inR * (1.0f - currentMix_) + satR * currentMix_;
-            }
+            // Cerrar el lazo con la señal procesada internamente (Damping + DC Blocker + AGC + Padé Tanh)
+            n8_rust_feedback_container_process_return(
+                rustCore_, inL, inR,
+                innerBuffer_.getReadPointer(0), innerBuffer_.getReadPointer(1),
+                outL, outR, context.numSamples
+            );
+        } else {
+            // Sin procesador interno: procesamiento directo de lazo cerrado optimizado en Rust
+            n8_rust_feedback_container_process(
+                rustCore_, inL, inR, outL, outR, context.numSamples
+            );
         }
     }
 
     void setParameter(ParameterId id, float value) override {
-        switch (id) {
-            case Feedback:  targetFeedback_ = std::clamp(value, 0.0f, 1.5f); break;
-            case DelayTime: targetDelayMs_ = std::clamp(value, 1.0f, 500.0f); break;
-            case Damping:   targetDamping_ = std::clamp(value, 1000.0f, 20000.0f); updateFilters(); break;
-            case Threshold: targetThreshold_ = std::clamp(value, 0.5f, 1.5f); break;
-            case Mix:       targetMix_ = std::clamp(value, 0.0f, 1.0f); break;
-            default: break;
+        if (rustCore_) {
+            n8_rust_feedback_container_set_parameter(rustCore_, id, value);
         }
     }
 
     float getParameter(ParameterId id) const override {
-        switch (id) {
-            case Feedback:  return targetFeedback_;
-            case DelayTime: return targetDelayMs_;
-            case Damping:   return targetDamping_;
-            case Threshold: return targetThreshold_;
-            case Mix:       return targetMix_;
-            default: return 0.0f;
+        if (rustCore_) {
+            return n8_rust_feedback_container_get_parameter(rustCore_, id);
         }
+        return 0.0f;
     }
 
     NodeType getType() const override { return NodeType::Feedback; }
@@ -242,36 +187,11 @@ public:
     std::span<const ParameterInfo> getParameters() const override { return params_; }
 
 private:
-    void updateFilters() {
-        if (spec_.sampleRate > 0) {
-            dampingFilter_[0].setLowpassSmooth(spec_.sampleRate, targetDamping_, 0.707f, 128);
-            dampingFilter_[1].setLowpassSmooth(spec_.sampleRate, targetDamping_, 0.707f, 128);
-            dcBlocker_[0].setHighpassSmooth(spec_.sampleRate, 35.0f, 0.707f, 128);
-            dcBlocker_[1].setHighpassSmooth(spec_.sampleRate, 35.0f, 0.707f, 128);
-        }
-    }
-
     ProcessSpec spec_{ 44100.0, 512, 2, 2 };
-    DelayLine delayLine_[2];
-    BiquadFilter dampingFilter_[2];
-    BiquadFilter dcBlocker_[2];
     PreallocatedBuffer forwardBuffer_;
     PreallocatedBuffer innerBuffer_;
     std::unique_ptr<AudioProcessorNode> innerProcessor_;
-
-    float targetFeedback_{ 0.5f };
-    float currentFeedback_{ 0.5f };
-    float targetDelayMs_{ 50.0f };
-    float currentDelayMs_{ 50.0f };
-    float targetDamping_{ 7000.0f };
-    float targetThreshold_{ 1.0f };
-    float targetMix_{ 0.5f };
-    float currentMix_{ 0.5f };
-
-    float rmsEnvelope_[2]{ 0.0f, 0.0f };
-    float agcGain_[2]{ 1.0f, 1.0f };
-    float agcAttackCoeff_{ 0.05f };
-    float agcReleaseCoeff_{ 0.001f };
+    RustFeedbackContainer* rustCore_{ nullptr };
 
     std::array<PinDescriptor, 2> pins_;
     std::array<ParameterInfo, 5> params_;

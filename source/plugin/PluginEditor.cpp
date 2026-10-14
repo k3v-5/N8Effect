@@ -97,19 +97,39 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
 
     presetBar_.setOnCaptureSceneA([this]() {
         std::array<float, 8> macros{ 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+        for (size_t i = 0; i < 8; ++i) {
+            macros[i] = processorRef.getDualWorldEngine().getModulationEngine().getMacroManager().getMacro(static_cast<MacroManager::MacroIndex>(i));
+        }
         processorRef.getSceneManager().captureSceneA(processorRef.getGraph(), macros);
+        morphPad_.setSceneCaptured(0, true);
     });
 
     presetBar_.setOnCaptureSceneB([this]() {
         std::array<float, 8> macros{ 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+        for (size_t i = 0; i < 8; ++i) {
+            macros[i] = processorRef.getDualWorldEngine().getModulationEngine().getMacroManager().getMacro(static_cast<MacroManager::MacroIndex>(i));
+        }
         processorRef.getSceneManager().captureSceneB(processorRef.getGraph(), macros);
+        morphPad_.setSceneCaptured(1, true);
     });
 
     presetBar_.setOnMorphChanged([this](float t) {
         processorRef.getSceneManager().setMorphFactor(t);
         std::array<float, 8> macros{ 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+        for (size_t i = 0; i < 8; ++i) {
+            macros[i] = processorRef.getDualWorldEngine().getModulationEngine().getMacroManager().getMacro(static_cast<MacroManager::MacroIndex>(i));
+        }
         processorRef.getSceneManager().updateAndApply(processorRef.getGraph(), macros, 1.0f);
+        for (size_t i = 0; i < 8; ++i) {
+            processorRef.getDualWorldEngine().getModulationEngine().getMacroManager().setMacro(static_cast<MacroManager::MacroIndex>(i), macros[i]);
+        }
+        morphPad_.updateMacroValues(macros);
         canvas_.repaint();
+    });
+
+    presetBar_.setOnToggleMorphPadRequested([this](bool /*vis*/) {
+        activeDockTab_ = (activeDockTab_ == BottomDockTab::SceneMorphPad) ? BottomDockTab::None : BottomDockTab::SceneMorphPad;
+        updateDockVisibility();
     });
 
     presetBar_.setOnUndoRequested([this]() {
@@ -230,6 +250,14 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
         macroDashboard_.setSelectedNodeId(id);
     });
 
+    // Resolver interactivo de cables de modulación hacia los pines del Macro Dashboard (Reglas 7, 25, 49)
+    canvas_.setModSourcePositionResolver([this](ModSourceType type) -> juce::Point<float> {
+        if (isMacrosVisible_) {
+            return macroDashboard_.getMacroPinScreenPosition(type);
+        }
+        return {};
+    });
+
     // Reenvío bidireccional transparente de teclado de PC al piano de prueba de efectos
     canvas_.setOnPianoKeyForward([this](const juce::KeyPress& key) {
         return piano_.keyPressed(key);
@@ -245,12 +273,8 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
 
     canvas_.setOnSampleLoaded([this]() {
         piano_.setTimbreMode(TestTimbreMode::LoadedSample);
-        if (!isPianoVisible_) {
-            isPianoVisible_ = true;
-            presetBar_.setPianoToggleState(true);
-            piano_.setVisible(true);
-            resized();
-        }
+        activeDockTab_ = BottomDockTab::Piano;
+        updateDockVisibility();
     });
 
     // 5. Teclado de Piano Visual de Prueba para Efectos
@@ -264,32 +288,30 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
         processorRef.getTestSynthesizer().setTimbreMode(mode);
     });
     piano_.setOnCloseRequested([this]() {
-        isPianoVisible_ = false;
-        presetBar_.setPianoToggleState(false);
-        piano_.setVisible(false);
-        resized();
+        if (activeDockTab_ == BottomDockTab::Piano) activeDockTab_ = BottomDockTab::None;
+        updateDockVisibility();
+    });
+    presetBar_.setOnTogglePianoRequested([this](bool /*vis*/) {
+        activeDockTab_ = (activeDockTab_ == BottomDockTab::Piano) ? BottomDockTab::None : BottomDockTab::Piano;
+        updateDockVisibility();
     });
     addAndMakeVisible(piano_);
 
     // 6. Carril de Secuenciación de Automatización por Efecto
     sequencerLane_.setOnCloseRequested([this]() {
-        isSeqVisible_ = false;
-        presetBar_.setSeqToggleState(false);
-        sequencerLane_.setVisible(false);
-        resized();
+        if (activeDockTab_ == BottomDockTab::Sequencer) activeDockTab_ = BottomDockTab::None;
+        updateDockVisibility();
     });
-    presetBar_.setOnToggleSeqRequested([this](bool vis) {
-        isSeqVisible_ = vis;
-        sequencerLane_.setVisible(vis);
-        resized();
+    presetBar_.setOnToggleSeqRequested([this](bool /*vis*/) {
+        activeDockTab_ = (activeDockTab_ == BottomDockTab::Sequencer) ? BottomDockTab::None : BottomDockTab::Sequencer;
+        updateDockVisibility();
     });
     addAndMakeVisible(sequencerLane_);
 
     // 7. Visualizador de Audio y Espectrograma en Tiempo Real
-    presetBar_.setOnToggleVisualizerRequested([this](bool vis) {
-        isVisVisible_ = vis;
-        visualizer_.setVisible(vis);
-        resized();
+    presetBar_.setOnToggleVisualizerRequested([this](bool /*vis*/) {
+        activeDockTab_ = (activeDockTab_ == BottomDockTab::Visualizer) ? BottomDockTab::None : BottomDockTab::Visualizer;
+        updateDockVisibility();
     });
     addAndMakeVisible(visualizer_);
 
@@ -297,9 +319,57 @@ N8AudioProcessorEditor::N8AudioProcessorEditor(N8AudioProcessor& p)
     presetBar_.setOnToggleMacrosRequested([this](bool vis) {
         isMacrosVisible_ = vis;
         macroDashboard_.setVisible(vis);
+        presetBar_.setMacrosToggleState(vis);
         resized();
     });
     addAndMakeVisible(macroDashboard_);
+
+    // 9. Pad X/Y 2D de Morphing de Escenas y Telemetria de Macros (Fase 7)
+    morphPad_.setOnMorphXYChanged([this](float x, float y) {
+        processorRef.getSceneManager().setMorphXY(x, y);
+        if (auto* px = processorRef.getAPVTS().getParameter("morph_x")) {
+            px->setValueNotifyingHost(x);
+        }
+        if (auto* py = processorRef.getAPVTS().getParameter("morph_y")) {
+            py->setValueNotifyingHost(y);
+        }
+        std::array<float, 8> macros{ 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+        for (size_t i = 0; i < 8; ++i) {
+            macros[i] = processorRef.getDualWorldEngine().getModulationEngine().getMacroManager().getMacro(static_cast<MacroManager::MacroIndex>(i));
+        }
+        processorRef.getSceneManager().updateAndApplyXY(processorRef.getGraph(), macros, morphPad_.getSmoothingSpeed());
+        for (size_t i = 0; i < 8; ++i) {
+            processorRef.getDualWorldEngine().getModulationEngine().getMacroManager().setMacro(static_cast<MacroManager::MacroIndex>(i), macros[i]);
+        }
+        morphPad_.updateMacroValues(macros);
+        canvas_.repaint();
+    });
+
+    morphPad_.setOnCaptureScene([this](size_t sceneIdx) {
+        std::array<float, 8> macros{ 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+        for (size_t i = 0; i < 8; ++i) {
+            macros[i] = processorRef.getDualWorldEngine().getModulationEngine().getMacroManager().getMacro(static_cast<MacroManager::MacroIndex>(i));
+        }
+        processorRef.getSceneManager().captureScene(sceneIdx, processorRef.getGraph(), macros);
+        morphPad_.setSceneCaptured(sceneIdx, true);
+    });
+
+    morphPad_.setOnClearScene([this](size_t sceneIdx) {
+        processorRef.getSceneManager().clearScene(sceneIdx);
+        morphPad_.setSceneCaptured(sceneIdx, false);
+    });
+
+    morphPad_.setOnRandomizeRequested([this]() {
+        if (processorRef.randomizeGraph(SmartRandomizer::RandomMode::ModerateMutation)) {
+            canvas_.rebuildFromGraph();
+            macroDashboard_.updateKnobValues();
+        }
+    });
+
+    morphPad_.setVisible(false);
+    addChildComponent(morphPad_);
+
+    updateDockVisibility();
 
     hud_.setOnResetOverload([this]() {
         processorRef.resetCpuOverload();
@@ -398,6 +468,7 @@ void N8AudioProcessorEditor::themeChanged(const ThemeColors& /*newTheme*/, Theme
     presetBar_.repaint();
     visualizer_.repaint();
     macroDashboard_.repaint();
+    morphPad_.repaint();
 }
 
 void N8AudioProcessorEditor::parentHierarchyChanged() {
@@ -442,6 +513,17 @@ void N8AudioProcessorEditor::timerCallback() {
     if (isMacrosVisible_) {
         macroDashboard_.updateKnobValues();
     }
+    if (isMorphPadVisible_) {
+        morphPad_.setSmoothedXY(
+            processorRef.getSceneManager().getCurrentSmoothedMorphX(),
+            processorRef.getSceneManager().getCurrentSmoothedMorphY()
+        );
+        std::array<float, 8> mVals{};
+        for (size_t i = 0; i < 8; ++i) {
+            mVals[i] = processorRef.getDualWorldEngine().getModulationEngine().getMacroManager().getSmoothedMacro(static_cast<MacroManager::MacroIndex>(i));
+        }
+        morphPad_.updateMacroValues(mVals);
+    }
 
     if (isConfigModalVisible_) {
         configModal_.setMetrics(metrics,
@@ -463,6 +545,26 @@ void N8AudioProcessorEditor::paint(juce::Graphics& g) {
     // Divisor de barra superior
     g.setColour(theme.borderMuted);
     g.drawHorizontalLine(87, 0.0f, static_cast<float>(getWidth()));
+}
+
+void N8AudioProcessorEditor::updateDockVisibility() {
+    isPianoVisible_ = (activeDockTab_ == BottomDockTab::Piano);
+    isSeqVisible_ = (activeDockTab_ == BottomDockTab::Sequencer);
+    isVisVisible_ = (activeDockTab_ == BottomDockTab::Visualizer);
+    isMorphPadVisible_ = (activeDockTab_ == BottomDockTab::SceneMorphPad);
+
+    piano_.setVisible(isPianoVisible_);
+    sequencerLane_.setVisible(isSeqVisible_);
+    visualizer_.setVisible(isVisVisible_);
+    morphPad_.setVisible(isMorphPadVisible_);
+
+    presetBar_.setPianoToggleState(isPianoVisible_);
+    presetBar_.setSeqToggleState(isSeqVisible_);
+    presetBar_.setVisToggleState(isVisVisible_);
+    presetBar_.setMacrosToggleState(isMacrosVisible_);
+    presetBar_.setMorphPadToggleState(isMorphPadVisible_);
+
+    resized();
 }
 
 void N8AudioProcessorEditor::resized() {
@@ -496,30 +598,26 @@ void N8AudioProcessorEditor::resized() {
     // 2. Barra de Presets y Escenas (estilo Arturia / FLEX)
     presetBar_.setBounds(area.removeFromTop(32));
 
-    // 3. Piano visual en la parte inferior si está activo
-    if (isPianoVisible_) {
-        piano_.setBounds(area.removeFromBottom(84));
-    }
-
-    // 4. Carril de Secuenciación por Efecto si está activo
-    if (isSeqVisible_) {
-        sequencerLane_.setBounds(area.removeFromBottom(115));
-    }
-
-    // 4.1 Visualizador de Audio y Espectrograma si está activo
-    if (isVisVisible_) {
-        visualizer_.setBounds(area.removeFromBottom(135));
-    }
-
-    // 4.2 Dashboard de 8 Macros de Rendimiento reacomodado en el dock inferior (minimalista 42px)
+    // 3. Dashboard de 8 Macros de Rendimiento en la base del dock inferior (42px)
     if (isMacrosVisible_) {
         macroDashboard_.setBounds(area.removeFromBottom(42));
+    }
+
+    // 4. Panel activo del Dock Modular por Pestañas (exclusivo para no saturar verticalmente el lienzo)
+    if (isPianoVisible_) {
+        piano_.setBounds(area.removeFromBottom(84));
+    } else if (isSeqVisible_) {
+        sequencerLane_.setBounds(area.removeFromBottom(115));
+    } else if (isVisVisible_) {
+        visualizer_.setBounds(area.removeFromBottom(135));
+    } else if (isMorphPadVisible_) {
+        morphPad_.setBounds(area.removeFromBottom(145));
     }
 
     // 5. Barra lateral de paleta de módulos (espaciosa 195px para tarjetas categorizadas y buscador)
     palette_.setBounds(area.removeFromLeft(195));
 
-    // 6. Canvas del grafo DAG
+    // 6. Canvas del grafo DAG (ahora con más de 650px de altura disponible)
     canvas_.setBounds(area);
 
     // 7. Modal de configuración cubre toda la ventana cuando está activo

@@ -197,6 +197,17 @@ public:
         morphLabel_.setColour(juce::Label::textColourId, juce::Colour(0xff8c96a5));
         addAndMakeVisible(morphLabel_);
 
+        // Boton Pad XY (Fase 7: 2D Scene Morphing)
+        padToggleBtn_.setButtonText(juce::CharPointer_UTF8("\xE2\x97\x88 Pad XY"));
+        padToggleBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff161a26));
+        padToggleBtn_.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff00d4ff));
+        padToggleBtn_.onClick = [this]() {
+            isMorphPadVisible_ = !isMorphPadVisible_;
+            padToggleBtn_.setColour(juce::TextButton::textColourOffId, isMorphPadVisible_ ? juce::Colour(0xff00d4ff) : juce::Colour(0xff606c80));
+            if (onToggleMorphPadRequested_) onToggleMorphPadRequested_(isMorphPadVisible_);
+        };
+        addAndMakeVisible(padToggleBtn_);
+
         // 3. Botones Undo / Redo
         undoBtn_.setButtonText("Undo");
         undoBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff121622));
@@ -321,6 +332,21 @@ public:
         seqToggleBtn_.setColour(juce::TextButton::textColourOffId, isSeqVisible_ ? juce::Colour(0xff00d4ff) : juce::Colour(0xff606c80));
     }
 
+    void setVisToggleState(bool isVisible) {
+        isVisVisible_ = isVisible;
+        visToggleBtn_.setColour(juce::TextButton::textColourOffId, isVisVisible_ ? juce::Colour(0xff00d4ff) : juce::Colour(0xff606c80));
+    }
+
+    void setMacrosToggleState(bool isVisible) {
+        isMacrosVisible_ = isVisible;
+        macrosToggleBtn_.setColour(juce::TextButton::textColourOffId, isMacrosVisible_ ? juce::Colour(0xff00d4ff) : juce::Colour(0xff606c80));
+    }
+
+    void setMorphPadToggleState(bool isVisible) {
+        isMorphPadVisible_ = isVisible;
+        padToggleBtn_.setColour(juce::TextButton::textColourOffId, isMorphPadVisible_ ? juce::Colour(0xff00d4ff) : juce::Colour(0xff606c80));
+    }
+
     void setOnPresetSelected(std::function<void(int)> cb) { onPresetSelected_ = std::move(cb); }
     void setOnSavePresetRequested(std::function<void()> cb) { onSavePresetRequested_ = std::move(cb); }
     void setOnBrowseRequested(std::function<void()> cb) { onBrowseRequested_ = std::move(cb); }
@@ -335,6 +361,7 @@ public:
     void setOnToggleSeqRequested(std::function<void(bool)> cb) { onToggleSeqRequested_ = std::move(cb); }
     void setOnToggleVisualizerRequested(std::function<void(bool)> cb) { onToggleVisRequested_ = std::move(cb); }
     void setOnToggleMacrosRequested(std::function<void(bool)> cb) { onToggleMacrosRequested_ = std::move(cb); }
+    void setOnToggleMorphPadRequested(std::function<void(bool)> cb) { onToggleMorphPadRequested_ = std::move(cb); }
     void setOnRandomizeRequested(std::function<void(int)> cb) { onRandomizeRequested_ = std::move(cb); }
 
     void paint(juce::Graphics& g) override {
@@ -372,7 +399,7 @@ public:
         // Centro: Capsula Arturia / FLEX con Steppers
         prevBtn_.setBounds(area.removeFromLeft(20));
         area.removeFromLeft(2);
-        capsule_.setBounds(area.removeFromLeft(240));
+        capsule_.setBounds(area.removeFromLeft(230));
         area.removeFromLeft(2);
         nextBtn_.setBounds(area.removeFromLeft(20));
         area.removeFromLeft(6);
@@ -386,9 +413,11 @@ public:
         captureABtn_.setBounds(area.removeFromLeft(42));
         area.removeFromLeft(4);
         morphLabel_.setBounds(area.removeFromLeft(46));
-        morphSlider_.setBounds(area.removeFromLeft(80));
+        morphSlider_.setBounds(area.removeFromLeft(70));
         area.removeFromLeft(4);
         captureBBtn_.setBounds(area.removeFromLeft(42));
+        area.removeFromLeft(4);
+        padToggleBtn_.setBounds(area.removeFromLeft(54));
     }
 
 private:
@@ -408,6 +437,7 @@ private:
     juce::TextButton captureBBtn_;
     juce::Slider morphSlider_;
     juce::Label morphLabel_;
+    juce::TextButton padToggleBtn_;
 
     juce::TextButton undoBtn_;
     juce::TextButton redoBtn_;
@@ -423,6 +453,7 @@ private:
     bool isSeqVisible_{ true };
     bool isVisVisible_{ true };
     bool isMacrosVisible_{ true };
+    bool isMorphPadVisible_{ false };
     int totalPresets_{ 0 };
     int currentPresetIndex_{ 0 };
     std::vector<PresetItem> presetItems_;
@@ -441,6 +472,7 @@ private:
     std::function<void(bool)> onToggleSeqRequested_;
     std::function<void(bool)> onToggleVisRequested_;
     std::function<void(bool)> onToggleMacrosRequested_;
+    std::function<void(bool)> onToggleMorphPadRequested_;
     std::function<void(int)> onRandomizeRequested_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PresetBarComponent)

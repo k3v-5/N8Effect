@@ -1,69 +1,106 @@
 #pragma once
 
-#include <cmath>
+#include <cstdint>
+#include <cstddef>
 #include <algorithm>
-#include <numbers>
 #include "EventTypes.h"
 #include "EventCaptureBuffer.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
  * @brief Representación y reproducción de un fragmento de audio con envolvente y pitch (Reglas 2, 4.1, 46)
+ * Acelerado con núcleo en Rust de alto rendimiento.
  */
 class AudioFragment {
 public:
-    AudioFragment() = default;
+    explicit AudioFragment(RustAudioFragment* existing = nullptr, bool owns = true)
+        : rustInstance_(existing != nullptr ? existing : n8_rust_audio_fragment_create()),
+          ownsCore_(existing == nullptr || owns)
+    {
+    }
+
+    ~AudioFragment() {
+        if (ownsCore_ && rustInstance_ != nullptr) {
+            n8_rust_audio_fragment_destroy(rustInstance_);
+            rustInstance_ = nullptr;
+        }
+    }
+
+    AudioFragment(const AudioFragment&) = delete;
+    AudioFragment& operator=(const AudioFragment&) = delete;
+
+    AudioFragment(AudioFragment&& other) noexcept
+        : rustInstance_(other.rustInstance_),
+          ownsCore_(other.ownsCore_)
+    {
+        other.rustInstance_ = nullptr;
+        other.ownsCore_ = false;
+    }
+
+    AudioFragment& operator=(AudioFragment&& other) noexcept {
+        if (this != &other) {
+            if (ownsCore_ && rustInstance_ != nullptr) {
+                n8_rust_audio_fragment_destroy(rustInstance_);
+            }
+            rustInstance_ = other.rustInstance_;
+            ownsCore_ = other.ownsCore_;
+            other.rustInstance_ = nullptr;
+            other.ownsCore_ = false;
+        }
+        return *this;
+    }
 
     void configure(double captureOffsetSamples, uint64_t durationSamples, float pitchRatio, bool reverse = false) noexcept {
-        captureOffsetSamples_ = captureOffsetSamples;
-        durationSamples_ = std::max<uint64_t>(durationSamples, 16);
-        pitchRatio_ = std::clamp(pitchRatio, 0.125f, 8.0f);
-        reverse_ = reverse;
-        currentPhase_ = 0.0;
-        isFinished_ = false;
+        if (rustInstance_ != nullptr) {
+            n8_rust_audio_fragment_configure(rustInstance_, captureOffsetSamples, durationSamples, pitchRatio, reverse);
+        }
     }
 
     void reset() noexcept {
-        currentPhase_ = 0.0;
-        isFinished_ = false;
+        if (rustInstance_ != nullptr) {
+            n8_rust_audio_fragment_reset(rustInstance_);
+        }
     }
 
     // Genera el siguiente par de muestras estéreo leyendo desde el buffer de captura
     bool getNextSample(const EventCaptureBuffer& capture, float& outL, float& outR, float envelopeGain) noexcept {
-        if (isFinished_ || currentPhase_ >= static_cast<double>(durationSamples_)) {
-            outL = 0.0f;
-            outR = 0.0f;
-            isFinished_ = true;
-            return false;
+        if (rustInstance_ != nullptr && capture.getRustInstance() != nullptr) {
+            return n8_rust_audio_fragment_get_next_sample(rustInstance_, capture.getRustInstance(), envelopeGain, &outL, &outR);
         }
+        outL = 0.0f;
+        outR = 0.0f;
+        return false;
+    }
 
-        // Posición dentro del fragmento respecto al inicio de la captura en el pasado
-        double playOffset = reverse_ ? (static_cast<double>(durationSamples_) - currentPhase_) : currentPhase_;
-        double sampleOffset = captureOffsetSamples_ - playOffset;
-
-        outL = capture.readSample(0, sampleOffset) * envelopeGain;
-        outR = capture.readSample(1, sampleOffset) * envelopeGain;
-
-        currentPhase_ += pitchRatio_;
-        if (currentPhase_ >= static_cast<double>(durationSamples_)) {
-            isFinished_ = true;
+    double getCurrentPhase() const noexcept {
+        if (rustInstance_ != nullptr) {
+            return n8_rust_audio_fragment_get_current_phase(rustInstance_);
         }
+        return 0.0;
+    }
 
+    uint64_t getDurationSamples() const noexcept {
+        if (rustInstance_ != nullptr) {
+            return n8_rust_audio_fragment_get_duration_samples(rustInstance_);
+        }
+        return 0;
+    }
+
+    bool isFinished() const noexcept {
+        if (rustInstance_ != nullptr) {
+            return n8_rust_audio_fragment_is_finished(rustInstance_);
+        }
         return true;
     }
 
-    double getCurrentPhase() const noexcept { return currentPhase_; }
-    uint64_t getDurationSamples() const noexcept { return durationSamples_; }
-    bool isFinished() const noexcept { return isFinished_; }
+    RustAudioFragment* getRustInstance() noexcept { return rustInstance_; }
+    const RustAudioFragment* getRustInstance() const noexcept { return rustInstance_; }
 
 private:
-    double captureOffsetSamples_{ 0.0 };
-    uint64_t durationSamples_{ 1024 };
-    float pitchRatio_{ 1.0f };
-    double currentPhase_{ 0.0 };
-    bool reverse_{ false };
-    bool isFinished_{ true };
+    RustAudioFragment* rustInstance_{ nullptr };
+    bool ownsCore_{ true };
 };
 
 } // namespace audio_graph

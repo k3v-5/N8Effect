@@ -11,6 +11,8 @@
     #define N8_HAS_SSE_INTRINSICS 0
 #endif
 
+#include "../rust_core/include/n8_rust_core.h"
+
 namespace audio_graph {
 
 /**
@@ -22,15 +24,13 @@ class ScopedDenormalGuard {
 public:
     ScopedDenormalGuard() noexcept {
 #if N8_HAS_SSE_INTRINSICS
-        oldMxcsr_ = _mm_getcsr();
-        // Activar Flush-To-Zero (0x8000) y Denormals-Are-Zero (0x0040)
-        _mm_setcsr(oldMxcsr_ | 0x8040);
+        oldMxcsr_ = n8_rust_opt_enable_ftz_daz();
 #endif
     }
 
     ~ScopedDenormalGuard() noexcept {
 #if N8_HAS_SSE_INTRINSICS
-        _mm_setcsr(oldMxcsr_);
+        n8_rust_opt_restore_mxcsr(oldMxcsr_);
 #endif
     }
 
@@ -44,12 +44,7 @@ public:
      * @brief Comprueba si los bits DAZ y FTZ están actualmente activos en el registro de hardware.
      */
     static bool areDenormalsDisabled() noexcept {
-#if N8_HAS_SSE_INTRINSICS
-        const unsigned int mxcsr = _mm_getcsr();
-        return (mxcsr & 0x8040) == 0x8040;
-#else
-        return false;
-#endif
+        return n8_rust_opt_is_ftz_daz_active();
     }
 
     /**

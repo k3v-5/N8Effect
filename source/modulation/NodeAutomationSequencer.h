@@ -8,6 +8,7 @@
 #include "../core/Types.h"
 #include "../graph/AudioProcessorNode.h"
 #include "ModulationTypes.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -41,7 +42,7 @@ struct NodeAutomationLane {
 
 /**
  * @brief Banco de Automatización Secuenciada por Nodo (Multi-Lane Tabs) (Reglas 1, 7, 8, 9, 25, 46, 47)
- * Permite hasta 4 pistas simultáneas e independientes de automatización rítmica por efecto.
+ * Acelerado por Rust n8_rust_core con 4 pistas rítmicas independientes, anti-clic y cero allocations.
  */
 class NodeAutomationBank {
 public:
@@ -58,6 +59,7 @@ public:
     };
 
     NodeAutomationBank() {
+        rustCore_ = n8_rust_node_automation_bank_create();
         for (size_t l = 0; l < MaxLanes; ++l) {
             lanes_[l].active = false;
             lanes_[l].numSteps = 16;
@@ -68,7 +70,41 @@ public:
         }
     }
 
-    void prepare(double /*sampleRate*/) noexcept {
+    ~NodeAutomationBank() {
+        if (rustCore_) {
+            n8_rust_node_automation_bank_destroy(rustCore_);
+            rustCore_ = nullptr;
+        }
+    }
+
+    NodeAutomationBank(const NodeAutomationBank&) = delete;
+    NodeAutomationBank& operator=(const NodeAutomationBank&) = delete;
+
+    NodeAutomationBank(NodeAutomationBank&& other) noexcept
+        : lanes_(other.lanes_),
+          selectedLane_(other.selectedLane_),
+          rustCore_(other.rustCore_)
+    {
+        other.rustCore_ = nullptr;
+    }
+
+    NodeAutomationBank& operator=(NodeAutomationBank&& other) noexcept {
+        if (this != &other) {
+            if (rustCore_) {
+                n8_rust_node_automation_bank_destroy(rustCore_);
+            }
+            lanes_ = other.lanes_;
+            selectedLane_ = other.selectedLane_;
+            rustCore_ = other.rustCore_;
+            other.rustCore_ = nullptr;
+        }
+        return *this;
+    }
+
+    void prepare(double sampleRate) noexcept {
+        if (rustCore_) {
+            n8_rust_node_automation_bank_prepare(rustCore_, sampleRate);
+        }
         for (auto& lane : lanes_) {
             lane.currentOutput = lane.steps[0];
             lane.targetOutput = lane.steps[0];
@@ -78,6 +114,9 @@ public:
     }
 
     void reset() noexcept {
+        if (rustCore_) {
+            n8_rust_node_automation_bank_reset(rustCore_);
+        }
         for (auto& lane : lanes_) {
             lane.currentOutput = lane.steps[0];
             lane.targetOutput = lane.steps[0];
@@ -119,58 +158,64 @@ public:
         auto& lane = lanes_[laneIdx];
         const uint32_t n = std::clamp<uint32_t>(lane.numSteps, 1, 32);
 
-        switch (shape) {
-            case RampUp: {
-                for (uint32_t i = 0; i < n; ++i) {
-                    lane.steps[i] = static_cast<float>(i) / static_cast<float>(std::max(1u, n - 1));
-                }
-                break;
+        if (rustCore_) {
+            n8_rust_node_automation_bank_apply_shape(rustCore_, laneIdx, static_cast<uint8_t>(shape));
+            for (uint32_t i = 0; i < n; ++i) {
+                lane.steps[i] = n8_rust_node_automation_bank_get_step(rustCore_, laneIdx, i);
             }
-            case RampDown: {
-                for (uint32_t i = 0; i < n; ++i) {
-                    lane.steps[i] = 1.0f - static_cast<float>(i) / static_cast<float>(std::max(1u, n - 1));
-                }
-                break;
-            }
-            case SidechainPump: {
-                // Curva de bombeo tipo 4-al-piso (repite cada 4 pasos en un patrón de 16)
-                const uint32_t period = (n >= 8) ? 4 : n;
-                for (uint32_t i = 0; i < n; ++i) {
-                    const float t = static_cast<float>(i % period) / static_cast<float>(period);
-                    lane.steps[i] = t * t; // Curva cuadrática creciente
-                }
-                break;
-            }
-            case Staccato: {
-                for (uint32_t i = 0; i < n; ++i) {
-                    lane.steps[i] = (i % 2 == 0) ? 0.95f : 0.05f;
-                }
-                break;
-            }
-            case Triangle: {
-                const uint32_t half = n / 2;
-                for (uint32_t i = 0; i < n; ++i) {
-                    if (i <= half) {
-                        lane.steps[i] = static_cast<float>(i) / static_cast<float>(std::max(1u, half));
-                    } else {
-                        lane.steps[i] = 1.0f - static_cast<float>(i - half) / static_cast<float>(std::max(1u, n - half));
+        } else {
+            switch (shape) {
+                case RampUp: {
+                    for (uint32_t i = 0; i < n; ++i) {
+                        lane.steps[i] = static_cast<float>(i) / static_cast<float>(std::max(1u, n - 1));
                     }
+                    break;
                 }
-                break;
-            }
-            case Random: {
-                uint32_t seed = 0x55AA1234u + static_cast<uint32_t>(laneIdx * 100);
-                for (uint32_t i = 0; i < n; ++i) {
-                    seed = seed * 1664525u + 1013904223u;
-                    lane.steps[i] = static_cast<float>(seed & 0xFFFF) / 65535.0f;
+                case RampDown: {
+                    for (uint32_t i = 0; i < n; ++i) {
+                        lane.steps[i] = 1.0f - static_cast<float>(i) / static_cast<float>(std::max(1u, n - 1));
+                    }
+                    break;
                 }
-                break;
-            }
-            case Flat: {
-                for (uint32_t i = 0; i < n; ++i) {
-                    lane.steps[i] = 0.5f;
+                case SidechainPump: {
+                    const uint32_t period = (n >= 8) ? 4 : n;
+                    for (uint32_t i = 0; i < n; ++i) {
+                        const float t = static_cast<float>(i % period) / static_cast<float>(period);
+                        lane.steps[i] = t * t;
+                    }
+                    break;
                 }
-                break;
+                case Staccato: {
+                    for (uint32_t i = 0; i < n; ++i) {
+                        lane.steps[i] = (i % 2 == 0) ? 0.95f : 0.05f;
+                    }
+                    break;
+                }
+                case Triangle: {
+                    const uint32_t half = n / 2;
+                    for (uint32_t i = 0; i < n; ++i) {
+                        if (i <= half) {
+                            lane.steps[i] = static_cast<float>(i) / static_cast<float>(std::max(1u, half));
+                        } else {
+                            lane.steps[i] = 1.0f - static_cast<float>(i - half) / static_cast<float>(std::max(1u, n - half));
+                        }
+                    }
+                    break;
+                }
+                case Random: {
+                    uint32_t seed = 0x55AA1234u + static_cast<uint32_t>(laneIdx * 100);
+                    for (uint32_t i = 0; i < n; ++i) {
+                        seed = seed * 1664525u + 1013904223u;
+                        lane.steps[i] = static_cast<float>(seed & 0xFFFF) / 65535.0f;
+                    }
+                    break;
+                }
+                case Flat: {
+                    for (uint32_t i = 0; i < n; ++i) {
+                        lane.steps[i] = 0.5f;
+                    }
+                    break;
+                }
             }
         }
     }
@@ -200,44 +245,69 @@ public:
                 lane.hasCapturedBase = true;
             }
 
-            // Avance rítmico según el PPQ del host DAW
-            if (ctx.isPlaying) {
-                const double beatsPerStep = getBeatsPerStep(lane.rate);
-                if (beatsPerStep > 0.0) {
-                    int64_t stepIdx = static_cast<int64_t>(std::floor(ctx.ppqPosition / beatsPerStep));
-                    if (stepIdx != lane.lastPpqStep) {
-                        lane.lastPpqStep = stepIdx;
-                        const uint32_t n = std::max(1u, lane.numSteps);
-                        int64_t wrapped = (stepIdx % n + n) % n;
-                        lane.currentStep = static_cast<uint32_t>(wrapped);
-                        lane.targetOutput = lane.steps[lane.currentStep];
-                    }
+            if (rustCore_) {
+                // Sincronizar configuración y pasos hacia Rust
+                n8_rust_node_automation_bank_set_lane_config(
+                    rustCore_, l, lane.active, lane.targetParamId, lane.numSteps,
+                    static_cast<uint8_t>(lane.rate), lane.glide, lane.amount
+                );
+                for (uint32_t s = 0; s < lane.numSteps && s < 32; ++s) {
+                    n8_rust_node_automation_bank_set_step(rustCore_, l, s, lane.steps[s]);
+                }
+
+                float modulatedVal = lane.baseValue;
+                bool active = n8_rust_node_automation_bank_process_step(
+                    rustCore_, l, ctx.isPlaying, ctx.ppqPosition,
+                    lane.baseValue, targetInfo->minValue, targetInfo->maxValue,
+                    &modulatedVal
+                );
+
+                if (active) {
+                    lane.liveModulatedVal = modulatedVal;
+                    node->setParameter(lane.targetParamId, modulatedVal);
                 }
             } else {
-                lane.targetOutput = lane.steps[lane.currentStep < lane.numSteps ? lane.currentStep : 0];
+                // Fallback C++
+                if (ctx.isPlaying) {
+                    const double beatsPerStep = getBeatsPerStep(lane.rate);
+                    if (beatsPerStep > 0.0) {
+                        int64_t stepIdx = static_cast<int64_t>(std::floor(ctx.ppqPosition / beatsPerStep));
+                        if (stepIdx != lane.lastPpqStep) {
+                            lane.lastPpqStep = stepIdx;
+                            const uint32_t n = std::max(1u, lane.numSteps);
+                            int64_t wrapped = (stepIdx % n + n) % n;
+                            lane.currentStep = static_cast<uint32_t>(wrapped);
+                            lane.targetOutput = lane.steps[lane.currentStep];
+                        }
+                    }
+                } else {
+                    lane.targetOutput = lane.steps[lane.currentStep < lane.numSteps ? lane.currentStep : 0];
+                }
+
+                const float glideCoeff = std::clamp(1.0f - lane.glide * 0.95f, 0.05f, 1.0f);
+                lane.currentOutput += glideCoeff * (lane.targetOutput - lane.currentOutput);
+
+                const float range = targetInfo->maxValue - targetInfo->minValue;
+                const float seqValue = targetInfo->minValue + std::clamp(lane.currentOutput, 0.0f, 1.0f) * range;
+                const float modulatedVal = std::clamp(
+                    (1.0f - lane.amount) * lane.baseValue + lane.amount * seqValue,
+                    targetInfo->minValue,
+                    targetInfo->maxValue
+                );
+
+                lane.liveModulatedVal = modulatedVal;
+                node->setParameter(lane.targetParamId, modulatedVal);
             }
-
-            // Suavizado Glide exponencial anti-clic
-            const float glideCoeff = std::clamp(1.0f - lane.glide * 0.95f, 0.05f, 1.0f);
-            lane.currentOutput += glideCoeff * (lane.targetOutput - lane.currentOutput);
-
-            // Interpolación de modulación entre Base Value y Valor de la Secuencia
-            const float range = targetInfo->maxValue - targetInfo->minValue;
-            const float seqValue = targetInfo->minValue + std::clamp(lane.currentOutput, 0.0f, 1.0f) * range;
-            const float modulatedVal = std::clamp(
-                (1.0f - lane.amount) * lane.baseValue + lane.amount * seqValue,
-                targetInfo->minValue,
-                targetInfo->maxValue
-            );
-
-            lane.liveModulatedVal = modulatedVal;
-            node->setParameter(lane.targetParamId, modulatedVal);
         }
     }
+
+    [[nodiscard]] RustNodeAutomationBank* getRustCore() noexcept { return rustCore_; }
+    [[nodiscard]] const RustNodeAutomationBank* getRustCore() const noexcept { return rustCore_; }
 
 private:
     std::array<NodeAutomationLane, MaxLanes> lanes_;
     size_t selectedLane_{ 0 };
+    RustNodeAutomationBank* rustCore_{ nullptr };
 };
 
 } // namespace audio_graph

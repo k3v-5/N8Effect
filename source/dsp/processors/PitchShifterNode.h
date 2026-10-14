@@ -6,8 +6,7 @@
 #include <algorithm>
 #include "../../graph/AudioProcessorNode.h"
 #include "../../graph/NodeFactory.h"
-#include "../core/DelayLine.h"
-#include "../core/PhaseVocoder.h"
+#include "../rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -15,6 +14,7 @@ namespace audio_graph {
  * @brief Transpositor de Tono (+/- 24 Semitonos) híbrido de doble algoritmo (Reglas 3, 5, 8, 14, 17, 34, 46, 47):
  * - Modo 0: Doble cabezal analógico en dominio de tiempo con interpolación cúbica Hermite (baja latencia <5ms).
  * - Modo 1: Spectral Phase Vocoder HD con bloqueo de fase por picos (Identity Phase Locking, Laroche & Dolson).
+ * Delegado al motor SIMD de alto rendimiento Rust (n8_rust_pitch_shifter).
  */
 class PitchShifterNode : public AudioProcessorNode {
 public:
@@ -37,111 +37,82 @@ public:
         params_[3] = { DryWet, "Mix", 1.0f, 0.0f, 1.0f, true };
         params_[4] = { Algorithm, "Algorithm", 0.0f, 0.0f, 1.0f, true }; // 0: Dual-Head Time-Domain, 1: Phase Vocoder HD
         params_[5] = { PhaseLocking, "Phase Locking", 1.0f, 0.0f, 1.0f, true }; // 0.0 = Loose/Vintage, 1.0 = Strict Laroche-Dolson
+
+        rustNode_ = n8_rust_pitch_shifter_create();
+    }
+
+    ~PitchShifterNode() override {
+        if (rustNode_) {
+            n8_rust_pitch_shifter_destroy(rustNode_);
+            rustNode_ = nullptr;
+        }
+    }
+
+    PitchShifterNode(const PitchShifterNode&) = delete;
+    PitchShifterNode& operator=(const PitchShifterNode&) = delete;
+
+    PitchShifterNode(PitchShifterNode&& other) noexcept
+        : spec_(other.spec_),
+          windowSizeSamples_(other.windowSizeSamples_),
+          targetSemitones_(other.targetSemitones_),
+          targetFine_(other.targetFine_),
+          targetWindowMs_(other.targetWindowMs_),
+          targetMix_(other.targetMix_),
+          targetAlgorithm_(other.targetAlgorithm_),
+          targetPhaseLocking_(other.targetPhaseLocking_),
+          pins_(other.pins_),
+          params_(other.params_),
+          rustNode_(other.rustNode_) {
+        other.rustNode_ = nullptr;
+    }
+
+    PitchShifterNode& operator=(PitchShifterNode&& other) noexcept {
+        if (this != &other) {
+            if (rustNode_) {
+                n8_rust_pitch_shifter_destroy(rustNode_);
+            }
+            spec_ = other.spec_;
+            windowSizeSamples_ = other.windowSizeSamples_;
+            targetSemitones_ = other.targetSemitones_;
+            targetFine_ = other.targetFine_;
+            targetWindowMs_ = other.targetWindowMs_;
+            targetMix_ = other.targetMix_;
+            targetAlgorithm_ = other.targetAlgorithm_;
+            targetPhaseLocking_ = other.targetPhaseLocking_;
+            pins_ = other.pins_;
+            params_ = other.params_;
+            rustNode_ = other.rustNode_;
+            other.rustNode_ = nullptr;
+        }
+        return *this;
     }
 
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
         updateWindowSize();
-
-        // Reserva para máxima ventana de 120ms en el modo de dominio temporal
-        const size_t maxDelay = static_cast<size_t>(spec.sampleRate * 0.35);
-        delayL_.prepare(maxDelay);
-        delayR_.prepare(maxDelay);
-
-        // Preparar Phase Vocoder de alta definición (FFT 1024, Hop 256, 75% solapamiento)
-        vocoderL_.prepare(1024, 256, static_cast<float>(spec.sampleRate));
-        vocoderR_.prepare(1024, 256, static_cast<float>(spec.sampleRate));
-
-        const size_t blockCapacity = std::max<size_t>(1024, spec.maximumBlockSize);
-        vocoderTempL_.assign(blockCapacity, 0.0f);
-        vocoderTempR_.assign(blockCapacity, 0.0f);
-
-        reset();
+        if (rustNode_) {
+            n8_rust_pitch_shifter_prepare(rustNode_, static_cast<float>(spec.sampleRate));
+        }
     }
 
     void reset() override {
-        delayL_.reset();
-        delayR_.reset();
-        phase_ = 0.0f;
-
-        vocoderL_.reset();
-        vocoderR_.reset();
-        std::fill(vocoderTempL_.begin(), vocoderTempL_.end(), 0.0f);
-        std::fill(vocoderTempR_.begin(), vocoderTempR_.end(), 0.0f);
+        if (rustNode_) {
+            n8_rust_pitch_shifter_reset(rustNode_);
+        }
     }
 
     void process(ProcessContext& context) override {
+        if (!rustNode_ || context.numSamples == 0 || context.numInputChannels == 0 || context.numOutputChannels == 0) return;
+
         updateWindowSize();
 
-        const float totalSemitones = targetSemitones_ + targetFine_ * 0.01f;
-        const float pitchRatio = std::pow(2.0f, totalSemitones / 12.0f);
-        const float mix = targetMix_;
-        const uint32_t numSamples = context.numSamples;
+        const float* inL = context.inputChannels[0];
+        const float* inR = (context.numInputChannels > 1) ? context.inputChannels[1] : inL;
 
-        float* outL = (context.numOutputChannels > 0) ? context.outputChannels[0] : nullptr;
-        float* outR = (context.numOutputChannels > 1) ? context.outputChannels[1] : nullptr;
+        float* outL = context.outputChannels[0];
+        float* outR = (context.numOutputChannels > 1) ? context.outputChannels[1] : outL;
 
-        const float* inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr) ? context.inputChannels[0] : nullptr;
-        const float* inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr) ? context.inputChannels[1] : inL;
-
-        if (targetAlgorithm_ >= 0.5f) {
-            // Modo 1: Phase Vocoder HD con Laroche-Dolson Identity Phase Locking
-            const size_t chunkSize = vocoderTempL_.size();
-            for (uint32_t offset = 0; offset < numSamples; offset += static_cast<uint32_t>(chunkSize)) {
-                const uint32_t currentChunk = std::min(numSamples - offset, static_cast<uint32_t>(chunkSize));
-                const float* chunkInL = inL ? (inL + offset) : nullptr;
-                const float* chunkInR = inR ? (inR + offset) : nullptr;
-
-                vocoderL_.process(chunkInL, vocoderTempL_.data(), currentChunk, pitchRatio, targetPhaseLocking_);
-                vocoderR_.process(chunkInR, vocoderTempR_.data(), currentChunk, pitchRatio, targetPhaseLocking_);
-
-                for (uint32_t s = 0; s < currentChunk; ++s) {
-                    const uint32_t idx = offset + s;
-                    const float dryL = inL ? inL[idx] : 0.0f;
-                    const float dryR = inR ? inR[idx] : dryL;
-                    if (outL) outL[idx] = dryL * (1.0f - mix) + vocoderTempL_[s] * mix;
-                    if (outR) outR[idx] = dryR * (1.0f - mix) + vocoderTempR_[s] * mix;
-                }
-            }
-        } else {
-            // Modo 0: Doble cabezal analógico en dominio de tiempo (Baja Latencia / Cero Artefactos de Ventana)
-            const float rate = 1.0f - pitchRatio;
-            const float winSize = windowSizeSamples_;
-            const float halfWin = winSize * 0.5f;
-
-            for (uint32_t s = 0; s < numSamples; ++s) {
-                float sampleL = inL ? inL[s] : 0.0f;
-                float sampleR = inR ? inR[s] : sampleL;
-
-                delayL_.write(sampleL);
-                delayR_.write(sampleR);
-
-                // Cabezal 1
-                float d1 = phase_;
-                while (d1 < 0.0f) d1 += winSize;
-                while (d1 >= winSize) d1 -= winSize;
-
-                // Cabezal 2 desfasado 180 grados
-                float d2 = phase_ + halfWin;
-                while (d2 < 0.0f) d2 += winSize;
-                while (d2 >= winSize) d2 -= winSize;
-
-                // Envolvente de crossfade triangular
-                float env1 = 1.0f - std::abs((2.0f * d1 / winSize) - 1.0f);
-                float env2 = 1.0f - std::abs((2.0f * d2 / winSize) - 1.0f);
-
-                // Lectura interpolada Hermite cúbica para evitar artefactos (Regla 34)
-                float wetL = delayL_.readCubic(d1 + 10.0f) * env1 + delayL_.readCubic(d2 + 10.0f) * env2;
-                float wetR = delayR_.readCubic(d1 + 10.0f) * env1 + delayR_.readCubic(d2 + 10.0f) * env2;
-
-                phase_ += rate;
-                if (phase_ >= winSize) phase_ -= winSize;
-                else if (phase_ < 0.0f) phase_ += winSize;
-
-                if (outL) outL[s] = sampleL * (1.0f - mix) + wetL * mix;
-                if (outR) outR[s] = sampleR * (1.0f - mix) + wetR * mix;
-            }
-        }
+        n8_rust_pitch_shifter_process(rustNode_, inL, inR, outL, outR, context.numSamples);
     }
 
     void setParameter(ParameterId id, float value) override {
@@ -153,9 +124,15 @@ public:
             case Algorithm: targetAlgorithm_ = std::clamp(value, 0.0f, 1.0f); break;
             case PhaseLocking: targetPhaseLocking_ = std::clamp(value, 0.0f, 1.0f); break;
         }
+        if (rustNode_) {
+            n8_rust_pitch_shifter_set_parameter(rustNode_, static_cast<uint32_t>(id), value);
+        }
     }
 
     float getParameter(ParameterId id) const override {
+        if (rustNode_) {
+            return n8_rust_pitch_shifter_get_parameter(rustNode_, static_cast<uint32_t>(id));
+        }
         switch (id) {
             case Semitones: return targetSemitones_;
             case FineCents: return targetFine_;
@@ -172,14 +149,14 @@ public:
     bool supportsTail() const override { return true; }
     uint32_t getTailSamples() const override {
         if (targetAlgorithm_ >= 0.5f) {
-            return vocoderL_.getLatencySamples() * 2;
+            return 2048; // 1024 * 2
         }
         return static_cast<uint32_t>(windowSizeSamples_ * 2.0f);
     }
 
     uint32_t getLatencySamples() const override {
         if (targetAlgorithm_ >= 0.5f) {
-            return vocoderL_.getLatencySamples();
+            return 1024;
         }
         return 0;
     }
@@ -194,15 +171,7 @@ private:
     }
 
     ProcessSpec spec_;
-    DelayLine delayL_;
-    DelayLine delayR_;
     float windowSizeSamples_{ 2048.0f };
-    float phase_{ 0.0f };
-
-    PhaseVocoder vocoderL_;
-    PhaseVocoder vocoderR_;
-    std::vector<float> vocoderTempL_;
-    std::vector<float> vocoderTempR_;
 
     float targetSemitones_{ 0.0f };
     float targetFine_{ 0.0f };
@@ -213,6 +182,7 @@ private:
 
     std::array<PinDescriptor, 2> pins_;
     std::array<ParameterInfo, 6> params_;
+    RustPitchShifter* rustNode_{ nullptr };
 };
 
 inline AutoRegisterNode<PitchShifterNode> registerPitchShifter(NodeType::PitchShifter, "pitch_shifter", "Pitch");

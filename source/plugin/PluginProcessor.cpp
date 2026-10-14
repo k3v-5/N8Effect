@@ -27,6 +27,9 @@ N8AudioProcessor::N8AudioProcessor()
         macroParams_[i] = apvts_.getRawParameterValue(macroIds[i]);
     }
 
+    morphXParam_ = apvts_.getRawParameterValue("morph_x");
+    morphYParam_ = apvts_.getRawParameterValue("morph_y");
+
     // Cargar la Cadena Maestra de 10 Efectos con bifurcación paralela y secuenciación por defecto
     PresetMetadata meta;
     std::array<float, 8> macros;
@@ -48,6 +51,13 @@ N8AudioProcessor::N8AudioProcessor()
     }
 
     undoManager_.pushState(graph_);
+}
+
+N8AudioProcessor::~N8AudioProcessor() {
+    if (rustPlanExchanger_) {
+        n8_rust_graph_exchanger_destroy(rustPlanExchanger_);
+        rustPlanExchanger_ = nullptr;
+    }
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout N8AudioProcessor::createParameterLayout() {
@@ -99,6 +109,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout N8AudioProcessor::createPara
         1 // Default: Smart Multi-Threaded
     ));
 
+    // Parámetros automatizables desde el DAW para Morphing Vectorial 2D (Fase 7, Reglas 8, 36, 37)
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{ "morph_x", 1 },
+        "Scene Morph X",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.001f),
+        0.5f
+    ));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID{ "morph_y", 1 },
+        "Scene Morph Y",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.001f),
+        0.5f
+    ));
+
     return { params.begin(), params.end() };
 }
 
@@ -115,6 +140,10 @@ void N8AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     mpeManager_.prepare(sampleRate);
     dualWorldEngine_.getExecutor().setProbeVisualizer(&probeVisualizerBuffer_);
 
+    if (!rustPlanExchanger_) {
+        rustPlanExchanger_ = n8_rust_graph_exchanger_create();
+    }
+
     for (const auto& [_, inst] : graph_.getNodes()) {
         if (inst && inst->processor) {
             inst->processor->prepare(currentSpec_);
@@ -126,6 +155,10 @@ void N8AudioProcessor::releaseResources() {
     dualWorldEngine_.reset();
     testSynth_.reset();
     mpeManager_.reset();
+    if (rustPlanExchanger_) {
+        n8_rust_graph_exchanger_destroy(rustPlanExchanger_);
+        rustPlanExchanger_ = nullptr;
+    }
 }
 
 void N8AudioProcessor::reset() {
@@ -236,6 +269,14 @@ void N8AudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Midi
         }
     }
 
+    // Actualizar coordenadas XY del Pad de Morphing en el ModulationEngine
+    if (morphXParam_ != nullptr && morphYParam_ != nullptr) {
+        dualWorldEngine_.getModulationEngine().getMacroManager().setPad(
+            morphXParam_->load(std::memory_order_relaxed),
+            morphYParam_->load(std::memory_order_relaxed)
+        );
+    }
+
     const uint32_t effectiveInChannels = testSynth_.hasActiveVoices()
         ? std::max(static_cast<uint32_t>(totalNumInputChannels), synthChannels)
         : static_cast<uint32_t>(totalNumInputChannels > 0 ? totalNumInputChannels : std::min(bufferChannels, 2));
@@ -344,6 +385,37 @@ bool N8AudioProcessor::recompilePlan() {
     std::vector<NodeId> sorted;
     std::string err;
     if (graph_.validateAndTopologicalSort(sorted, err)) {
+        if (rustPlanExchanger_) {
+            std::vector<RustGraphConnection> rustConns;
+            rustConns.reserve(graph_.getConnections().size());
+            for (const auto& c : graph_.getConnections()) {
+                rustConns.push_back(RustGraphConnection{
+                    .id = c.id,
+                    .source_node_id = c.sourceNodeId,
+                    .source_pin_id = c.sourcePinId,
+                    .dest_node_id = c.destNodeId,
+                    .dest_pin_id = c.destPinId
+                });
+            }
+
+            std::array<bool, 256> bypassedFlags{};
+            const size_t flagCount = std::min(sorted.size(), bypassedFlags.size());
+            for (size_t i = 0; i < flagCount; ++i) {
+                bypassedFlags[i] = graph_.isNodeBypassed(sorted[i]);
+            }
+
+            n8_rust_graph_exchanger_compile_standby(
+                rustPlanExchanger_,
+                sorted.data(),
+                static_cast<uint32_t>(sorted.size()),
+                rustConns.data(),
+                static_cast<uint32_t>(rustConns.size()),
+                bypassedFlags.data(),
+                static_cast<uint32_t>(flagCount)
+            );
+            n8_rust_graph_exchanger_commit(rustPlanExchanger_);
+        }
+
         // Double buffering thread-safe (Reglas 9, 26, 30)
         auto* current = activePlan_.load(std::memory_order_relaxed);
         ExecutionPlan* nextPlan = (current == &planA_) ? &planB_ : &planA_;

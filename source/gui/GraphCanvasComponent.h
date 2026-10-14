@@ -24,10 +24,16 @@ class ZoomHudOverlay;
  */
 class GraphCanvasComponent : public juce::Component,
                              public juce::DragAndDropTarget,
-                             public juce::FileDragAndDropTarget {
+                             public juce::FileDragAndDropTarget,
+                             public juce::Timer {
 public:
     explicit GraphCanvasComponent(N8AudioProcessor& processor);
     ~GraphCanvasComponent() override;
+
+    void timerCallback() override;
+    void setModSourcePositionResolver(std::function<juce::Point<float>(ModSourceType)> resolver) {
+        modSourcePosResolver_ = std::move(resolver);
+    }
 
     void rebuildFromGraph();
     void addNodeAtPosition(NodeType type, float x, float y);
@@ -67,6 +73,7 @@ public:
     void zoomOut();
     void resetZoom();
     void zoomToFit();
+    void autoLayoutGraph();
     void setPanOffset(juce::Point<float> offset);
 
     // Transformaciones bidireccionales Screen <-> World
@@ -115,6 +122,14 @@ public:
     juce::Point<float> getCurrentMousePt() const noexcept { return currentMousePt_; }
     PinDataType getDragDataType() const noexcept { return dragDataType_; }
 
+    bool isDraggingModulation() const noexcept { return isDraggingModulation_; }
+    const ModulationDragPayload& getActiveModPayload() const noexcept { return activeModPayload_; }
+    juce::Point<float> getModDragWorldPos() const noexcept { return modDragWorldPos_; }
+    NodeId getSnappedTargetNodeId() const noexcept { return snappedTargetNodeId_; }
+    ParameterId getSnappedTargetParamId() const noexcept { return snappedTargetParamId_; }
+    float getCableAnimPhase() const noexcept { return cableAnimPhase_; }
+    juce::Point<float> resolveModSourceWorldPos(ModSourceType type, juce::Point<float> targetWorldPos) const;
+
 private:
     friend class CanvasWorldComponent;
     friend class ZoomHudOverlay;
@@ -159,6 +174,15 @@ private:
     juce::Point<float> currentMousePt_;
     NodeId snappedTargetNode_{ InvalidNodeId };
     PinId snappedTargetPin_{ InvalidPinId };
+
+    // Estado de cables de modulación interactivos y Drag & Drop (Reglas 7, 25, 48, 49)
+    float cableAnimPhase_{ 0.0f };
+    bool isDraggingModulation_{ false };
+    ModulationDragPayload activeModPayload_{};
+    juce::Point<float> modDragWorldPos_{ 0.0f, 0.0f };
+    NodeId snappedTargetNodeId_{ InvalidNodeId };
+    ParameterId snappedTargetParamId_{ InvalidParameterId };
+    std::function<juce::Point<float>(ModSourceType)> modSourcePosResolver_;
 
     // Selección elástica múltiple (Marquee / Rubberband)
     bool isMarqueeSelecting_{ false };

@@ -28,7 +28,42 @@ public:
             }
         }
 
-        // 2. Renderizar cable temporal en arrastre activo
+        // 2. Renderizar cables de modulación universales con flujo animado de partículas a 60 FPS (Reglas 7, 25, 49)
+        const auto& mat = owner_.getProcessor().getDualWorldEngine().getModulationEngine().getMatrix();
+        const size_t maxR = mat.getMaxRoutes();
+        for (size_t r = 0; r < maxR; ++r) {
+            const auto& route = mat.getRoute(r);
+            if (!route.isActive) continue;
+
+            NodeComponent* targetNode = owner_.findNodeComponent(route.targetNodeId);
+            if (targetNode == nullptr || !targetNode->isVisible()) continue;
+
+            const juce::Point<float> targetKnobPt = targetNode->getSliderCenterInCanvas(route.targetParamId);
+            const juce::Point<float> srcPt = owner_.resolveModSourceWorldPos(route.source, targetKnobPt);
+            const juce::Colour modCol = ModulationDragPayload::getDefaultColor(route.source);
+
+            WireRenderer::drawModulationWire(g, srcPt, targetKnobPt, modCol, route.amount, owner_.getCableAnimPhase(), false, false);
+        }
+
+        // 3. Renderizar cable de modulación en arrastre activo con snapping magnético interactivo (Reglas 25, 48)
+        if (owner_.isDraggingModulation()) {
+            const auto& payload = owner_.getActiveModPayload();
+            const auto mouseWorldPt = owner_.getModDragWorldPos();
+            const auto srcPt = owner_.resolveModSourceWorldPos(payload.sourceType, mouseWorldPt);
+
+            juce::Point<float> endPt = mouseWorldPt;
+            bool isSnapped = false;
+            if (owner_.getSnappedTargetNodeId() != InvalidNodeId) {
+                if (auto* snapNode = owner_.findNodeComponent(owner_.getSnappedTargetNodeId())) {
+                    endPt = snapNode->getSliderCenterInCanvas(owner_.getSnappedTargetParamId());
+                    isSnapped = true;
+                }
+            }
+
+            WireRenderer::drawModulationWire(g, srcPt, endPt, payload.sourceColor, 0.5f, owner_.getCableAnimPhase(), true, isSnapped);
+        }
+
+        // 4. Renderizar cable de audio temporal en arrastre activo
         if (owner_.isDraggingWire()) {
             WireRenderer::drawWire(g, owner_.getDragStartPt(), owner_.getCurrentMousePt(),
                                    owner_.getDragDataType(), true, true, owner_.isDragWireInvalid());
@@ -127,6 +162,11 @@ public:
         btnZoomFit_->setTooltip("Fit All Nodes into View (Key F)");
         btnZoomFit_->setOnCleanClick([this]() { owner_.zoomToFit(); });
         addAndMakeVisible(*btnZoomFit_);
+
+        btnTidyGraph_ = std::make_unique<HudButton>("TIDY", true);
+        btnTidyGraph_->setTooltip("Auto-Organize Graph Layout (Key O / Tidy)");
+        btnTidyGraph_->setOnCleanClick([this]() { owner_.autoLayoutGraph(); });
+        addAndMakeVisible(*btnTidyGraph_);
     }
 
     void updateZoom(float zoom) {
@@ -152,18 +192,21 @@ public:
         if (btnZoomReset_) g.drawVerticalLine(btnZoomReset_->getX(), 4.0f, bounds.getBottom() - 4.0f);
         if (btnZoomIn_) g.drawVerticalLine(btnZoomIn_->getX(), 4.0f, bounds.getBottom() - 4.0f);
         if (btnZoomFit_) g.drawVerticalLine(btnZoomFit_->getX(), 4.0f, bounds.getBottom() - 4.0f);
+        if (btnTidyGraph_) g.drawVerticalLine(btnTidyGraph_->getX(), 4.0f, bounds.getBottom() - 4.0f);
     }
 
     void resized() override {
         auto area = getLocalBounds();
         const int outW = 26;
-        const int resetW = 54;
+        const int resetW = 46;
         const int inW = 26;
+        const int fitW = 34;
 
         if (btnZoomOut_) btnZoomOut_->setBounds(area.removeFromLeft(outW));
         if (btnZoomReset_) btnZoomReset_->setBounds(area.removeFromLeft(resetW));
         if (btnZoomIn_) btnZoomIn_->setBounds(area.removeFromLeft(inW));
-        if (btnZoomFit_) btnZoomFit_->setBounds(area);
+        if (btnZoomFit_) btnZoomFit_->setBounds(area.removeFromLeft(fitW));
+        if (btnTidyGraph_) btnTidyGraph_->setBounds(area);
     }
 
 private:
@@ -172,6 +215,7 @@ private:
     std::unique_ptr<HudButton> btnZoomReset_;
     std::unique_ptr<HudButton> btnZoomIn_;
     std::unique_ptr<HudButton> btnZoomFit_;
+    std::unique_ptr<HudButton> btnTidyGraph_;
 };
 
 GraphCanvasComponent::GraphCanvasComponent(N8AudioProcessor& processor)
@@ -188,9 +232,69 @@ GraphCanvasComponent::GraphCanvasComponent(N8AudioProcessor& processor)
     zoomHud_->toFront(false);
 
     rebuildFromGraph();
+
+    startTimerHz(60);
 }
 
-GraphCanvasComponent::~GraphCanvasComponent() = default;
+GraphCanvasComponent::~GraphCanvasComponent() {
+    stopTimer();
+}
+
+void GraphCanvasComponent::timerCallback() {
+    // 1. Avanzar la fase de animación del flujo de partículas de modulación a 60 FPS (Regla 49)
+    cableAnimPhase_ += 0.035f;
+    if (cableAnimPhase_ >= 1.0f) {
+        cableAnimPhase_ -= 1.0f;
+    }
+
+    // 2. Telemetría continua a 60 FPS desde ModulationEngine hacia los diales rotatorios/sliders (Regla 25)
+    auto& modEngine = processor_.getDualWorldEngine().getModulationEngine();
+    auto& mat = modEngine.getMatrix();
+    const size_t maxR = mat.getMaxRoutes();
+
+    bool hasActiveModulation = false;
+
+    for (size_t r = 0; r < maxR; ++r) {
+        const auto& route = mat.getRoute(r);
+        if (!route.isActive) continue;
+
+        hasActiveModulation = true;
+
+        if (auto* node = findNodeComponent(route.targetNodeId)) {
+            if (auto* slider = node->getSliderForParameter(route.targetParamId)) {
+                // Sincronizar profundidad y color visual de la fuente
+                const auto col = ModulationDragPayload::getDefaultColor(route.source);
+                if (slider->getModulationColor() != col || std::abs(slider->getModulationDepth() - route.amount) > 0.001f) {
+                    slider->setModulationDepth(route.amount, col);
+                }
+
+                // Obtener offset neto calculado en tiempo real
+                const float offset = modEngine.calculateOffset(route.targetNodeId, route.targetParamId);
+                const float range = slider->getMaxValue() - slider->getMinValue();
+                const float liveVal = slider->getBaseValue() + offset * range;
+                slider->setLiveModulatedValue(liveVal);
+            }
+        }
+    }
+
+    // 3. Repintar mundo si hay cables animados o arrastre activo
+    if (worldComp_ != nullptr && (hasActiveModulation || isDraggingModulation_)) {
+        worldComp_->repaint();
+    }
+}
+
+juce::Point<float> GraphCanvasComponent::resolveModSourceWorldPos(ModSourceType type, juce::Point<float> targetWorldPos) const {
+    if (modSourcePosResolver_) {
+        const auto screenPt = modSourcePosResolver_(type);
+        if (screenPt.x > 0.0f || screenPt.y > 0.0f) {
+            return screenToWorld(screenPt);
+        }
+    }
+
+    // Riel virtual de modulación con distribución armónica
+    const float offsetSourceIdx = static_cast<float>(static_cast<uint16_t>(type) % 8) * 24.0f;
+    return { targetWorldPos.x - 100.0f + offsetSourceIdx, std::min(targetWorldPos.y - 70.0f, -20.0f) };
+}
 
 NodeComponent* GraphCanvasComponent::findNodeComponent(NodeId id) const {
     for (const auto& comp : nodeComponents_) {
@@ -724,7 +828,7 @@ void GraphCanvasComponent::resized() {
         updateWorldTransform();
     }
     if (zoomHud_) {
-        zoomHud_->setBounds(std::max(10, getWidth() - 164), 10, 154, 26);
+        zoomHud_->setBounds(std::max(10, getWidth() - 204), 10, 194, 26);
     }
 
     // Al abrir por primera vez con dimensiones válidas, ajustar vista automáticamente a todos los nodos
@@ -922,6 +1026,14 @@ bool GraphCanvasComponent::keyPressed(const juce::KeyPress& key) {
         }
     }
 
+    // 'O' o 'o': Auto-Organize Graph Layout
+    if (kc == 'O' || kc == 'o') {
+        if (hasModifiers) {
+            autoLayoutGraph();
+            return true;
+        }
+    }
+
     if (kc == '0' || kc == '1') {
         resetZoom();
         return true;
@@ -1065,6 +1177,73 @@ void GraphCanvasComponent::zoomToFit() {
     repaint();
 }
 
+void GraphCanvasComponent::autoLayoutGraph() {
+    auto& graph = processor_.getGraph();
+    const auto& nodes = graph.getNodes();
+    if (nodes.empty()) return;
+
+    // 1. Recopilar IDs de nodos válidos con procesador activo
+    std::vector<uint32_t> nodeIds;
+    nodeIds.reserve(nodes.size());
+    for (const auto& [nid, inst] : nodes) {
+        if (inst && inst->processor) {
+            nodeIds.push_back(nid);
+        }
+    }
+    if (nodeIds.empty()) return;
+
+    const auto& connections = graph.getConnections();
+    std::vector<RustGraphConnection> rustConns;
+    rustConns.reserve(connections.size());
+    for (const auto& c : connections) {
+        rustConns.push_back(RustGraphConnection{
+            .id = c.id,
+            .source_node_id = c.sourceNodeId,
+            .source_pin_id = c.sourcePinId,
+            .dest_node_id = c.destNodeId,
+            .dest_pin_id = c.destPinId
+        });
+    }
+
+    // 2. Disposición topológica en columnas y filas mediante el motor Rust optimizado
+    constexpr float startX = 60.0f;
+    constexpr float columnWidth = 240.0f;
+    constexpr float rowHeight = 140.0f;
+    constexpr float startY = 200.0f;
+
+    std::vector<RustNodeLayout> layouts(nodeIds.size());
+    n8_rust_graph_compute_auto_layout(
+        nodeIds.data(),
+        static_cast<uint32_t>(nodeIds.size()),
+        rustConns.data(),
+        static_cast<uint32_t>(rustConns.size()),
+        startX,
+        startY,
+        columnWidth,
+        rowHeight,
+        layouts.data()
+    );
+
+    for (const auto& l : layouts) {
+        if (auto* inst = graph.getNode(l.node_id)) {
+            inst->posX = l.pos_x;
+            inst->posY = l.pos_y;
+        }
+        if (auto* comp = findNodeComponent(l.node_id)) {
+            comp->setTopLeftPosition(static_cast<int>(l.pos_x), static_cast<int>(l.pos_y));
+        }
+    }
+
+    // 3. Actualizar cajas de grupo envolventes
+    for (auto& grpComp : nodeGroups_) {
+        if (grpComp) grpComp->updateBoundsFromMembers();
+    }
+
+    if (worldComp_) worldComp_->repaint();
+    repaint();
+    zoomToFit();
+}
+
 juce::Point<float> GraphCanvasComponent::screenToWorld(juce::Point<float> screenPt) const noexcept {
     return (screenPt - panOffset_) / zoomScale_;
 }
@@ -1113,6 +1292,7 @@ void GraphCanvasComponent::showCanvasContextMenu(juce::Point<float> /*screenPos*
     canvasMenu.addSeparator();
     canvasMenu.addItem(6, "Zoom to Fit All Nodes (F)", true, false);
     canvasMenu.addItem(7, "Reset Zoom to 100% (0)", true, false);
+    canvasMenu.addItem(8, "Auto-Organize Graph Layout (O)", true, false);
 
     canvasMenu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
         [this](int res) {
@@ -1132,6 +1312,8 @@ void GraphCanvasComponent::showCanvasContextMenu(juce::Point<float> /*screenPos*
                 zoomToFit();
             } else if (res == 7) {
                 resetZoom();
+            } else if (res == 8) {
+                autoLayoutGraph();
             }
         });
 }
@@ -1265,17 +1447,63 @@ void GraphCanvasComponent::importSubGraphModule() {
 
 // Implementación de juce::DragAndDropTarget
 bool GraphCanvasComponent::isInterestedInDragSource(const SourceDetails& dragSourceDetails) {
-    return dragSourceDetails.description.toString().startsWith("N8_MODULE_TYPE:");
+    const auto desc = dragSourceDetails.description.toString();
+    return desc.startsWith("N8_MODULE_TYPE:") || desc.startsWith("ModSource|");
 }
 
 void GraphCanvasComponent::itemDragEnter(const SourceDetails& dragSourceDetails) {
+    const auto desc = dragSourceDetails.description.toString();
+    if (desc.startsWith("ModSource|")) {
+        isDraggingModulation_ = true;
+        ModulationDragPayload::decode(desc, activeModPayload_);
+        modDragWorldPos_ = screenToWorld(dragSourceDetails.localPosition.toFloat());
+        snappedTargetNodeId_ = InvalidNodeId;
+        snappedTargetParamId_ = InvalidParameterId;
+        if (worldComp_) worldComp_->repaint();
+        return;
+    }
+
     isShowingDragGhost_ = true;
-    ghostLabel_ = dragSourceDetails.description.toString().fromFirstOccurrenceOf("N8_MODULE_NAME:", false, false);
+    ghostLabel_ = desc.fromFirstOccurrenceOf("N8_MODULE_NAME:", false, false);
     ghostPos_ = dragSourceDetails.localPosition.toFloat();
     repaint();
 }
 
 void GraphCanvasComponent::itemDragMove(const SourceDetails& dragSourceDetails) {
+    const auto desc = dragSourceDetails.description.toString();
+    if (desc.startsWith("ModSource|")) {
+        isDraggingModulation_ = true;
+        modDragWorldPos_ = screenToWorld(dragSourceDetails.localPosition.toFloat());
+
+        snappedTargetNodeId_ = InvalidNodeId;
+        snappedTargetParamId_ = InvalidParameterId;
+        float bestDist = 55.0f; // Radio magnético de snapping (Regla 24, 25)
+
+        for (const auto& comp : nodeComponents_) {
+            if (!comp || !comp->isVisible()) continue;
+            ParameterId candidatePid = InvalidParameterId;
+            if (auto* slider = comp->findSliderNearCanvasPos(modDragWorldPos_, candidatePid, 24.0f)) {
+                juce::ignoreUnused(slider);
+                auto knobCenter = comp->getSliderCenterInCanvas(candidatePid);
+                float dist = knobCenter.getDistanceFrom(modDragWorldPos_);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    snappedTargetNodeId_ = comp->getNodeId();
+                    snappedTargetParamId_ = candidatePid;
+                }
+            }
+        }
+
+        for (auto& comp : nodeComponents_) {
+            if (comp) {
+                comp->setDropCandidate(comp->getNodeId() == snappedTargetNodeId_);
+            }
+        }
+
+        if (worldComp_) worldComp_->repaint();
+        return;
+    }
+
     ghostPos_ = dragSourceDetails.localPosition.toFloat();
 
     const auto worldGhostPos = screenToWorld(ghostPos_);
@@ -1295,6 +1523,17 @@ void GraphCanvasComponent::itemDragMove(const SourceDetails& dragSourceDetails) 
 }
 
 void GraphCanvasComponent::itemDragExit(const SourceDetails& /*dragSourceDetails*/) {
+    if (isDraggingModulation_) {
+        isDraggingModulation_ = false;
+        snappedTargetNodeId_ = InvalidNodeId;
+        snappedTargetParamId_ = InvalidParameterId;
+        for (auto& comp : nodeComponents_) {
+            if (comp) comp->setDropCandidate(false);
+        }
+        if (worldComp_) worldComp_->repaint();
+        return;
+    }
+
     isShowingDragGhost_ = false;
     for (auto& comp : nodeComponents_) {
         comp->setDropCandidate(false);
@@ -1303,12 +1542,36 @@ void GraphCanvasComponent::itemDragExit(const SourceDetails& /*dragSourceDetails
 }
 
 void GraphCanvasComponent::itemDropped(const SourceDetails& dragSourceDetails) {
+    const auto desc = dragSourceDetails.description.toString();
+    if (desc.startsWith("ModSource|")) {
+        isDraggingModulation_ = false;
+        for (auto& comp : nodeComponents_) {
+            if (comp) comp->setDropCandidate(false);
+        }
+
+        ModulationDragPayload payload;
+        if (ModulationDragPayload::decode(desc, payload)) {
+            if (snappedTargetNodeId_ != InvalidNodeId && snappedTargetParamId_ != InvalidParameterId) {
+                auto& mat = processor_.getDualWorldEngine().getModulationEngine().getMatrix();
+                mat.addRoute(payload.sourceType, snappedTargetNodeId_, snappedTargetParamId_, 0.5f, true);
+                if (auto* comp = findNodeComponent(snappedTargetNodeId_)) {
+                    if (auto* slider = comp->getSliderForParameter(snappedTargetParamId_)) {
+                        slider->setModulationDepth(0.5f, payload.sourceColor);
+                    }
+                }
+            }
+        }
+        snappedTargetNodeId_ = InvalidNodeId;
+        snappedTargetParamId_ = InvalidParameterId;
+        if (worldComp_) worldComp_->repaint();
+        return;
+    }
+
     isShowingDragGhost_ = false;
     for (auto& comp : nodeComponents_) {
         comp->setDropCandidate(false);
     }
 
-    const auto desc = dragSourceDetails.description.toString();
     const auto typeStr = desc.fromFirstOccurrenceOf("N8_MODULE_TYPE:", false, false).upToFirstOccurrenceOf("|", false, false);
     if (typeStr.isEmpty()) return;
 

@@ -2,17 +2,18 @@
 
 #include <cmath>
 #include <array>
-#include <vector>
 #include <span>
 #include <algorithm>
 #include "../../graph/AudioProcessorNode.h"
 #include "../../graph/NodeFactory.h"
-#include "../core/GrainPool.h"
+#include "../core/DenormalGuards.h"
+#include "../rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
- * @brief Nodo Procesador Granular en tiempo real con nubes de hasta 128 granos (Reglas 5, 8, 9, 10, 11, 18, 35)
+ * @brief Nodo Procesador Granular en tiempo real con nubes de hasta 128 granos (Reglas 5, 8, 9, 10, 11, 18, 35, 46, 47)
+ * Acelerado con núcleo en Rust de alto rendimiento.
  */
 class GranularNode : public AudioProcessorNode {
 public:
@@ -30,6 +31,14 @@ public:
         SpectralSensitivity = 11
     };
 
+    struct GrainCloudPoint {
+        float normPosition{ 0.0f }; // 0.0 to 1.0
+        float pitchRatio{ 1.0f };
+        float pan{ 0.5f };
+        float envelope{ 0.0f };
+        bool active{ false };
+    };
+
     GranularNode() {
         pins_[0] = { 1, "Audio In", PinType::AudioInput, PinDataType::AudioStereo };
         pins_[1] = { 2, "Audio Out", PinType::AudioOutput, PinDataType::AudioStereo };
@@ -45,219 +54,74 @@ public:
         params_[8] = { Freeze, "Freeze", 0.0f, 0.0f, 1.0f, true };
         params_[9] = { SpawnMode, "Spawn Mode", 0.0f, 0.0f, 2.0f, false };
         params_[10] = { SpectralSensitivity, "Spectral Sens", 0.5f, 0.0f, 1.0f, true };
+
+        rustInstance_ = n8_rust_granular_create(44100.0);
+    }
+
+    ~GranularNode() override {
+        if (rustInstance_) {
+            n8_rust_granular_destroy(rustInstance_);
+            rustInstance_ = nullptr;
+        }
+    }
+
+    GranularNode(const GranularNode&) = delete;
+    GranularNode& operator=(const GranularNode&) = delete;
+
+    GranularNode(GranularNode&& other) noexcept
+        : pins_(other.pins_), params_(other.params_), spec_(other.spec_), rustInstance_(other.rustInstance_) {
+        other.rustInstance_ = nullptr;
+    }
+
+    GranularNode& operator=(GranularNode&& other) noexcept {
+        if (this != &other) {
+            if (rustInstance_) {
+                n8_rust_granular_destroy(rustInstance_);
+            }
+            pins_ = other.pins_;
+            params_ = other.params_;
+            spec_ = other.spec_;
+            rustInstance_ = other.rustInstance_;
+            other.rustInstance_ = nullptr;
+        }
+        return *this;
     }
 
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
-        grainPool_.reset();
-
-        bufferCapacity_ = static_cast<size_t>(spec.sampleRate * 2.0);
-        if (bufferCapacity_ > MaxRingBufferSize) {
-            bufferCapacity_ = MaxRingBufferSize;
+        if (rustInstance_) {
+            n8_rust_granular_prepare(rustInstance_, spec.sampleRate);
         }
-        ringBufferL_.assign(bufferCapacity_, 0.0f);
-        ringBufferR_.assign(bufferCapacity_, 0.0f);
-        writePos_ = 0;
-        samplesUntilNextGrain_ = 0.0f;
-        totalSamplesRecorded_ = 0;
-        prevSampleL_ = 0.0f;
-        prevSampleR_ = 0.0f;
     }
 
     void reset() override {
-        grainPool_.reset();
-        writePos_ = 0;
-        samplesUntilNextGrain_ = 0.0f;
-        totalSamplesRecorded_ = 0;
-        prevSampleL_ = 0.0f;
-        prevSampleR_ = 0.0f;
-        std::fill(ringBufferL_.begin(), ringBufferL_.end(), 0.0f);
-        std::fill(ringBufferR_.begin(), ringBufferR_.end(), 0.0f);
-    }
-
-    void process(ProcessContext& context) override {
-        if (ringBufferL_.empty() || bufferCapacity_ == 0 || context.numSamples == 0 || context.numInputChannels == 0 || context.numOutputChannels == 0) return;
-
-        const float grainSizeMs = targetGrainSizeMs_;
-        const float density = std::clamp(targetDensity_, 1.0f, 60.0f);
-        const float posSprayMs = std::max(0.0f, targetPositionSprayMs_);
-        const float pitchSemi = targetPitchSemitones_;
-        const float pitchSpray = std::max(0.0f, targetPitchSpray_);
-        const float panSpray = std::clamp(targetPanSpray_, 0.0f, 1.0f);
-        const float dryWet = std::clamp(targetMix_, 0.0f, 1.0f);
-
-        const float spawnIntervalSamples = static_cast<float>(spec_.sampleRate) / density;
-        const int baseGrainDuration = std::max(16, static_cast<int>(grainSizeMs * 0.001f * static_cast<float>(spec_.sampleRate)));
-
-        const float* inL = context.inputChannels[0];
-        const float* inR = (context.numInputChannels > 1) ? context.inputChannels[1] : context.inputChannels[0];
-
-        float* outL = context.outputChannels[0];
-        float* outR = (context.numOutputChannels > 1) ? context.outputChannels[1] : context.outputChannels[0];
-
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            const float drySampleL = inL[s];
-            const float drySampleR = inR[s];
-
-            if (targetFreeze_ <= 0.5f) {
-                ringBufferL_[writePos_] = drySampleL;
-                ringBufferR_[writePos_] = drySampleR;
-                writePos_ = (writePos_ + 1 < bufferCapacity_) ? (writePos_ + 1) : 0;
-                totalSamplesRecorded_++;
-            }
-            const size_t currentWrite = writePos_;
-
-            // Detección de novedad / flujo espectral para SpawnMode == 2 (Spectral / Onset) (Punto 28)
-            const float diffL = drySampleL - prevSampleL_;
-            const float diffR = drySampleR - prevSampleR_;
-            prevSampleL_ = drySampleL;
-            prevSampleR_ = drySampleR;
-            const float sampleFlux = std::sqrt(0.5f * (diffL * diffL + diffR * diffR));
-
-            bool shouldSpawn = false;
-            const int mode = static_cast<int>(targetSpawnMode_ + 0.5f);
-
-            if (mode == 1) {
-                // Modo 1: Estocástico (Distribución aleatoria de Poisson continua)
-                const float prob = density / static_cast<float>(spec_.sampleRate);
-                shouldSpawn = (nextRandomFloat() < prob);
-            } else if (mode == 2) {
-                // Modo 2: Espectral / Onset (Disparado por saltos de flujo espectral y transitorios)
-                samplesUntilNextGrain_ -= 1.0f;
-                const float fluxThreshold = (1.05f - targetSpectralSensitivity_) * 0.12f;
-                if (sampleFlux > fluxThreshold && samplesUntilNextGrain_ <= 0.0f) {
-                    shouldSpawn = true;
-                    // Tiempo refractario mínimo para no saturar el pool
-                    samplesUntilNextGrain_ = std::max(64.0f, spawnIntervalSamples * 0.25f);
-                } else if (samplesUntilNextGrain_ <= -spawnIntervalSamples * 2.0f) {
-                    // Fallback periódico para evitar silencios prolongados
-                    shouldSpawn = true;
-                    samplesUntilNextGrain_ = spawnIntervalSamples;
-                }
-            } else {
-                // Modo 0: Clock isócrono regular
-                samplesUntilNextGrain_ -= 1.0f;
-                if (samplesUntilNextGrain_ <= 0.0f) {
-                    shouldSpawn = true;
-                    samplesUntilNextGrain_ += spawnIntervalSamples;
-                }
-            }
-
-            if (shouldSpawn) {
-                Grain* grain = grainPool_.acquire();
-                if (grain != nullptr) {
-                    const float rPos = nextRandomFloat();
-                    const float rPitch = nextRandomFloat() * 2.0f - 1.0f;
-                    const float rPan = nextRandomFloat() * 2.0f - 1.0f;
-
-                    const float offsetSamples = posSprayMs * 0.001f * static_cast<float>(spec_.sampleRate) * rPos;
-                    float startPos = 0.0f;
-                    if (targetScrubPos_ > 0.0001f) {
-                        float centerPos = targetScrubPos_ * static_cast<float>(bufferCapacity_);
-                        startPos = centerPos - offsetSamples;
-                        while (startPos < 0.0f) startPos += static_cast<float>(bufferCapacity_);
-                        while (startPos >= static_cast<float>(bufferCapacity_)) startPos -= static_cast<float>(bufferCapacity_);
-                    } else if (totalSamplesRecorded_ < bufferCapacity_) {
-                        // Al inicio, no leer más allá de lo grabado
-                        const float maxBack = static_cast<float>(currentWrite);
-                        startPos = std::max(0.0f, maxBack - offsetSamples - static_cast<float>(baseGrainDuration) * 0.5f);
-                    } else {
-                        startPos = static_cast<float>(currentWrite) - offsetSamples - static_cast<float>(baseGrainDuration);
-                        while (startPos < 0.0f) startPos += static_cast<float>(bufferCapacity_);
-                    }
-
-                    // En modo espectral, el flujo modula dinámicamente el pitch spray
-                    const float effectivePitchSpray = (mode == 2) ? (pitchSpray * (1.0f + sampleFlux * 2.0f)) : pitchSpray;
-                    const float finalPitchSemitones = pitchSemi + (effectivePitchSpray * rPitch);
-                    const float rate = std::pow(2.0f, finalPitchSemitones / 12.0f);
-
-                    const float pan = std::clamp(0.5f + 0.5f * (rPan * panSpray), 0.0f, 1.0f);
-
-                    grain->sourceStartPos = startPos;
-                    grain->currentPlayhead = startPos;
-                    grain->playbackRate = std::clamp(rate, 0.25f, 4.0f);
-                    grain->durationSamples = baseGrainDuration;
-                    grain->ageSamples = 0;
-                    grain->panL = std::cos(pan * 1.5707963f);
-                    grain->panR = std::sin(pan * 1.5707963f);
-                    grain->amplitude = 1.0f;
-                }
-            }
-
-            float grainSumL = 0.0f;
-            float grainSumR = 0.0f;
-
-            for (size_t g = 0; g < GrainPool::MaxGrains; ++g) {
-                Grain& grain = grainPool_.getGrain(g);
-                if (!grain.active) continue;
-
-                const float env = grain.getWindowEnvelope();
-
-                const float ph = grain.currentPlayhead;
-                const size_t idx0 = static_cast<size_t>(ph) % bufferCapacity_;
-                const size_t idx1 = (idx0 + 1 < bufferCapacity_) ? (idx0 + 1) : 0;
-                const float frac = ph - std::floor(ph);
-
-                const float gSampL = ringBufferL_[idx0] + frac * (ringBufferL_[idx1] - ringBufferL_[idx0]);
-                const float gSampR = ringBufferR_[idx0] + frac * (ringBufferR_[idx1] - ringBufferR_[idx0]);
-
-                const float winSampL = gSampL * env;
-                const float winSampR = gSampR * env;
-
-                grainSumL += winSampL * grain.panL;
-                grainSumR += winSampR * grain.panR;
-
-                grain.currentPlayhead += grain.playbackRate;
-                if (grain.currentPlayhead >= static_cast<float>(bufferCapacity_)) {
-                    grain.currentPlayhead -= static_cast<float>(bufferCapacity_);
-                }
-                grain.ageSamples++;
-
-                if (grain.ageSamples >= grain.durationSamples) {
-                    grainPool_.release(&grain);
-                }
-            }
-
-            constexpr float grainGain = 0.707f;
-            const float wetL = grainSumL * grainGain;
-            const float wetR = grainSumR * grainGain;
-
-            outL[s] = drySampleL * (1.0f - dryWet) + wetL * dryWet;
-            outR[s] = drySampleR * (1.0f - dryWet) + wetR * dryWet;
+        if (rustInstance_) {
+            n8_rust_granular_reset(rustInstance_);
         }
     }
 
+    void process(ProcessContext& context) override {
+        if (!rustInstance_ || context.numSamples == 0 || context.numInputChannels == 0 || context.numOutputChannels == 0) return;
+
+        const float* inL = context.inputChannels[0];
+        const float* inR = (context.numInputChannels > 1) ? context.inputChannels[1] : context.inputChannels[0];
+        float* outL = context.outputChannels[0];
+        float* outR = (context.numOutputChannels > 1) ? context.outputChannels[1] : context.outputChannels[0];
+
+        n8_rust_granular_process(rustInstance_, inL, inR, outL, outR, context.numSamples);
+    }
+
     void setParameter(ParameterId id, float value) override {
-        switch (id) {
-            case GrainSizeMs: targetGrainSizeMs_ = std::clamp(value, 10.0f, 500.0f); break;
-            case Density: targetDensity_ = std::clamp(value, 1.0f, 60.0f); break;
-            case PositionSprayMs: targetPositionSprayMs_ = std::clamp(value, 0.0f, 200.0f); break;
-            case PitchSemitones: targetPitchSemitones_ = std::clamp(value, -24.0f, 24.0f); break;
-            case PitchSpray: targetPitchSpray_ = std::clamp(value, 0.0f, 12.0f); break;
-            case PanSpray: targetPanSpray_ = std::clamp(value, 0.0f, 1.0f); break;
-            case DryWet: targetMix_ = std::clamp(value, 0.0f, 1.0f); break;
-            case ScrubPosition: targetScrubPos_ = std::clamp(value, 0.0f, 1.0f); break;
-            case Freeze: targetFreeze_ = (value > 0.5f) ? 1.0f : 0.0f; break;
-            case SpawnMode: targetSpawnMode_ = std::clamp(value, 0.0f, 2.0f); break;
-            case SpectralSensitivity: targetSpectralSensitivity_ = std::clamp(value, 0.0f, 1.0f); break;
+        if (rustInstance_) {
+            n8_rust_granular_set_parameter(rustInstance_, id, value);
         }
     }
 
     float getParameter(ParameterId id) const override {
-        switch (id) {
-            case GrainSizeMs: return targetGrainSizeMs_;
-            case Density: return targetDensity_;
-            case PositionSprayMs: return targetPositionSprayMs_;
-            case PitchSemitones: return targetPitchSemitones_;
-            case PitchSpray: return targetPitchSpray_;
-            case PanSpray: return targetPanSpray_;
-            case DryWet: return targetMix_;
-            case ScrubPosition: return targetScrubPos_;
-            case Freeze: return targetFreeze_;
-            case SpawnMode: return targetSpawnMode_;
-            case SpectralSensitivity: return targetSpectralSensitivity_;
-            default: return 0.0f;
+        if (rustInstance_) {
+            return n8_rust_granular_get_parameter(rustInstance_, id);
         }
+        return 0.0f;
     }
 
     NodeType getType() const override { return NodeType::Granular; }
@@ -270,85 +134,29 @@ public:
     std::span<const PinDescriptor> getPins() const override { return pins_; }
     std::span<const ParameterInfo> getParameters() const override { return params_; }
 
-    struct GrainCloudPoint {
-        float normPosition{ 0.0f }; // 0.0 to 1.0
-        float pitchRatio{ 1.0f };
-        float pan{ 0.5f };
-        float envelope{ 0.0f };
-        bool active{ false };
-    };
-
     size_t copyWaveformOverview(float* outMinMax, size_t numPairs) const noexcept {
-        if (ringBufferL_.empty() || bufferCapacity_ == 0 || outMinMax == nullptr || numPairs == 0) return 0;
-        const size_t step = std::max<size_t>(1, bufferCapacity_ / numPairs);
-        for (size_t p = 0; p < numPairs; ++p) {
-            float minVal = 0.0f;
-            float maxVal = 0.0f;
-            const size_t startIdx = p * step;
-            const size_t endIdx = std::min(startIdx + step, bufferCapacity_);
-            for (size_t i = startIdx; i < endIdx; ++i) {
-                float s = 0.5f * (ringBufferL_[i] + ringBufferR_[i]);
-                if (s < minVal) minVal = s;
-                if (s > maxVal) maxVal = s;
-            }
-            outMinMax[p * 2] = minVal;
-            outMinMax[p * 2 + 1] = maxVal;
-        }
-        return numPairs;
+        if (!rustInstance_ || outMinMax == nullptr || numPairs == 0) return 0;
+        return n8_rust_granular_copy_waveform_overview(rustInstance_, outMinMax, numPairs);
     }
 
     size_t copyActiveGrainsSnapshot(std::span<GrainCloudPoint> outPoints) const noexcept {
-        if (outPoints.empty() || bufferCapacity_ == 0) return 0;
-        size_t written = 0;
-        for (size_t g = 0; g < GrainPool::MaxGrains && written < outPoints.size(); ++g) {
-            const Grain& grain = grainPool_.getGrain(g);
-            if (!grain.active) continue;
-            auto& pt = outPoints[written++];
-            pt.normPosition = std::clamp(grain.currentPlayhead / static_cast<float>(bufferCapacity_), 0.0f, 1.0f);
-            pt.pitchRatio = grain.playbackRate;
-            pt.pan = std::clamp(std::atan2(grain.panR, grain.panL) / 1.5707963f, 0.0f, 1.0f);
-            pt.envelope = grain.getWindowEnvelope();
-            pt.active = true;
-        }
-        return written;
+        if (!rustInstance_ || outPoints.empty()) return 0;
+        static_assert(sizeof(GrainCloudPoint) == sizeof(RustGrainCloudPoint), "Layout mismatch in GrainCloudPoint");
+        return n8_rust_granular_copy_active_grains_snapshot(
+            rustInstance_,
+            reinterpret_cast<RustGrainCloudPoint*>(outPoints.data()),
+            outPoints.size()
+        );
     }
 
     float getWritePositionNormalized() const noexcept {
-        return (bufferCapacity_ > 0) ? (static_cast<float>(writePos_) / static_cast<float>(bufferCapacity_)) : 0.0f;
+        if (!rustInstance_) return 0.0f;
+        return n8_rust_granular_get_write_position_normalized(rustInstance_);
     }
 
 private:
-    [[nodiscard]] float nextRandomFloat() noexcept {
-        rngState_ = rngState_ * 1664525u + 1013904223u;
-        return static_cast<float>(rngState_ & 0x00FFFFFFu) / static_cast<float>(0x01000000u);
-    }
-
-    static constexpr size_t MaxRingBufferSize = 192000;
-    ProcessSpec spec_;
-
-    GrainPool grainPool_{};
-    std::vector<float> ringBufferL_;
-    std::vector<float> ringBufferR_;
-    size_t bufferCapacity_{ 88200 };
-    size_t writePos_{ 0 };
-    size_t totalSamplesRecorded_{ 0 };
-    float samplesUntilNextGrain_{ 0.0f };
-    uint32_t rngState_{ 123456789 };
-
-    float targetGrainSizeMs_{ 80.0f };
-    float targetDensity_{ 15.0f };
-    float targetPositionSprayMs_{ 20.0f };
-    float targetPitchSemitones_{ 0.0f };
-    float targetPitchSpray_{ 0.0f };
-    float targetPanSpray_{ 0.5f };
-    float targetMix_{ 0.5f };
-    float targetScrubPos_{ 0.0f };
-    float targetFreeze_{ 0.0f };
-    float targetSpawnMode_{ 0.0f };
-    float targetSpectralSensitivity_{ 0.5f };
-    float prevSampleL_{ 0.0f };
-    float prevSampleR_{ 0.0f };
-
+    RustGranular* rustInstance_{ nullptr };
+    ProcessSpec spec_{ 44100.0, 512, 2, 2 };
     std::array<PinDescriptor, 2> pins_;
     std::array<ParameterInfo, 11> params_;
 };

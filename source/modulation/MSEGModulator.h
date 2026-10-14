@@ -4,12 +4,14 @@
 #include <cmath>
 #include <algorithm>
 #include "ModulationTypes.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
  * @brief Generador de Envolvente Multi-Segmento (MSEG - Multi-Segment Envelope Generator)
  * con curvas Bézier/tensión configurables y sincronización rítmica (Reglas 7, 8, 25, 37, 46, 47)
+ * Delega la evaluación de curvas y trayectoria al núcleo Rust.
  */
 class MSEGModulator {
 public:
@@ -27,167 +29,105 @@ public:
 
     static constexpr size_t MaxPoints = 16;
 
-    MSEGModulator() {
-        setDefaultEnvelope();
+    explicit MSEGModulator(RustMSEGModulator* existing = nullptr, bool owns = true)
+        : rustCore_(existing ? existing : n8_rust_mseg_modulator_create()), ownsCore_(owns)
+    {
+    }
+
+    ~MSEGModulator() {
+        if (rustCore_ && ownsCore_) {
+            n8_rust_mseg_modulator_destroy(rustCore_);
+            rustCore_ = nullptr;
+        }
+    }
+
+    MSEGModulator(const MSEGModulator&) = delete;
+    MSEGModulator& operator=(const MSEGModulator&) = delete;
+
+    MSEGModulator(MSEGModulator&& other) noexcept
+        : rustCore_(other.rustCore_), ownsCore_(other.ownsCore_)
+    {
+        other.rustCore_ = nullptr;
+        other.ownsCore_ = false;
+    }
+
+    MSEGModulator& operator=(MSEGModulator&& other) noexcept {
+        if (this != &other) {
+            if (rustCore_ && ownsCore_) {
+                n8_rust_mseg_modulator_destroy(rustCore_);
+            }
+            rustCore_ = other.rustCore_;
+            ownsCore_ = other.ownsCore_;
+            other.rustCore_ = nullptr;
+            other.ownsCore_ = false;
+        }
+        return *this;
     }
 
     void prepare(double sampleRate) noexcept {
-        sampleRate_ = (sampleRate > 0.0) ? sampleRate : 44100.0;
-        reset();
+        if (rustCore_) {
+            n8_rust_mseg_modulator_prepare(rustCore_, sampleRate);
+        }
     }
 
     void reset() noexcept {
-        phase_ = 0.0;
-        currentValue_ = points_[0].level;
-        pingPongForward_ = true;
-        finished_ = false;
+        if (rustCore_) {
+            n8_rust_mseg_modulator_reset(rustCore_);
+        }
     }
 
     void setDefaultEnvelope() noexcept {
-        numPoints_ = 4;
-        points_[0] = { 0.0f,  0.0f,  0.0f };  // Inicio
-        points_[1] = { 0.25f, 1.0f,  0.25f }; // Ataque
-        points_[2] = { 0.75f, 0.4f, -0.2f };  // Caída / Sustain
-        points_[3] = { 1.0f,  0.0f, -0.4f };  // Release
+        if (rustCore_) {
+            n8_rust_mseg_modulator_set_default_envelope(rustCore_);
+        }
     }
 
     void setPoint(size_t index, float time, float level, float curve) noexcept {
-        if (index < MaxPoints) {
-            points_[index].time = std::clamp(time, 0.0f, 1.0f);
-            points_[index].level = std::clamp(level, -1.0f, 1.0f);
-            points_[index].curve = std::clamp(curve, -1.0f, 1.0f);
+        if (rustCore_) {
+            n8_rust_mseg_modulator_set_point(rustCore_, index, time, level, curve);
         }
     }
 
     void setNumPoints(size_t count) noexcept {
-        numPoints_ = std::clamp<size_t>(count, 2, MaxPoints);
+        if (rustCore_) {
+            n8_rust_mseg_modulator_set_num_points(rustCore_, count);
+        }
     }
 
-    void setMode(PlayMode mode) noexcept { mode_ = mode; }
+    void setMode(PlayMode mode) noexcept {
+        if (rustCore_) {
+            n8_rust_mseg_modulator_set_mode(rustCore_, static_cast<uint8_t>(mode));
+        }
+    }
+
     void setSync(SyncDivision div, float freeHz = 1.0f) noexcept {
-        syncDiv_ = div;
-        freeHz_ = std::clamp(freeHz, 0.01f, 40.0f);
+        if (rustCore_) {
+            n8_rust_mseg_modulator_set_sync(rustCore_, static_cast<uint8_t>(div), freeHz);
+        }
     }
 
     void trigger() noexcept {
-        phase_ = 0.0;
-        pingPongForward_ = true;
-        finished_ = false;
+        if (rustCore_) {
+            n8_rust_mseg_modulator_trigger(rustCore_);
+        }
     }
 
     void processSample(double bpm, double ppq, bool isPlaying) noexcept {
-        if (finished_) return;
-
-        // 1. Cálculo del incremento de fase según tempo o Hz libres
-        if (syncDiv_ != SyncDivision::FreeHz && isPlaying && bpm > 1.0) {
-            // Sincronizado al PPQ del DAW
-            double beatsPerCycle = 1.0;
-            switch (syncDiv_) {
-                case SyncDivision::Bar_1:       beatsPerCycle = 4.0; break;
-                case SyncDivision::Half:        beatsPerCycle = 2.0; break;
-                case SyncDivision::Quarter:     beatsPerCycle = 1.0; break;
-                case SyncDivision::Eighth:      beatsPerCycle = 0.5; break;
-                case SyncDivision::Sixteenth:   beatsPerCycle = 0.25; break;
-                case SyncDivision::ThirtySecond:beatsPerCycle = 0.125; break;
-                case SyncDivision::Triplet_Quarter: beatsPerCycle = 4.0 / 3.0; break;
-                case SyncDivision::Triplet_Eighth:  beatsPerCycle = 2.0 / 3.0; break;
-                default: beatsPerCycle = 1.0; break;
-            }
-
-            double normalizedPos = std::fmod(ppq, beatsPerCycle) / beatsPerCycle;
-            if (normalizedPos < 0.0) normalizedPos += 1.0;
-            phase_ = normalizedPos;
-        } else {
-            // Frecuencia libre
-            const double phaseIncrement = static_cast<double>(freeHz_) / sampleRate_;
-            if (mode_ == PlayMode::PingPong) {
-                if (pingPongForward_) {
-                    phase_ += phaseIncrement;
-                    if (phase_ >= 1.0) {
-                        phase_ = 1.0;
-                        pingPongForward_ = false;
-                    }
-                } else {
-                    phase_ -= phaseIncrement;
-                    if (phase_ <= 0.0) {
-                        phase_ = 0.0;
-                        pingPongForward_ = true;
-                    }
-                }
-            } else {
-                phase_ += phaseIncrement;
-                if (phase_ >= 1.0) {
-                    if (mode_ == PlayMode::Loop) {
-                        phase_ = std::fmod(phase_, 1.0);
-                    } else {
-                        phase_ = 1.0;
-                        finished_ = true;
-                    }
-                }
-            }
+        if (rustCore_) {
+            n8_rust_mseg_modulator_process_sample(rustCore_, bpm, ppq, isPlaying);
         }
-
-        // 2. Evaluar valor del MSEG en la fase actual
-        currentValue_ = evaluateAt(static_cast<float>(phase_));
     }
 
-    float getCurrentValue() const noexcept { return currentValue_; }
+    float getCurrentValue() const noexcept {
+        if (rustCore_) {
+            return n8_rust_mseg_modulator_get_current_value(rustCore_);
+        }
+        return 0.0f;
+    }
 
 private:
-    float evaluateAt(float t) const noexcept {
-        if (numPoints_ < 2) return 0.0f;
-
-        // Si t está antes del primer punto o después del último
-        if (t <= points_[0].time) return points_[0].level;
-        if (t >= points_[numPoints_ - 1].time) return points_[numPoints_ - 1].level;
-
-        // Encontrar segmento activo [i, i+1]
-        size_t segIdx = 0;
-        for (size_t i = 0; i < numPoints_ - 1; ++i) {
-            if (t >= points_[i].time && t <= points_[i + 1].time) {
-                segIdx = i;
-                break;
-            }
-        }
-
-        const auto& p0 = points_[segIdx];
-        const auto& p1 = points_[segIdx + 1];
-
-        const float segDuration = p1.time - p0.time;
-        if (segDuration <= 1e-6f) return p0.level;
-
-        const float localT = std::clamp((t - p0.time) / segDuration, 0.0f, 1.0f);
-
-        // Curvatura / Tensión no lineal
-        float curvedT = localT;
-        const float c = p0.curve;
-        if (std::abs(c) > 0.001f) {
-            if (c > 0.0f) {
-                // Convexa (rápido al principio, lento al final)
-                const float exponent = 1.0f + 3.0f * c;
-                curvedT = 1.0f - std::pow(1.0f - localT, exponent);
-            } else {
-                // Cóncava (lento al principio, rápido al final)
-                const float exponent = 1.0f - 3.0f * c;
-                curvedT = std::pow(localT, exponent);
-            }
-        }
-
-        return (1.0f - curvedT) * p0.level + curvedT * p1.level;
-    }
-
-    double sampleRate_{ 44100.0 };
-    std::array<MSEGPoint, MaxPoints> points_;
-    size_t numPoints_{ 4 };
-
-    PlayMode mode_{ PlayMode::Loop };
-    SyncDivision syncDiv_{ SyncDivision::Bar_1 };
-    float freeHz_{ 1.0f };
-
-    double phase_{ 0.0 };
-    float currentValue_{ 0.0f };
-    bool pingPongForward_{ true };
-    bool finished_{ false };
+    RustMSEGModulator* rustCore_{ nullptr };
+    bool ownsCore_{ true };
 };
 
 } // namespace audio_graph

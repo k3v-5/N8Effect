@@ -10,6 +10,7 @@
 #include "../graph/NodeFactory.h"
 #include "GraphUndoManager.h"
 #include "GraphSerializer.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -68,8 +69,11 @@ private:
 
     /**
      * @brief Modifica parámetros de los nodos existentes con salvaguardas acústicas estrictas
+     * Delegado al motor de aleatorización de alto rendimiento en Rust.
      */
     static bool tweakParameters(Graph& graph, std::array<float, 8>& macros, float intensity, bool allowModeFlips = false) {
+        RustSmartRandomizer* rz = n8_rust_smart_randomizer_create(getRng());
+
         for (const auto& [nodeId, instance] : graph.getNodes()) {
             if (!instance || !instance->processor) continue;
 
@@ -80,7 +84,6 @@ private:
             for (const auto& param : proc->getParameters()) {
                 const std::string name = param.name;
                 float currentVal = proc->getParameter(param.id);
-                const float range = param.maxValue - param.minValue;
 
                 // Si es un parámetro booleano o discreto (como selector de modo o sync)
                 if (!param.isSmoothed) {
@@ -91,33 +94,28 @@ private:
                     continue;
                 }
 
-                // Perturbación acotada por intensidad
-                float delta = (randomUniform(-1.0f, 1.0f) * intensity) * range;
-                float candidateVal = currentVal + delta;
+                const bool isFeedback = name.find("Feedback") != std::string::npos || name.find("feedback") != std::string::npos;
+                const bool isResonance = name.find("Resonance") != std::string::npos || name.find(" Q") != std::string::npos;
+                const bool isDrive = name.find("Drive") != std::string::npos || name.find("Gain") != std::string::npos;
 
-                // Salvaguardas acústicas críticas (Reglas 11, 12, 34 y 47)
-                if (name.find("Feedback") != std::string::npos || name.find("feedback") != std::string::npos) {
-                    // Prevenir retroalimentación destructiva desbocada
-                    float maxSafeFdbk = (proc->getType() == NodeType::Feedback) ? 1.08f : 0.82f;
-                    candidateVal = std::clamp(candidateVal, param.minValue, maxSafeFdbk);
-                } else if (name.find("Resonance") != std::string::npos || name.find(" Q") != std::string::npos) {
-                    // Prevenir picos de auto-oscilación chirriantes
-                    candidateVal = std::clamp(candidateVal, param.minValue, std::min(param.maxValue, 14.0f));
-                } else if (name.find("Drive") != std::string::npos || name.find("Gain") != std::string::npos) {
-                    // Mantener distorsiones en rangos no ensordecedores
-                    candidateVal = std::clamp(candidateVal, param.minValue, param.minValue + range * 0.85f);
-                } else {
-                    candidateVal = std::clamp(candidateVal, param.minValue, param.maxValue);
-                }
+                float candidateVal = n8_rust_smart_randomizer_perturb_param(
+                    rz,
+                    currentVal,
+                    param.minValue,
+                    param.maxValue,
+                    intensity,
+                    isFeedback,
+                    isResonance,
+                    isDrive
+                );
 
                 proc->setParameter(param.id, candidateVal);
             }
         }
 
-        // Variar macros globales
-        for (auto& m : macros) {
-            m = std::clamp(m + randomUniform(-intensity, intensity), 0.0f, 1.0f);
-        }
+        // Variar macros globales mediante el generador determinista en Rust
+        n8_rust_smart_randomizer_mutate_macros(rz, macros.data(), intensity);
+        n8_rust_smart_randomizer_destroy(rz);
 
         return true;
     }
@@ -129,18 +127,21 @@ private:
         // Familias de procesadores complementarios para construir cadenas ricas
         static const std::vector<NodeType> toneFamily = {
             NodeType::Tape, NodeType::FormantFilter, NodeType::Filter,
-            NodeType::ParametricEQ, NodeType::Distortion, NodeType::NoiseTexture
+            NodeType::ParametricEQ, NodeType::Distortion, NodeType::NoiseTexture,
+            NodeType::DynamicEq, NodeType::AutoWahFilter, NodeType::LoFiCassette
         };
 
         static const std::vector<NodeType> modulationFamily = {
             NodeType::Chorus, NodeType::Phaser, NodeType::Flanger,
-            NodeType::RingModulator, NodeType::FrequencyShifter, NodeType::Resonator
+            NodeType::RingModulator, NodeType::FrequencyShifter, NodeType::Resonator,
+            NodeType::Refraction, NodeType::ModalResonator, NodeType::RustWaveguide
         };
 
         static const std::vector<NodeType> spaceTimeFamily = {
             NodeType::AdvancedDelay, NodeType::Delay, NodeType::Reverb,
             NodeType::TapeStop, NodeType::Glitch, NodeType::Granular,
-            NodeType::SpatialPanner
+            NodeType::SpatialPanner, NodeType::ShimmerReverb, NodeType::ReverseReverb,
+            NodeType::AudioSlicer, NodeType::SpectralSmear
         };
 
         // Crear una instancia de grafo temporal limpia

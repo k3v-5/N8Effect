@@ -208,6 +208,12 @@ public:
         repaint();
     }
 
+    juce::Point<float> getDragPinCenterOnScreen() const {
+        auto pinBounds = dragPin_.getBounds().toFloat();
+        auto pinCenter = pinBounds.getCentre();
+        return localPointToGlobal(pinCenter);
+    }
+
     void mouseDown(const juce::MouseEvent& e) override {
         if (e.mods.isPopupMenu()) {
             showContextMenu();
@@ -595,6 +601,16 @@ public:
             const int w = (i == 7) ? (totalW - x) : slotW;
             knobs_[i]->setBounds(x, 0, w, area.getHeight());
         }
+    }
+
+    juce::Point<float> getMacroPinScreenPosition(ModSourceType type) const {
+        if (type >= ModSourceType::MacroTexture && type <= ModSourceType::MacroMorph) {
+            const size_t idx = static_cast<size_t>(type) - static_cast<size_t>(ModSourceType::MacroTexture);
+            if (idx < knobs_.size() && knobs_[idx] != nullptr && isShowing()) {
+                return knobs_[idx]->getDragPinCenterOnScreen();
+            }
+        }
+        return {};
     }
 
 private:

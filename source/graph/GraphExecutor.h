@@ -89,6 +89,35 @@ public:
     bool hasExplicitConnections() const noexcept { return hasExplicitConnections_; }
     bool isEmpty() const noexcept { return steps_.empty(); }
 
+    /**
+     * @brief Calcula la asignación óptima de slots de buffers reutilizables utilizando el planificador Rust (Fase 8, Regla 47).
+     */
+    uint32_t computeOptimalBufferSlotsRust(std::vector<RustStepSlotAssignment>& assignments) const {
+        if (steps_.empty()) return 0;
+
+        std::vector<uint32_t> flattenedPreds;
+        std::vector<uint32_t> offsets(steps_.size());
+        std::vector<uint32_t> counts(steps_.size());
+
+        for (size_t i = 0; i < steps_.size(); ++i) {
+            offsets[i] = static_cast<uint32_t>(flattenedPreds.size());
+            counts[i] = static_cast<uint32_t>(steps_[i].predecessorStepIndices.size());
+            for (int p : steps_[i].predecessorStepIndices) {
+                if (p >= 0) flattenedPreds.push_back(static_cast<uint32_t>(p));
+            }
+        }
+
+        assignments.resize(steps_.size());
+        return n8_rust_opt_compute_optimal_buffer_slots(
+            flattenedPreds.data(),
+            static_cast<uint32_t>(flattenedPreds.size()),
+            offsets.data(),
+            counts.data(),
+            static_cast<uint32_t>(steps_.size()),
+            assignments.data()
+        );
+    }
+
 private:
     std::vector<ExecutionStep> steps_;
     bool hasExplicitConnections_{ false };
@@ -372,7 +401,7 @@ private:
             case ConcurrencyMode::SingleThreaded:
                 return false;
             case ConcurrencyMode::SmartMultithreaded:
-                return totalSteps > 4; // Umbral: > 4 nodos activa multithreading
+                return totalSteps >= 16; // Umbral: >= 16 nodos activa multithreading en grafos masivos
             case ConcurrencyMode::AlwaysMultithreaded:
                 return totalSteps > 1; // 2 o más nodos activa multithreading
         }
@@ -382,7 +411,7 @@ private:
     ProcessSpec spec_;
     AudioBufferPool bufferPool_;
     WorkStealingGraphScheduler scheduler_;
-    std::atomic<ConcurrencyMode> concurrencyMode_{ ConcurrencyMode::SmartMultithreaded };
+    std::atomic<ConcurrencyMode> concurrencyMode_{ ConcurrencyMode::SingleThreaded };
     std::atomic<NodeId> probeNodeId_{ InvalidNodeId };
     AudioVisualizerBuffer* probeVisualizer_{ nullptr };
 };

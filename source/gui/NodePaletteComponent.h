@@ -171,13 +171,13 @@ public:
         // 3. Pestanas / Selector de categorias
         categoryCombo_.addItem("TODAS LAS CATEGORIAS", 1);
         categoryCombo_.addItem("DYNAMICS (6)", 2);
-        categoryCombo_.addItem("FILTERS & EQ (3)", 3);
+        categoryCombo_.addItem("FILTERS & EQ (5)", 3);
         categoryCombo_.addItem("TIME & SPACE (7)", 4);
-        categoryCombo_.addItem("DRIVE & LO-FI (3)", 5);
+        categoryCombo_.addItem("DRIVE & LO-FI (4)", 5);
         categoryCombo_.addItem("MODULATION (8)", 6);
-        categoryCombo_.addItem("SPECTRAL & GLITCH (7)", 7);
+        categoryCombo_.addItem("SPECTRAL & GLITCH (8)", 7);
         categoryCombo_.addItem("SYNTH & MIDI (6)", 8);
-        categoryCombo_.addItem("ROUTING & UTIL (8)", 9);
+        categoryCombo_.addItem("ROUTING & UTIL (9)", 9);
         categoryCombo_.setSelectedId(1, juce::dontSendNotification);
         categoryCombo_.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff0e131c));
         categoryCombo_.setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff1e2838));
@@ -242,6 +242,8 @@ private:
             { NodeType::TransientShaper, "Transient Shaper", "Attack & Sustain", 1, juce::Colour(0xff00ff88) },
 
             // FILTERS & EQ (2)
+            { NodeType::DynamicEq, "Dynamic EQ", "4-Band Dynamic Parametric", 2, juce::Colour(0xffff8800) },
+            { NodeType::AutoWahFilter, "Auto-Wah Filter", "Envelope Dynamic Wah", 2, juce::Colour(0xffff8800) },
             { NodeType::Filter, "SVF Filter", "12-24dB Biquad", 2, juce::Colour(0xffff8800) },
             { NodeType::ParametricEQ, "Parametric EQ", "4-Band Parametric", 2, juce::Colour(0xffff8800) },
             { NodeType::FormantFilter, "Formant Filter", "Vowel Vocal Shaper", 2, juce::Colour(0xffff8800) },
@@ -256,6 +258,7 @@ private:
             { NodeType::TapeStop, "Tape Stop", "Analog Vinyl Spin", 3, juce::Colour(0xff00e5ff) },
 
             // DRIVE & LO-FI (4)
+            { NodeType::LoFiCassette, "Lo-Fi Cassette", "Tape Wow, Flutter & Drive", 4, juce::Colour(0xffff3355) },
             { NodeType::Distortion, "Distortion", "Asymmetric Waveshaper", 4, juce::Colour(0xffff3355) },
             { NodeType::Bitcrusher, "Bitcrusher Lo-Fi", "Sample Rate Decimator", 4, juce::Colour(0xffff3355) },
             { NodeType::HarmonicExciter, "Harmonic Exciter", "Even/Odd Air & Sub", 4, juce::Colour(0xffff3355) },
@@ -271,6 +274,8 @@ private:
             { NodeType::PitchShifter, "Pitch Shifter", "Dual Crossfade Pitch", 5, juce::Colour(0xffbf55ec) },
 
             // SPECTRAL & GLITCH (6)
+            { NodeType::RustWaveguide, "Rust Waveguide", "SIMD Physical Waveguide", 6, juce::Colour(0xffff6b4a) },
+            { NodeType::ModalResonator, "Modal Resonator", "8-Mode Physical Body", 6, juce::Colour(0xffffd700) },
             { NodeType::SpectralSmear, "Spectral Smear", "STFT Liquid Diffusion", 6, juce::Colour(0xffffd700) },
             { NodeType::Granular, "Granular Engine", "128-Grain Cloud Texture", 6, juce::Colour(0xffffd700) },
             { NodeType::AudioSlicer, "Audio Slicer", "Buffer Slice & Frozen Grain", 6, juce::Colour(0xffffd700) },
@@ -289,6 +294,7 @@ private:
             { NodeType::NoiseTexture, "Noise / Texture", "Pink/White/Crackle Gen", 7, juce::Colour(0xffa0e000) },
 
             // ROUTING & UTILITY (8)
+            { NodeType::StereoImager, "Stereo Imager", "M/S Width & Haas Delay", 8, juce::Colour(0xff5dade2) },
             { NodeType::SpatialPanner, "3D Panner", "Binaural Spatializer", 8, juce::Colour(0xff5dade2) },
             { NodeType::MidSideEncoder, "M/S Encoder", "Stereo to Mid/Side Matrix", 8, juce::Colour(0xff5dade2) },
             { NodeType::MidSideDecoder, "M/S Decoder", "Mid/Side to Stereo Matrix", 8, juce::Colour(0xff5dade2) },

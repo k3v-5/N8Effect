@@ -45,6 +45,13 @@ add_executable(N8Effect_Tests
     source/dsp/processors/ShimmerReverbNode.h
     source/dsp/processors/RefractionNode.h
     source/dsp/processors/SpectralSmearNode.h
+    source/dsp/processors/SamplePlayerNode.h
+    source/dsp/processors/DynamicEqNode.h
+    source/dsp/processors/StereoImagerNode.h
+    source/dsp/processors/LoFiCassetteNode.h
+    source/dsp/processors/AutoWahFilterNode.h
+    source/dsp/processors/ModalResonatorNode.h
+    source/dsp/processors/RustWaveguideNode.h
     source/dsp/core/GrainPool.h
     source/dsp/core/LinkwitzRileyFilter.h
     source/dsp/processors/GranularNode.h
@@ -99,6 +106,15 @@ add_executable(N8Effect_Tests
 
 target_include_directories(N8Effect_Tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/source
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/dsp/rust_core/include
+)
+
+target_link_libraries(N8Effect_Tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/source/dsp/rust_core/target/release/n8_rust_core.lib"
+    userenv
+    ws2_32
+    bcrypt
+    ntdll
 )
 
 if (MSVC)
@@ -203,6 +219,13 @@ target_sources(N8Effect PRIVATE
     source/dsp/processors/ShimmerReverbNode.h
     source/dsp/processors/RefractionNode.h
     source/dsp/processors/SpectralSmearNode.h
+    source/dsp/processors/SamplePlayerNode.h
+    source/dsp/processors/DynamicEqNode.h
+    source/dsp/processors/StereoImagerNode.h
+    source/dsp/processors/LoFiCassetteNode.h
+    source/dsp/processors/AutoWahFilterNode.h
+    source/dsp/processors/ModalResonatorNode.h
+    source/dsp/processors/RustWaveguideNode.h
     source/dsp/core/GrainPool.h
     source/dsp/core/LinkwitzRileyFilter.h
     source/dsp/processors/GranularNode.h
@@ -295,6 +318,7 @@ target_sources(N8Effect PRIVATE
 
 target_include_directories(N8Effect PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/source
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/dsp/rust_core/include
 )
 
 target_compile_definitions(N8Effect PRIVATE
@@ -312,6 +336,11 @@ target_link_libraries(N8Effect PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags
+    "${CMAKE_CURRENT_SOURCE_DIR}/source/dsp/rust_core/target/release/n8_rust_core.lib"
+    userenv
+    ws2_32
+    bcrypt
+    ntdll
 )
 
 if (MSVC)

@@ -16,6 +16,7 @@
 #include "../gui/AudioVisualizerComponent.h"
 #include "../gui/MacroDashboardComponent.h"
 #include "../gui/PresetBrowserDrawerComponent.h"
+#include "../gui/SceneMorphPadComponent.h"
 #include "../gui/ThemeManager.h"
 
 namespace audio_graph {
@@ -53,13 +54,19 @@ private:
     NodeAutomationSequencerComponent sequencerLane_;
     AudioVisualizerComponent visualizer_;
     MacroDashboardComponent macroDashboard_;
+    SceneMorphPadComponent morphPad_;
     EngineConfigModalComponent configModal_;
     PresetBrowserDrawerComponent presetDrawer_;
 
-    bool isPianoVisible_{ true };
-    bool isSeqVisible_{ true };
+    enum class BottomDockTab { None, Visualizer, Sequencer, Piano, SceneMorphPad };
+    BottomDockTab activeDockTab_{ BottomDockTab::Visualizer };
+    void updateDockVisibility();
+
+    bool isPianoVisible_{ false };
+    bool isSeqVisible_{ false };
     bool isVisVisible_{ true };
     bool isMacrosVisible_{ true };
+    bool isMorphPadVisible_{ false };
     bool isHudVisible_{ true };
     bool isConfigModalVisible_{ false };
     bool isPresetDrawerVisible_{ false };

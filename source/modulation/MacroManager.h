@@ -4,11 +4,13 @@
 #include <algorithm>
 #include <cstdint>
 #include "ModulationTypes.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
  * @brief Administrador de Macros Globales y XY Pad (Reglas 30 y 31)
+ * Delega el almacenamiento y el suavizado anti-click al núcleo Rust.
  */
 class MacroManager {
 public:
@@ -24,61 +26,110 @@ public:
         Count = 8
     };
 
-    MacroManager() {
-        for (auto& m : macros_) m = 0.5f;
-        for (auto& s : smoothedMacros_) s = 0.5f;
+    explicit MacroManager(RustMacroManager* existing = nullptr, bool owns = true)
+        : rustCore_(existing ? existing : n8_rust_macro_manager_create()), ownsCore_(owns)
+    {
+    }
+
+    ~MacroManager() {
+        if (rustCore_ && ownsCore_) {
+            n8_rust_macro_manager_destroy(rustCore_);
+            rustCore_ = nullptr;
+        }
+    }
+
+    MacroManager(const MacroManager&) = delete;
+    MacroManager& operator=(const MacroManager&) = delete;
+
+    MacroManager(MacroManager&& other) noexcept
+        : rustCore_(other.rustCore_), ownsCore_(other.ownsCore_)
+    {
+        other.rustCore_ = nullptr;
+        other.ownsCore_ = false;
+    }
+
+    MacroManager& operator=(MacroManager&& other) noexcept {
+        if (this != &other) {
+            if (rustCore_ && ownsCore_) {
+                n8_rust_macro_manager_destroy(rustCore_);
+            }
+            rustCore_ = other.rustCore_;
+            ownsCore_ = other.ownsCore_;
+            other.rustCore_ = nullptr;
+            other.ownsCore_ = false;
+        }
+        return *this;
     }
 
     void reset() noexcept {
-        for (size_t i = 0; i < Count; ++i) {
-            smoothedMacros_[i] = macros_[i];
+        if (rustCore_) {
+            n8_rust_macro_manager_reset(rustCore_);
         }
-        smoothedPadX_ = padX_;
-        smoothedPadY_ = padY_;
     }
 
     void setMacro(MacroIndex idx, float value) noexcept {
-        if (idx < Count) {
-            macros_[idx] = std::clamp(value, 0.0f, 1.0f);
+        if (rustCore_) {
+            n8_rust_macro_manager_set_macro(rustCore_, static_cast<size_t>(idx), value);
         }
     }
 
     float getMacro(MacroIndex idx) const noexcept {
-        return (idx < Count) ? macros_[idx] : 0.0f;
+        if (rustCore_) {
+            return n8_rust_macro_manager_get_macro(rustCore_, static_cast<size_t>(idx));
+        }
+        return 0.0f;
     }
 
     float getSmoothedMacro(MacroIndex idx) const noexcept {
-        return (idx < Count) ? smoothedMacros_[idx] : 0.0f;
+        if (rustCore_) {
+            return n8_rust_macro_manager_get_smoothed_macro(rustCore_, static_cast<size_t>(idx));
+        }
+        return 0.0f;
     }
 
     void setPad(float x, float y) noexcept {
-        padX_ = std::clamp(x, 0.0f, 1.0f);
-        padY_ = std::clamp(y, 0.0f, 1.0f);
+        if (rustCore_) {
+            n8_rust_macro_manager_set_pad(rustCore_, x, y);
+        }
     }
 
-    float getPadX() const noexcept { return padX_; }
-    float getPadY() const noexcept { return padY_; }
-    float getSmoothedPadX() const noexcept { return smoothedPadX_; }
-    float getSmoothedPadY() const noexcept { return smoothedPadY_; }
-
-    // Actualiza el suavizado anti-click de los macros y el XY Pad (Regla 35)
-    void processSmoothing() noexcept {
-        const float alpha = 0.01f;
-        for (size_t i = 0; i < Count; ++i) {
-            smoothedMacros_[i] += alpha * (macros_[i] - smoothedMacros_[i]);
+    float getPadX() const noexcept {
+        if (rustCore_) {
+            return n8_rust_macro_manager_get_pad_x(rustCore_);
         }
-        smoothedPadX_ += alpha * (padX_ - smoothedPadX_);
-        smoothedPadY_ += alpha * (padY_ - smoothedPadY_);
+        return 0.5f;
+    }
+
+    float getPadY() const noexcept {
+        if (rustCore_) {
+            return n8_rust_macro_manager_get_pad_y(rustCore_);
+        }
+        return 0.5f;
+    }
+
+    float getSmoothedPadX() const noexcept {
+        if (rustCore_) {
+            return n8_rust_macro_manager_get_smoothed_pad_x(rustCore_);
+        }
+        return 0.5f;
+    }
+
+    float getSmoothedPadY() const noexcept {
+        if (rustCore_) {
+            return n8_rust_macro_manager_get_smoothed_pad_y(rustCore_);
+        }
+        return 0.5f;
+    }
+
+    void processSmoothing() noexcept {
+        if (rustCore_) {
+            n8_rust_macro_manager_process_smoothing(rustCore_);
+        }
     }
 
 private:
-    std::array<float, Count> macros_{ 0.5f };
-    std::array<float, Count> smoothedMacros_{ 0.5f };
-
-    float padX_{ 0.5f };
-    float padY_{ 0.5f };
-    float smoothedPadX_{ 0.5f };
-    float smoothedPadY_{ 0.5f };
+    RustMacroManager* rustCore_{ nullptr };
+    bool ownsCore_{ true };
 };
 
 } // namespace audio_graph

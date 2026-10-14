@@ -12,6 +12,7 @@
 #include <iomanip>
 #include "../core/Types.h"
 #include "../graph/Graph.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -42,7 +43,7 @@ struct MidiMapping {
 
 /**
  * @brief Administrador universal de MIDI Learn y Perfiles de Controladores (.n8midi)
- * Permite el control en tiempo real con latencia cero y sin alocaciones en el hilo de audio (Reglas 8, 9, 21, 46).
+ * Impulsado por el núcleo nativo Rust n8_rust_core con latencia cero y sin alocaciones en el hilo de audio (Reglas 8, 9, 21, 46).
  */
 class MidiMappingManager {
 public:
@@ -58,11 +59,55 @@ public:
     };
 
     MidiMappingManager() {
+        rustCore_ = n8_rust_midi_mapping_manager_create();
         mappings_.reserve(MaxMappings);
+    }
+
+    ~MidiMappingManager() {
+        if (rustCore_ != nullptr) {
+            n8_rust_midi_mapping_manager_destroy(rustCore_);
+            rustCore_ = nullptr;
+        }
+    }
+
+    MidiMappingManager(const MidiMappingManager& other) {
+        rustCore_ = n8_rust_midi_mapping_manager_create();
+        mappings_.reserve(MaxMappings);
+        copyFrom(other);
+    }
+
+    MidiMappingManager& operator=(const MidiMappingManager& other) {
+        if (this != &other) {
+            copyFrom(other);
+        }
+        return *this;
+    }
+
+    MidiMappingManager(MidiMappingManager&& other) noexcept {
+        rustCore_ = other.rustCore_;
+        other.rustCore_ = nullptr;
+        mappings_ = std::move(other.mappings_);
+        pendingTarget_ = other.pendingTarget_;
+    }
+
+    MidiMappingManager& operator=(MidiMappingManager&& other) noexcept {
+        if (this != &other) {
+            if (rustCore_ != nullptr) {
+                n8_rust_midi_mapping_manager_destroy(rustCore_);
+            }
+            rustCore_ = other.rustCore_;
+            other.rustCore_ = nullptr;
+            mappings_ = std::move(other.mappings_);
+            pendingTarget_ = other.pendingTarget_;
+        }
+        return *this;
     }
 
     void reset() noexcept {
         cancelLearning();
+        if (rustCore_ != nullptr) {
+            n8_rust_midi_mapping_manager_reset(rustCore_);
+        }
         mappings_.clear();
     }
 
@@ -82,15 +127,23 @@ public:
             .curve = curve,
             .inverted = inverted
         };
-        isLearning_.store(true, std::memory_order_release);
+        if (rustCore_ != nullptr) {
+            n8_rust_midi_mapping_manager_start_learning(
+                rustCore_, paramId, targetNodeId, minVal, maxVal, static_cast<uint8_t>(curve), inverted);
+        }
     }
 
     void cancelLearning() noexcept {
-        isLearning_.store(false, std::memory_order_release);
+        if (rustCore_ != nullptr) {
+            n8_rust_midi_mapping_manager_cancel_learning(rustCore_);
+        }
     }
 
     bool isLearning() const noexcept {
-        return isLearning_.load(std::memory_order_acquire);
+        if (rustCore_ != nullptr) {
+            return n8_rust_midi_mapping_manager_is_learning(rustCore_);
+        }
+        return false;
     }
 
     const LearnTarget& getLearnTarget() const noexcept {
@@ -99,33 +152,41 @@ public:
 
     // Vinculación manual de mapeo
     bool addMapping(const MidiMapping& mapping) {
-        // Eliminar mapeo existente para el mismo parámetro si ya existe
-        removeMapping(mapping.paramId, mapping.targetNodeId);
-
-        if (mappings_.size() < MaxMappings) {
-            mappings_.push_back(mapping);
-            return true;
+        if (rustCore_ != nullptr) {
+            bool ok = n8_rust_midi_mapping_manager_add_mapping(
+                rustCore_,
+                mapping.ccNumber,
+                mapping.channel,
+                mapping.paramId,
+                mapping.targetNodeId,
+                mapping.minVal,
+                mapping.maxVal,
+                mapping.inverted,
+                static_cast<uint8_t>(mapping.curve),
+                mapping.customLabel.c_str());
+            if (ok) {
+                syncFromRust();
+                return true;
+            }
         }
         return false;
     }
 
     bool removeMapping(ParameterId paramId, NodeId targetNodeId = InvalidNodeId) {
-        auto it = std::remove_if(mappings_.begin(), mappings_.end(), [=](const MidiMapping& m) {
-            return m.paramId == paramId && m.targetNodeId == targetNodeId;
-        });
-        if (it != mappings_.end()) {
-            mappings_.erase(it, mappings_.end());
-            return true;
+        if (rustCore_ != nullptr) {
+            bool ok = n8_rust_midi_mapping_manager_remove_mapping(rustCore_, paramId, targetNodeId);
+            if (ok) {
+                syncFromRust();
+                return true;
+            }
         }
         return false;
     }
 
     void removeMappingByCC(uint8_t ccNumber, uint8_t channel = 0) {
-        auto it = std::remove_if(mappings_.begin(), mappings_.end(), [=](const MidiMapping& m) {
-            return m.ccNumber == ccNumber && (channel == 0 || m.channel == 0 || m.channel == channel);
-        });
-        if (it != mappings_.end()) {
-            mappings_.erase(it, mappings_.end());
+        if (rustCore_ != nullptr) {
+            n8_rust_midi_mapping_manager_remove_mapping_by_cc(rustCore_, ccNumber, channel);
+            syncFromRust();
         }
     }
 
@@ -137,46 +198,25 @@ public:
      * @brief Procesa un mensaje CC entrante en tiempo real (Audio Thread Safe)
      */
     void processControlChange(uint8_t channel, uint8_t ccNumber, uint8_t ccValue, Graph* graph = nullptr) noexcept {
-        // 1. Si está en modo MIDI Learn, capturar el primer CC que llegue
-        if (isLearning_.load(std::memory_order_acquire)) {
-            MidiMapping newMap;
-            newMap.ccNumber = ccNumber;
-            newMap.channel = 0; // Omni por defecto
-            newMap.paramId = pendingTarget_.paramId;
-            newMap.targetNodeId = pendingTarget_.targetNodeId;
-            newMap.minVal = pendingTarget_.minVal;
-            newMap.maxVal = pendingTarget_.maxVal;
-            newMap.curve = pendingTarget_.curve;
-            newMap.inverted = pendingTarget_.inverted;
+        if (rustCore_ == nullptr) return;
 
-            // Almacenar en la lista acotada
-            if (mappings_.size() < MaxMappings) {
-                // Eliminar previo
-                for (size_t i = 0; i < mappings_.size(); ++i) {
-                    if (mappings_[i].paramId == newMap.paramId && mappings_[i].targetNodeId == newMap.targetNodeId) {
-                        mappings_[i] = newMap;
-                        isLearning_.store(false, std::memory_order_release);
-                        return;
-                    }
-                }
-                mappings_.push_back(newMap);
-            }
-            isLearning_.store(false, std::memory_order_release);
-            return;
+        const bool wasLearning = isLearning();
+        uint32_t targets[64];
+        uint32_t paramIds[64];
+        float values[64];
+        size_t dispatches = n8_rust_midi_mapping_manager_process_control_change(
+            rustCore_, channel, ccNumber, ccValue, targets, paramIds, values, 64);
+
+        if (wasLearning && !isLearning()) {
+            syncFromRust();
         }
 
-        // 2. Si no está en learn, despachar a los parámetros vinculados
-        for (const auto& map : mappings_) {
-            if (map.ccNumber == ccNumber) {
-                if (map.channel == 0 || map.channel == channel) {
-                    const float finalValue = calculateMappedValue(map, ccValue);
-
-                    // Despachar hacia el nodo destino
-                    if (graph != nullptr && map.targetNodeId != InvalidNodeId) {
-                        auto* proc = graph->getNodeProcessor(map.targetNodeId);
-                        if (proc != nullptr) {
-                            proc->setParameter(map.paramId, finalValue);
-                        }
+        if (graph != nullptr) {
+            for (size_t i = 0; i < dispatches; ++i) {
+                if (targets[i] != InvalidNodeId) {
+                    auto* proc = graph->getNodeProcessor(targets[i]);
+                    if (proc != nullptr) {
+                        proc->setParameter(paramIds[i], values[i]);
                     }
                 }
             }
@@ -187,211 +227,88 @@ public:
      * @brief Transforma un valor CC (0..127) según la curva, inversión y rango configurado
      */
     static float calculateMappedValue(const MidiMapping& map, uint8_t ccValue) noexcept {
-        float norm = std::clamp(static_cast<float>(ccValue) / 127.0f, 0.0f, 1.0f);
-        if (map.inverted) {
-            norm = 1.0f - norm;
-        }
-
-        switch (map.curve) {
-            case MidiCurve::Linear:
-                break;
-            case MidiCurve::Exponential:
-                norm = norm * norm;
-                break;
-            case MidiCurve::Logarithmic:
-                norm = std::sqrt(norm);
-                break;
-            case MidiCurve::SShaped:
-                norm = norm * norm * (3.0f - 2.0f * norm); // Smoothstep
-                break;
-        }
-
-        return map.minVal + norm * (map.maxVal - map.minVal);
+        return n8_rust_midi_mapping_manager_calculate_mapped_value(
+            map.minVal, map.maxVal, map.inverted, static_cast<uint8_t>(map.curve), ccValue);
     }
 
     // =========================================================================
     // Plantillas de Controladores Hardware Preconfiguradas
     // =========================================================================
     void loadFactoryProfile(std::string_view profileName) {
-        mappings_.clear();
-
-        if (profileName == "Akai MPK Mini MK3") {
-            // Perillas K1..K8 en CC 70..77 mapeadas a Macros 1..8
-            for (uint8_t i = 0; i < 8; ++i) {
-                addMapping(MidiMapping{
-                    .ccNumber = static_cast<uint8_t>(70 + i),
-                    .channel = 0,
-                    .paramId = static_cast<ParameterId>(i + 1),
-                    .targetNodeId = InvalidNodeId,
-                    .minVal = 0.0f,
-                    .maxVal = 1.0f,
-                    .inverted = false,
-                    .curve = MidiCurve::Linear,
-                    .customLabel = "Macro " + std::to_string(i + 1)
-                });
-            }
-        } else if (profileName == "Arturia KeyLab Essential") {
-            // Faders 1..8 en CC 73..80 mapeados a Macros 1..8
-            for (uint8_t i = 0; i < 8; ++i) {
-                addMapping(MidiMapping{
-                    .ccNumber = static_cast<uint8_t>(73 + i),
-                    .channel = 0,
-                    .paramId = static_cast<ParameterId>(i + 1),
-                    .targetNodeId = InvalidNodeId,
-                    .minVal = 0.0f,
-                    .maxVal = 1.0f,
-                    .inverted = false,
-                    .curve = MidiCurve::Linear,
-                    .customLabel = "Macro " + std::to_string(i + 1)
-                });
-            }
-        } else if (profileName == "Novation Launchkey") {
-            // Faders 1..8 en CC 21..28 mapeados a Macros 1..8
-            for (uint8_t i = 0; i < 8; ++i) {
-                addMapping(MidiMapping{
-                    .ccNumber = static_cast<uint8_t>(21 + i),
-                    .channel = 0,
-                    .paramId = static_cast<ParameterId>(i + 1),
-                    .targetNodeId = InvalidNodeId,
-                    .minVal = 0.0f,
-                    .maxVal = 1.0f,
-                    .inverted = false,
-                    .curve = MidiCurve::Linear,
-                    .customLabel = "Macro " + std::to_string(i + 1)
-                });
-            }
-        } else {
-            // Plantilla Universal de 8 Faders / Perillas (CC 14..21)
-            for (uint8_t i = 0; i < 8; ++i) {
-                addMapping(MidiMapping{
-                    .ccNumber = static_cast<uint8_t>(14 + i),
-                    .channel = 0,
-                    .paramId = static_cast<ParameterId>(i + 1),
-                    .targetNodeId = InvalidNodeId,
-                    .minVal = 0.0f,
-                    .maxVal = 1.0f,
-                    .inverted = false,
-                    .curve = MidiCurve::Linear,
-                    .customLabel = "Macro " + std::to_string(i + 1)
-                });
-            }
-        }
+        if (rustCore_ == nullptr) return;
+        std::string name(profileName);
+        n8_rust_midi_mapping_manager_load_factory_profile(rustCore_, name.c_str());
+        syncFromRust();
     }
 
     // =========================================================================
     // Serialización / Deserialización JSON de Perfiles (.n8midi)
     // =========================================================================
     std::string exportToJson(std::string_view profileName = "Custom Hardware Profile") const {
-        std::ostringstream ss;
-        ss << "{\n";
-        ss << "  \"schemaVersion\": 1,\n";
-        ss << "  \"profileName\": \"" << profileName << "\",\n";
-        ss << "  \"mappings\": [\n";
-
-        for (size_t i = 0; i < mappings_.size(); ++i) {
-            const auto& m = mappings_[i];
-            ss << "    {\n";
-            ss << "      \"cc\": " << static_cast<int>(m.ccNumber) << ",\n";
-            ss << "      \"channel\": " << static_cast<int>(m.channel) << ",\n";
-            ss << "      \"paramId\": " << m.paramId << ",\n";
-            ss << "      \"targetNodeId\": " << m.targetNodeId << ",\n";
-            ss << "      \"minVal\": " << m.minVal << ",\n";
-            ss << "      \"maxVal\": " << m.maxVal << ",\n";
-            ss << "      \"inverted\": " << (m.inverted ? "true" : "false") << ",\n";
-            ss << "      \"curve\": " << static_cast<int>(m.curve) << ",\n";
-            ss << "      \"label\": \"" << m.customLabel << "\"\n";
-            ss << "    }" << (i + 1 < mappings_.size() ? ",\n" : "\n");
+        if (rustCore_ == nullptr) return {};
+        std::string name(profileName);
+        std::vector<char> buf(16384, 0);
+        size_t len = n8_rust_midi_mapping_manager_export_json(rustCore_, name.c_str(), buf.data(), buf.size());
+        if (len >= buf.size()) {
+            buf.resize(len + 1, 0);
+            n8_rust_midi_mapping_manager_export_json(rustCore_, name.c_str(), buf.data(), buf.size());
         }
-
-        ss << "  ]\n";
-        ss << "}\n";
-        return ss.str();
+        return std::string(buf.data());
     }
 
     bool importFromJson(std::string_view jsonStr) {
-        if (jsonStr.empty()) return false;
-
-        // Parser JSON ligero y determinista
-        std::vector<MidiMapping> loaded;
-        size_t pos = 0;
-
-        auto findNext = [&](std::string_view key, size_t from) -> size_t {
-            return jsonStr.find(key, from);
-        };
-
-        auto extractInt = [&](std::string_view key, size_t from, int defVal) -> int {
-            size_t idx = findNext(key, from);
-            if (idx == std::string_view::npos) return defVal;
-            idx = jsonStr.find(':', idx);
-            if (idx == std::string_view::npos) return defVal;
-            ++idx;
-            while (idx < jsonStr.size() && (jsonStr[idx] == ' ' || jsonStr[idx] == '\t')) ++idx;
-            try {
-                return std::stoi(std::string(jsonStr.substr(idx, 16)));
-            } catch (...) {
-                return defVal;
-            }
-        };
-
-        auto extractFloat = [&](std::string_view key, size_t from, float defVal) -> float {
-            size_t idx = findNext(key, from);
-            if (idx == std::string_view::npos) return defVal;
-            idx = jsonStr.find(':', idx);
-            if (idx == std::string_view::npos) return defVal;
-            ++idx;
-            while (idx < jsonStr.size() && (jsonStr[idx] == ' ' || jsonStr[idx] == '\t')) ++idx;
-            try {
-                return std::stof(std::string(jsonStr.substr(idx, 16)));
-            } catch (...) {
-                return defVal;
-            }
-        };
-
-        auto extractBool = [&](std::string_view key, size_t from, bool defVal) -> bool {
-            size_t idx = findNext(key, from);
-            if (idx == std::string_view::npos) return defVal;
-            idx = jsonStr.find(':', idx);
-            if (idx == std::string_view::npos) return defVal;
-            ++idx;
-            while (idx < jsonStr.size() && (jsonStr[idx] == ' ' || jsonStr[idx] == '\t')) ++idx;
-            return jsonStr.substr(idx, 4) == "true";
-        };
-
-        size_t mapIdx = findNext("\"mappings\"", 0);
-        if (mapIdx == std::string_view::npos) return false;
-
-        while ((pos = jsonStr.find('{', pos + 1)) != std::string_view::npos) {
-            // Comprobar si estamos dentro de un objeto de mapeo
-            if (pos <= mapIdx) continue;
-
-            size_t endObj = jsonStr.find('}', pos);
-            if (endObj == std::string_view::npos) break;
-
-            MidiMapping m;
-            m.ccNumber = static_cast<uint8_t>(extractInt("\"cc\"", pos, 0));
-            m.channel = static_cast<uint8_t>(extractInt("\"channel\"", pos, 0));
-            m.paramId = static_cast<ParameterId>(extractInt("\"paramId\"", pos, 0));
-            m.targetNodeId = static_cast<NodeId>(extractInt("\"targetNodeId\"", pos, 0));
-            m.minVal = extractFloat("\"minVal\"", pos, 0.0f);
-            m.maxVal = extractFloat("\"maxVal\"", pos, 1.0f);
-            m.inverted = extractBool("\"inverted\"", pos, false);
-            m.curve = static_cast<MidiCurve>(extractInt("\"curve\"", pos, 0));
-
-            loaded.push_back(m);
-            pos = endObj;
+        if (rustCore_ == nullptr || jsonStr.empty()) return false;
+        std::string str(jsonStr);
+        bool ok = n8_rust_midi_mapping_manager_import_json(rustCore_, str.c_str());
+        if (ok) {
+            syncFromRust();
         }
-
-        if (!loaded.empty()) {
-            mappings_ = std::move(loaded);
-            return true;
-        }
-
-        return false;
+        return ok;
     }
 
 private:
+    void copyFrom(const MidiMappingManager& other) {
+        reset();
+        for (const auto& m : other.mappings_) {
+            addMapping(m);
+        }
+        if (other.isLearning()) {
+            const auto& t = other.getLearnTarget();
+            startLearning(t.paramId, t.targetNodeId, t.minVal, t.maxVal, t.curve, t.inverted);
+        }
+    }
+
+    void syncFromRust() {
+        if (rustCore_ == nullptr) return;
+        size_t count = n8_rust_midi_mapping_manager_get_count(rustCore_);
+        mappings_.clear();
+        mappings_.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            uint8_t cc = 0, ch = 0, curve = 0;
+            uint32_t param = 0, node = 0;
+            float minV = 0.0f, maxV = 1.0f;
+            bool inv = false;
+            char labelBuf[128] = { 0 };
+            if (n8_rust_midi_mapping_manager_get_mapping(
+                rustCore_, i, &cc, &ch, &param, &node, &minV, &maxV, &inv, &curve, labelBuf, sizeof(labelBuf)))
+            {
+                MidiMapping m;
+                m.ccNumber = cc;
+                m.channel = ch;
+                m.paramId = static_cast<ParameterId>(param);
+                m.targetNodeId = static_cast<NodeId>(node);
+                m.minVal = minV;
+                m.maxVal = maxV;
+                m.inverted = inv;
+                m.curve = static_cast<MidiCurve>(curve);
+                m.customLabel = labelBuf;
+                mappings_.push_back(std::move(m));
+            }
+        }
+    }
+
+    RustMidiMappingManager* rustCore_{ nullptr };
     std::vector<MidiMapping> mappings_;
-    std::atomic<bool> isLearning_{ false };
     LearnTarget pendingTarget_{};
 };
 

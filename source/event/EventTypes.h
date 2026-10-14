@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <string_view>
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -78,5 +79,51 @@ struct EventAttributes {
     uint32_t attackSamples{ 128 };
     uint32_t releaseSamples{ 512 };
 };
+
+inline RustEventAttributes toRust(const EventAttributes& a) noexcept {
+    RustEventAttributes r{};
+    r.id = a.id;
+    r.event_type = static_cast<uint16_t>(a.type);
+    r.state = static_cast<uint8_t>(a.state);
+    r.disappearance_mode = static_cast<uint8_t>(a.disappearanceMode);
+    r.source_follow = a.sourceFollow;
+    r.pitch_ratio = a.pitchRatio;
+    r.gain = a.gain;
+    r.pan = a.pan;
+    r.azimuth = a.azimuth;
+    r.elevation = a.elevation;
+    r.distance = a.distance;
+    r.energy = a.energy;
+    r.generation = a.generation;
+    r.parent_id = a.parentId;
+    r.age_samples = a.ageSamples;
+    r.lifetime_samples = a.lifetimeSamples;
+    r.attack_samples = a.attackSamples;
+    r.release_samples = a.releaseSamples;
+    return r;
+}
+
+inline EventAttributes fromRust(const RustEventAttributes& r) noexcept {
+    EventAttributes a{};
+    a.id = r.id;
+    a.type = static_cast<EventType>(r.event_type);
+    a.state = static_cast<EventLifecycle>(r.state);
+    a.disappearanceMode = static_cast<SourceDisappearanceMode>(r.disappearance_mode);
+    a.sourceFollow = r.source_follow;
+    a.pitchRatio = r.pitch_ratio;
+    a.gain = r.gain;
+    a.pan = r.pan;
+    a.azimuth = r.azimuth;
+    a.elevation = r.elevation;
+    a.distance = r.distance;
+    a.energy = r.energy;
+    a.generation = r.generation;
+    a.parentId = r.parent_id;
+    a.ageSamples = r.age_samples;
+    a.lifetimeSamples = r.lifetime_samples;
+    a.attackSamples = r.attack_samples;
+    a.releaseSamples = r.release_samples;
+    return a;
+}
 
 } // namespace audio_graph

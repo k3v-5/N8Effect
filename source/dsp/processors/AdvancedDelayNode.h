@@ -6,14 +6,14 @@
 #include <algorithm>
 #include "../../graph/AudioProcessorNode.h"
 #include "../../graph/NodeFactory.h"
-#include "../core/DelayLine.h"
-#include "../core/BiquadFilter.h"
-#include "../core/FastMath.h"
+#include "../core/DenormalGuards.h"
+#include "../rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
  * @brief Nodo de Delay Estéreo Avanzado con Ping-Pong, amortiguación y soporte de Tails (Reglas 5, 8, 12, 14, 18)
+ * Delegado al motor DSP SIMD en Rust (n8_rust_core).
  */
 class AdvancedDelayNode : public AudioProcessorNode {
 public:
@@ -36,86 +36,75 @@ public:
         params_[3] = { Damping, "Damping", 6000.0f, 1000.0f, 20000.0f, true };
         params_[4] = { PingPong, "Ping Pong", 0.0f, 0.0f, 1.0f, false };
         params_[5] = { DryWet, "Mix", 0.5f, 0.0f, 1.0f, true };
+
+        rustDelay_ = n8_rust_advanced_delay_create(44100.0f);
+    }
+
+    ~AdvancedDelayNode() override {
+        if (rustDelay_) {
+            n8_rust_advanced_delay_destroy(rustDelay_);
+            rustDelay_ = nullptr;
+        }
+    }
+
+    AdvancedDelayNode(const AdvancedDelayNode&) = delete;
+    AdvancedDelayNode& operator=(const AdvancedDelayNode&) = delete;
+
+    AdvancedDelayNode(AdvancedDelayNode&& other) noexcept
+        : spec_(other.spec_), pins_(other.pins_), params_(other.params_), rustDelay_(other.rustDelay_) {
+        other.rustDelay_ = nullptr;
+    }
+
+    AdvancedDelayNode& operator=(AdvancedDelayNode&& other) noexcept {
+        if (this != &other) {
+            if (rustDelay_) {
+                n8_rust_advanced_delay_destroy(rustDelay_);
+            }
+            spec_ = other.spec_;
+            pins_ = other.pins_;
+            params_ = other.params_;
+            rustDelay_ = other.rustDelay_;
+            other.rustDelay_ = nullptr;
+        }
+        return *this;
     }
 
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
-        size_t maxDelay = static_cast<size_t>(spec.sampleRate * 3.0); // 3 segundos máximos
-        delayL_.prepare(maxDelay);
-        delayR_.prepare(maxDelay);
-        reset();
-        updateDamping();
-    }
-
-    void reset() override {
-        delayL_.reset();
-        delayR_.reset();
-        dampFilter_[0].reset();
-        dampFilter_[1].reset();
-    }
-
-    void process(ProcessContext& context) override {
-        updateDamping();
-
-        const float delaySamplesL = (targetTimeL_ * 0.001f) * static_cast<float>(spec_.sampleRate);
-        const float delaySamplesR = (targetTimeR_ * 0.001f) * static_cast<float>(spec_.sampleRate);
-        const float fb = std::clamp(targetFeedback_, 0.0f, 0.95f); // Protección runaway feedback (Regla 12)
-        const bool pingPong = (targetPingPong_ > 0.5f);
-        const float mix = targetMix_;
-
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            float inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr) ? context.inputChannels[0][s] : 0.0f;
-            float inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr) ? context.inputChannels[1][s] : inL;
-
-            // Lectura con interpolación cúbica (Hermite)
-            float delayedL = delayL_.readCubic(delaySamplesL);
-            float delayedR = delayR_.readCubic(delaySamplesR);
-
-            // Filtrado de amortiguación en el lazo de feedback
-            delayedL = dampFilter_[0].processSample(delayedL);
-            delayedR = dampFilter_[1].processSample(delayedR);
-
-            // Modos Normal vs Ping-Pong con saturación suave analógica de cinta en el lazo
-            float fbInL = pingPong ? (inL + delayedR * fb) : (inL + delayedL * fb);
-            float fbInR = pingPong ? (inR + delayedL * fb) : (inR + delayedR * fb);
-
-            // Saturación suave anti-runaway / anti-pop (Reglas 11, 12, 34 y 47)
-            fbInL = FastMath::fastTanh(fbInL);
-            fbInR = FastMath::fastTanh(fbInR);
-
-            delayL_.write(fbInL);
-            delayR_.write(fbInR);
-
-            if (context.numOutputChannels > 0 && context.outputChannels[0] != nullptr) {
-                context.outputChannels[0][s] = inL * (1.0f - mix) + delayedL * mix;
-            }
-            if (context.numOutputChannels > 1 && context.outputChannels[1] != nullptr) {
-                context.outputChannels[1][s] = inR * (1.0f - mix) + delayedR * mix;
-            }
+        if (rustDelay_) {
+            n8_rust_advanced_delay_prepare(rustDelay_, static_cast<float>(spec.sampleRate));
         }
     }
 
+    void reset() override {
+        if (rustDelay_) {
+            n8_rust_advanced_delay_reset(rustDelay_);
+        }
+    }
+
+    void process(ProcessContext& context) override {
+        ScopedDenormalGuard denormalGuard; // Regla 47
+        if (!rustDelay_ || context.numSamples == 0) return;
+
+        const float* inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr) ? context.inputChannels[0] : nullptr;
+        const float* inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr) ? context.inputChannels[1] : inL;
+        float* outL = (context.numOutputChannels > 0 && context.outputChannels[0] != nullptr) ? context.outputChannels[0] : nullptr;
+        float* outR = (context.numOutputChannels > 1 && context.outputChannels[1] != nullptr) ? context.outputChannels[1] : nullptr;
+
+        n8_rust_advanced_delay_process(rustDelay_, inL, inR, outL, outR, context.numSamples);
+    }
+
     void setParameter(ParameterId id, float value) override {
-        switch (id) {
-            case TimeLeft: targetTimeL_ = std::clamp(value, 1.0f, 2500.0f); break;
-            case TimeRight: targetTimeR_ = std::clamp(value, 1.0f, 2500.0f); break;
-            case Feedback: targetFeedback_ = std::clamp(value, 0.0f, 0.95f); break;
-            case Damping: targetDamping_ = std::clamp(value, 1000.0f, 20000.0f); break;
-            case PingPong: targetPingPong_ = value > 0.5f ? 1.0f : 0.0f; break;
-            case DryWet: targetMix_ = std::clamp(value, 0.0f, 1.0f); break;
+        if (rustDelay_) {
+            n8_rust_advanced_delay_set_parameter(rustDelay_, static_cast<uint32_t>(id), value);
         }
     }
 
     float getParameter(ParameterId id) const override {
-        switch (id) {
-            case TimeLeft: return targetTimeL_;
-            case TimeRight: return targetTimeR_;
-            case Feedback: return targetFeedback_;
-            case Damping: return targetDamping_;
-            case PingPong: return targetPingPong_;
-            case DryWet: return targetMix_;
-            default: return 0.0f;
+        if (rustDelay_) {
+            return n8_rust_advanced_delay_get_parameter(rustDelay_, static_cast<uint32_t>(id));
         }
+        return 0.0f;
     }
 
     NodeType getType() const override { return NodeType::AdvancedDelay; }
@@ -129,25 +118,10 @@ public:
     std::span<const ParameterInfo> getParameters() const override { return params_; }
 
 private:
-    void updateDamping() noexcept {
-        dampFilter_[0].setCoefficients(BiquadFilter::Type::Lowpass, spec_.sampleRate, targetDamping_, 0.707f);
-        dampFilter_[1].setCoefficients(BiquadFilter::Type::Lowpass, spec_.sampleRate, targetDamping_, 0.707f);
-    }
-
-    ProcessSpec spec_;
-    DelayLine delayL_;
-    DelayLine delayR_;
-    std::array<BiquadFilter, 2> dampFilter_;
-
-    float targetTimeL_{ 300.0f };
-    float targetTimeR_{ 450.0f };
-    float targetFeedback_{ 0.45f };
-    float targetDamping_{ 6000.0f };
-    float targetPingPong_{ 0.0f };
-    float targetMix_{ 0.5f };
-
+    ProcessSpec spec_{ 44100.0, 512, 2, 2 };
     std::array<PinDescriptor, 2> pins_;
     std::array<ParameterInfo, 6> params_;
+    RustAdvancedDelay* rustDelay_{ nullptr };
 };
 
 inline AutoRegisterNode<AdvancedDelayNode> registerAdvancedDelay(NodeType::AdvancedDelay, "advanced_delay", "Time");

@@ -12,37 +12,63 @@
 #include "EuclideanModulator.h"
 #include "ChaosModulator.h"
 #include "../graph/Graph.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
  * @brief Orquestador del Motor de Modulación Universal (Reglas 7, 8, 25, 37, 46)
+ * Delega toda la computación y gestión de fuentes al núcleo Rust de alto rendimiento.
  */
 class ModulationEngine {
 public:
     ModulationEngine() {
+        rustCore_ = n8_rust_modulation_engine_create();
+        rebindSubModulators();
         sourceValues_.fill(0.0f);
     }
 
+    ~ModulationEngine() {
+        if (rustCore_) {
+            n8_rust_modulation_engine_destroy(rustCore_);
+            rustCore_ = nullptr;
+        }
+    }
+
+    ModulationEngine(const ModulationEngine&) = delete;
+    ModulationEngine& operator=(const ModulationEngine&) = delete;
+
+    ModulationEngine(ModulationEngine&& other) noexcept
+        : rustCore_(other.rustCore_)
+        , sourceValues_(other.sourceValues_)
+    {
+        other.rustCore_ = nullptr;
+        rebindSubModulators();
+    }
+
+    ModulationEngine& operator=(ModulationEngine&& other) noexcept {
+        if (this != &other) {
+            if (rustCore_) {
+                n8_rust_modulation_engine_destroy(rustCore_);
+            }
+            rustCore_ = other.rustCore_;
+            sourceValues_ = other.sourceValues_;
+            other.rustCore_ = nullptr;
+            rebindSubModulators();
+        }
+        return *this;
+    }
+
     void prepare(const ProcessSpec& spec) noexcept {
-        for (auto& lfo : lfos_) lfo.prepare(spec.sampleRate);
-        for (auto& env : envelopes_) env.prepare(spec.sampleRate);
-        stepSeq_.prepare(spec.sampleRate);
-        audioFollower_.prepare(spec.sampleRate);
-        for (auto& mseg : msegs_) mseg.prepare(spec.sampleRate);
-        for (auto& euc : euclideans_) euc.prepare(spec.sampleRate);
-        chaos_.prepare(spec.sampleRate);
+        if (rustCore_) {
+            n8_rust_modulation_engine_prepare(rustCore_, spec.sampleRate);
+        }
     }
 
     void reset() noexcept {
-        for (auto& lfo : lfos_) lfo.reset();
-        for (auto& env : envelopes_) env.reset();
-        stepSeq_.reset();
-        audioFollower_.reset();
-        macroManager_.reset();
-        for (auto& mseg : msegs_) mseg.reset();
-        for (auto& euc : euclideans_) euc.reset();
-        chaos_.reset();
+        if (rustCore_) {
+            n8_rust_modulation_engine_reset(rustCore_);
+        }
         sourceValues_.fill(0.0f);
     }
 
@@ -57,92 +83,49 @@ public:
     ChaosModulator& getChaos() noexcept { return chaos_; }
 
     float getSourceValue(ModSourceType type) const noexcept {
-        size_t idx = static_cast<size_t>(type);
-        return (idx < sourceValues_.size()) ? sourceValues_[idx] : 0.0f;
+        if (rustCore_) {
+            return n8_rust_modulation_engine_get_source_value(rustCore_, static_cast<uint16_t>(type));
+        }
+        return 0.0f;
+    }
+
+    float calculateOffset(NodeId targetNode, ParameterId targetParam) const noexcept {
+        if (rustCore_) {
+            return n8_rust_modulation_engine_calculate_offset(rustCore_, targetNode, targetParam);
+        }
+        return 0.0f;
     }
 
     void updateAnalysisSources(float transient, float pitchNormalized, float centroid, float flux) noexcept {
-        sourceValues_[static_cast<size_t>(ModSourceType::AnalysisTransient)] = transient;
-        sourceValues_[static_cast<size_t>(ModSourceType::AnalysisPitch)] = pitchNormalized;
-        sourceValues_[static_cast<size_t>(ModSourceType::AnalysisCentroid)] = centroid;
-        sourceValues_[static_cast<size_t>(ModSourceType::AnalysisFlux)] = flux;
+        if (rustCore_) {
+            n8_rust_modulation_engine_update_analysis_sources(rustCore_, transient, pitchNormalized, centroid, flux);
+        }
     }
 
     // Actualiza todas las fuentes de modulación y despacha los valores modulados a los nodos del grafo
     void process(const ProcessContext& context, Graph& graph) noexcept {
-        // 1. Procesar fuentes autónomas
-        macroManager_.processSmoothing();
-
-        // Audio Follower
-        float followerVal = audioFollower_.processBlock(context.inputChannels, context.numInputChannels, context.numSamples);
-
-        // LFOs (procesados para el inicio del bloque con sincronización rítmica)
-        for (size_t i = 0; i < 4; ++i) {
-            lfos_[i].processSample(context.bpm, context.ppqPosition, context.isPlaying);
+        if (rustCore_) {
+            n8_rust_modulation_engine_process_sources(
+                rustCore_,
+                context.bpm,
+                context.ppqPosition,
+                context.isPlaying,
+                context.inputChannels,
+                context.numInputChannels,
+                context.numSamples
+            );
         }
 
-        // Envolventes
-        for (size_t i = 0; i < 2; ++i) {
-            envelopes_[i].processSample();
-        }
-
-        // Secuenciador de pasos
-        stepSeq_.processSample(context.ppqPosition, context.isPlaying);
-
-        // MSEGs (Multi-Segment Envelopes)
-        for (size_t i = 0; i < 2; ++i) {
-            msegs_[i].processSample(context.bpm, context.ppqPosition, context.isPlaying);
-        }
-
-        // Moduladores Euclidianos
-        for (size_t i = 0; i < 2; ++i) {
-            euclideans_[i].processSample(context.bpm, context.ppqPosition, context.isPlaying);
-        }
-
-        // Modulador Caótico de Lorenz
-        chaos_.processSample();
-
-        // 2. Almacenar valores actuales de cada fuente
-        sourceValues_[static_cast<size_t>(ModSourceType::LFO1)] = lfos_[0].getCurrentValue();
-        sourceValues_[static_cast<size_t>(ModSourceType::LFO2)] = lfos_[1].getCurrentValue();
-        sourceValues_[static_cast<size_t>(ModSourceType::LFO3)] = lfos_[2].getCurrentValue();
-        sourceValues_[static_cast<size_t>(ModSourceType::LFO4)] = lfos_[3].getCurrentValue();
-
-        sourceValues_[static_cast<size_t>(ModSourceType::Envelope1)] = envelopes_[0].getCurrentValue();
-        sourceValues_[static_cast<size_t>(ModSourceType::Envelope2)] = envelopes_[1].getCurrentValue();
-
-        sourceValues_[static_cast<size_t>(ModSourceType::StepSeq)] = stepSeq_.getCurrentValue();
-        sourceValues_[static_cast<size_t>(ModSourceType::AudioFollower)] = followerVal;
-
-        sourceValues_[static_cast<size_t>(ModSourceType::MSEG1)] = msegs_[0].getCurrentValue();
-        sourceValues_[static_cast<size_t>(ModSourceType::MSEG2)] = msegs_[1].getCurrentValue();
-
-        sourceValues_[static_cast<size_t>(ModSourceType::Euclidean1)] = euclideans_[0].getCurrentValue();
-        sourceValues_[static_cast<size_t>(ModSourceType::Euclidean2)] = euclideans_[1].getCurrentValue();
-
-        sourceValues_[static_cast<size_t>(ModSourceType::ChaosX)] = chaos_.getNormalizedX();
-        sourceValues_[static_cast<size_t>(ModSourceType::ChaosY)] = chaos_.getNormalizedY();
-        sourceValues_[static_cast<size_t>(ModSourceType::ChaosZ)] = chaos_.getNormalizedZ();
-
-        sourceValues_[static_cast<size_t>(ModSourceType::MacroTexture)] = macroManager_.getSmoothedMacro(MacroManager::Texture);
-        sourceValues_[static_cast<size_t>(ModSourceType::MacroMotion)] = macroManager_.getSmoothedMacro(MacroManager::Motion);
-        sourceValues_[static_cast<size_t>(ModSourceType::MacroSpace)] = macroManager_.getSmoothedMacro(MacroManager::Space);
-        sourceValues_[static_cast<size_t>(ModSourceType::MacroColor)] = macroManager_.getSmoothedMacro(MacroManager::Color);
-        sourceValues_[static_cast<size_t>(ModSourceType::MacroChaos)] = macroManager_.getSmoothedMacro(MacroManager::Chaos);
-        sourceValues_[static_cast<size_t>(ModSourceType::MacroDensity)] = macroManager_.getSmoothedMacro(MacroManager::Density);
-        sourceValues_[static_cast<size_t>(ModSourceType::MacroEnergy)] = macroManager_.getSmoothedMacro(MacroManager::Energy);
-        sourceValues_[static_cast<size_t>(ModSourceType::MacroMorph)] = macroManager_.getSmoothedMacro(MacroManager::Morph);
-
-        sourceValues_[static_cast<size_t>(ModSourceType::PadX)] = macroManager_.getSmoothedPadX();
-        sourceValues_[static_cast<size_t>(ModSourceType::PadY)] = macroManager_.getSmoothedPadY();
-
-        // 3. Aplicar modulación a todos los nodos registrados en el grafo
+        // Aplicar modulación a todos los nodos registrados en el grafo
         for (const auto& [nodeId, instance] : graph.getNodes()) {
             if (!instance || !instance->processor) continue;
 
             auto* proc = instance->processor.get();
             for (const auto& paramInfo : proc->getParameters()) {
-                float modOffset = matrix_.calculateModulationOffset(nodeId, paramInfo.id, sourceValues_);
+                float modOffset = 0.0f;
+                if (rustCore_) {
+                    modOffset = n8_rust_modulation_engine_calculate_offset(rustCore_, nodeId, paramInfo.id);
+                }
                 if (std::abs(modOffset) > 1e-5f) {
                     float currentVal = proc->getParameter(paramInfo.id);
                     float range = paramInfo.maxValue - paramInfo.minValue;
@@ -157,17 +140,41 @@ public:
     }
 
 private:
-    std::array<LFO, 4> lfos_;
-    std::array<EnvelopeGenerator, 2> envelopes_;
-    StepSequencer stepSeq_;
-    AudioFollower audioFollower_;
-    MacroManager macroManager_;
-    ModulationMatrix matrix_;
-    std::array<MSEGModulator, 2> msegs_;
-    std::array<EuclideanModulator, 2> euclideans_;
-    ChaosModulator chaos_;
+    void rebindSubModulators() noexcept {
+        if (rustCore_) {
+            for (size_t i = 0; i < 4; ++i) {
+                lfos_[i] = LFO(n8_rust_modulation_engine_get_lfo(rustCore_, i), false);
+            }
+            for (size_t i = 0; i < 2; ++i) {
+                envelopes_[i] = EnvelopeGenerator(n8_rust_modulation_engine_get_envelope(rustCore_, i), false);
+            }
+            stepSeq_ = StepSequencer(n8_rust_modulation_engine_get_step_sequencer(rustCore_), false);
+            audioFollower_ = AudioFollower(n8_rust_modulation_engine_get_audio_follower(rustCore_), false);
+            macroManager_ = MacroManager(n8_rust_modulation_engine_get_macro_manager(rustCore_), false);
+            matrix_ = ModulationMatrix(n8_rust_modulation_engine_get_matrix(rustCore_), false);
+            for (size_t i = 0; i < 2; ++i) {
+                msegs_[i] = MSEGModulator(n8_rust_modulation_engine_get_mseg(rustCore_, i), false);
+            }
+            for (size_t i = 0; i < 2; ++i) {
+                euclideans_[i] = EuclideanModulator(n8_rust_modulation_engine_get_euclidean(rustCore_, i), false);
+            }
+            chaos_ = ChaosModulator(n8_rust_modulation_engine_get_chaos(rustCore_), false);
+        }
+    }
 
-    std::array<float, static_cast<size_t>(ModSourceType::Count)> sourceValues_;
+    RustModulationEngine* rustCore_{ nullptr };
+
+    std::array<LFO, 4> lfos_{ LFO(nullptr, false), LFO(nullptr, false), LFO(nullptr, false), LFO(nullptr, false) };
+    std::array<EnvelopeGenerator, 2> envelopes_{ EnvelopeGenerator(nullptr, false), EnvelopeGenerator(nullptr, false) };
+    StepSequencer stepSeq_{ nullptr, false };
+    AudioFollower audioFollower_{ nullptr, false };
+    MacroManager macroManager_{ nullptr, false };
+    ModulationMatrix matrix_{ nullptr, false };
+    std::array<MSEGModulator, 2> msegs_{ MSEGModulator(nullptr, false), MSEGModulator(nullptr, false) };
+    std::array<EuclideanModulator, 2> euclideans_{ EuclideanModulator(nullptr, false), EuclideanModulator(nullptr, false) };
+    ChaosModulator chaos_{ nullptr, false };
+
+    std::array<float, static_cast<size_t>(ModSourceType::Count)> sourceValues_{};
 };
 
 } // namespace audio_graph

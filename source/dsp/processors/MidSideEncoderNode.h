@@ -4,10 +4,10 @@
 #include <array>
 #include <span>
 #include <algorithm>
-#include <numbers>
 #include "../../graph/AudioProcessorNode.h"
 #include "../../graph/NodeFactory.h"
 #include "../core/DenormalGuards.h"
+#include "../rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
@@ -15,6 +15,7 @@ namespace audio_graph {
  * @brief Codificador Estéreo a Mid/Side (Reglas 5, 8, 13, 16, 34, 46, 47).
  * Transforma un par estéreo L/R en componentes Mid (centro/suma) y Side (lateral/diferencia)
  * con conservación rigurosa de potencia normalizada por 1/sqrt(2).
+ * Delegado al motor DSP SIMD en Rust (n8_rust_core).
  */
 class MidSideEncoderNode : public AudioProcessorNode {
 public:
@@ -27,52 +28,74 @@ public:
         pins_[1] = { 2, "Mid/Side Out", PinType::AudioOutput, PinDataType::AudioStereo };
 
         params_[0] = { Gain, "Gain", 1.0f, 0.0f, 2.0f, true };
+
+        rustEncoder_ = n8_rust_mid_side_encoder_create();
+    }
+
+    ~MidSideEncoderNode() override {
+        if (rustEncoder_) {
+            n8_rust_mid_side_encoder_destroy(rustEncoder_);
+            rustEncoder_ = nullptr;
+        }
+    }
+
+    MidSideEncoderNode(const MidSideEncoderNode&) = delete;
+    MidSideEncoderNode& operator=(const MidSideEncoderNode&) = delete;
+
+    MidSideEncoderNode(MidSideEncoderNode&& other) noexcept
+        : spec_(other.spec_), pins_(other.pins_), params_(other.params_), rustEncoder_(other.rustEncoder_) {
+        other.rustEncoder_ = nullptr;
+    }
+
+    MidSideEncoderNode& operator=(MidSideEncoderNode&& other) noexcept {
+        if (this != &other) {
+            if (rustEncoder_) {
+                n8_rust_mid_side_encoder_destroy(rustEncoder_);
+            }
+            spec_ = other.spec_;
+            pins_ = other.pins_;
+            params_ = other.params_;
+            rustEncoder_ = other.rustEncoder_;
+            other.rustEncoder_ = nullptr;
+        }
+        return *this;
     }
 
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
-        currentGain_ = targetGain_;
+        if (rustEncoder_) {
+            n8_rust_mid_side_encoder_prepare(rustEncoder_, static_cast<float>(spec.sampleRate));
+        }
     }
 
     void reset() override {
-        currentGain_ = targetGain_;
+        if (rustEncoder_) {
+            n8_rust_mid_side_encoder_reset(rustEncoder_);
+        }
     }
 
     void process(ProcessContext& context) override {
         ScopedDenormalGuard denormalGuard; // Reglas 34 y 47
-        const float alpha = 0.005f;        // Anti-click (Regla 35)
-        constexpr float invSqrt2 = 0.70710678f;
+        if (!rustEncoder_ || context.numSamples == 0 || context.numOutputChannels == 0) return;
 
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            currentGain_ += alpha * (targetGain_ - currentGain_);
+        const float* inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr) ? context.inputChannels[0] : nullptr;
+        const float* inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr) ? context.inputChannels[1] : inL;
+        float* outMid = (context.numOutputChannels > 0 && context.outputChannels[0] != nullptr) ? context.outputChannels[0] : nullptr;
+        float* outSide = (context.numOutputChannels > 1 && context.outputChannels[1] != nullptr) ? context.outputChannels[1] : nullptr;
 
-            const float inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr)
-                ? context.inputChannels[0][s] : 0.0f;
-            const float inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr)
-                ? context.inputChannels[1][s] : inL;
-
-            // M = (L + R) * 0.7071
-            // S = (L - R) * 0.7071
-            const float mid = (inL + inR) * invSqrt2 * currentGain_;
-            const float side = (inL - inR) * invSqrt2 * currentGain_;
-
-            if (context.numOutputChannels > 0 && context.outputChannels[0] != nullptr) {
-                context.outputChannels[0][s] = mid;
-            }
-            if (context.numOutputChannels > 1 && context.outputChannels[1] != nullptr) {
-                context.outputChannels[1][s] = side;
-            }
-        }
+        n8_rust_mid_side_encoder_process(rustEncoder_, inL, inR, outMid, outSide, context.numSamples);
     }
 
     void setParameter(ParameterId id, float value) override {
-        if (id == Gain) {
-            targetGain_ = std::clamp(value, 0.0f, 2.0f);
+        if (rustEncoder_) {
+            n8_rust_mid_side_encoder_set_parameter(rustEncoder_, static_cast<uint32_t>(id), value);
         }
     }
 
     float getParameter(ParameterId id) const override {
-        if (id == Gain) return targetGain_;
+        if (rustEncoder_) {
+            return n8_rust_mid_side_encoder_get_parameter(rustEncoder_, static_cast<uint32_t>(id));
+        }
         return 0.0f;
     }
 
@@ -84,11 +107,9 @@ public:
 
 private:
     ProcessSpec spec_{ 44100.0, 512, 2, 2 };
-    float targetGain_{ 1.0f };
-    float currentGain_{ 1.0f };
-
     std::array<PinDescriptor, 2> pins_;
     std::array<ParameterInfo, 1> params_;
+    RustMidSideEncoder* rustEncoder_{ nullptr };
 };
 
 inline AutoRegisterNode<MidSideEncoderNode> registerMidSideEncoderNode(

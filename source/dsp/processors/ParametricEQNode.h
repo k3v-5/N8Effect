@@ -6,12 +6,14 @@
 #include <algorithm>
 #include "../../graph/AudioProcessorNode.h"
 #include "../../graph/NodeFactory.h"
-#include "../core/BiquadFilter.h"
+#include "../core/DenormalGuards.h"
+#include "../rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
  * @brief Ecualizador Paramétrico de 3 Bandas (Low Shelf, Bell, High Shelf) (Reglas 5, 8, 12, 14, 34)
+ * Acelerado con núcleo en Rust de alto rendimiento.
  */
 class ParametricEQNode : public AudioProcessorNode {
 public:
@@ -36,98 +38,102 @@ public:
         params_[4] = { MidGain, "Mid Gain", 0.0f, -18.0f, 18.0f, true };
         params_[5] = { HighFreq, "High Freq", 8000.0f, 1000.0f, 18000.0f, true };
         params_[6] = { HighGain, "High Gain", 0.0f, -18.0f, 18.0f, true };
+
+        rustInstance_ = n8_rust_parametric_eq_create(44100.0f);
+    }
+
+    ~ParametricEQNode() override {
+        if (rustInstance_) {
+            n8_rust_parametric_eq_destroy(rustInstance_);
+            rustInstance_ = nullptr;
+        }
+    }
+
+    ParametricEQNode(const ParametricEQNode&) = delete;
+    ParametricEQNode& operator=(const ParametricEQNode&) = delete;
+
+    ParametricEQNode(ParametricEQNode&& other) noexcept
+        : pins_(other.pins_), params_(other.params_), spec_(other.spec_), rustInstance_(other.rustInstance_) {
+        other.rustInstance_ = nullptr;
+    }
+
+    ParametricEQNode& operator=(ParametricEQNode&& other) noexcept {
+        if (this != &other) {
+            if (rustInstance_) {
+                n8_rust_parametric_eq_destroy(rustInstance_);
+            }
+            pins_ = other.pins_;
+            params_ = other.params_;
+            spec_ = other.spec_;
+            rustInstance_ = other.rustInstance_;
+            other.rustInstance_ = nullptr;
+        }
+        return *this;
     }
 
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
-        reset();
-        updateFilters();
+        const float sr = spec.sampleRate > 0.0 ? static_cast<float>(spec.sampleRate) : 44100.0f;
+        if (rustInstance_) {
+            n8_rust_parametric_eq_prepare(rustInstance_, sr);
+        }
     }
 
     void reset() override {
-        for (auto& f : lowShelf_) f.reset();
-        for (auto& f : midPeak_) f.reset();
-        for (auto& f : highShelf_) f.reset();
-    }
-
-    void process(ProcessContext& context) override {
-        updateFilters();
-
-        const uint32_t channels = std::min(context.numOutputChannels, static_cast<uint32_t>(2));
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            for (uint32_t ch = 0; ch < channels; ++ch) {
-                float sample = (ch < context.numInputChannels && context.inputChannels[ch] != nullptr)
-                    ? context.inputChannels[ch][s]
-                    : 0.0f;
-
-                // Cascada de ecualización de 3 bandas
-                sample = lowShelf_[ch].processSample(sample);
-                sample = midPeak_[ch].processSample(sample);
-                sample = highShelf_[ch].processSample(sample);
-
-                context.outputChannels[ch][s] = sample;
-            }
-        }
-    }
-
-    void setParameter(ParameterId id, float value) override {
-        switch (id) {
-            case LowFreq: targetLowFreq_ = std::clamp(value, 20.0f, 500.0f); break;
-            case LowGain: targetLowGain_ = std::clamp(value, -18.0f, 18.0f); break;
-            case MidFreq: targetMidFreq_ = std::clamp(value, 100.0f, 8000.0f); break;
-            case MidQ: targetMidQ_ = std::clamp(value, 0.1f, 10.0f); break;
-            case MidGain: targetMidGain_ = std::clamp(value, -18.0f, 18.0f); break;
-            case HighFreq: targetHighFreq_ = std::clamp(value, 1000.0f, 18000.0f); break;
-            case HighGain: targetHighGain_ = std::clamp(value, -18.0f, 18.0f); break;
-        }
-    }
-
-    float getParameter(ParameterId id) const override {
-        switch (id) {
-            case LowFreq: return targetLowFreq_;
-            case LowGain: return targetLowGain_;
-            case MidFreq: return targetMidFreq_;
-            case MidQ: return targetMidQ_;
-            case MidGain: return targetMidGain_;
-            case HighFreq: return targetHighFreq_;
-            case HighGain: return targetHighGain_;
-            default: return 0.0f;
+        if (rustInstance_) {
+            n8_rust_parametric_eq_reset(rustInstance_);
         }
     }
 
     NodeType getType() const override { return NodeType::ParametricEQ; }
     const char* getName() const override { return "Parametric EQ"; }
 
+    void process(ProcessContext& context) override {
+        ScopedDenormalGuard guard;
+        if (!rustInstance_ || context.numSamples == 0) return;
+
+        const float* inL = (context.numInputChannels > 0 && context.inputChannels != nullptr) ? context.inputChannels[0] : nullptr;
+        const float* inR = (context.numInputChannels > 1 && context.inputChannels != nullptr) ? context.inputChannels[1] : inL;
+
+        float* outL = (context.numOutputChannels > 0 && context.outputChannels != nullptr) ? context.outputChannels[0] : nullptr;
+        float* outR = (context.numOutputChannels > 1 && context.outputChannels != nullptr) ? context.outputChannels[1] : nullptr;
+
+        if (!inL || !outL) return;
+
+        n8_rust_parametric_eq_process(
+            rustInstance_,
+            inL,
+            inR,
+            outL,
+            outR,
+            static_cast<uint32_t>(context.numSamples)
+        );
+    }
+
+    void setParameter(ParameterId id, float value) override {
+        if (rustInstance_) {
+            n8_rust_parametric_eq_set_parameter(rustInstance_, id, value);
+        }
+    }
+
+    float getParameter(ParameterId id) const override {
+        if (rustInstance_) {
+            return n8_rust_parametric_eq_get_parameter(rustInstance_, id);
+        }
+        return 0.0f;
+    }
+
     std::span<const PinDescriptor> getPins() const override { return pins_; }
     std::span<const ParameterInfo> getParameters() const override { return params_; }
 
 private:
-    void updateFilters() noexcept {
-        const double sr = spec_.sampleRate;
-        for (int ch = 0; ch < 2; ++ch) {
-            lowShelf_[ch].setCoefficients(BiquadFilter::Type::LowShelf, sr, targetLowFreq_, 0.707f, targetLowGain_);
-            midPeak_[ch].setCoefficients(BiquadFilter::Type::Peak, sr, targetMidFreq_, targetMidQ_, targetMidGain_);
-            highShelf_[ch].setCoefficients(BiquadFilter::Type::HighShelf, sr, targetHighFreq_, 0.707f, targetHighGain_);
-        }
-    }
-
     ProcessSpec spec_;
-    std::array<BiquadFilter, 2> lowShelf_;
-    std::array<BiquadFilter, 2> midPeak_;
-    std::array<BiquadFilter, 2> highShelf_;
-
-    float targetLowFreq_{ 100.0f };
-    float targetLowGain_{ 0.0f };
-    float targetMidFreq_{ 1000.0f };
-    float targetMidQ_{ 1.0f };
-    float targetMidGain_{ 0.0f };
-    float targetHighFreq_{ 8000.0f };
-    float targetHighGain_{ 0.0f };
-
     std::array<PinDescriptor, 2> pins_;
     std::array<ParameterInfo, 7> params_;
+    RustParametricEq* rustInstance_{ nullptr };
 };
 
 inline AutoRegisterNode<ParametricEQNode> registerParametricEQ(NodeType::ParametricEQ, "parametric_eq", "Filters");
 
 } // namespace audio_graph
+

@@ -1,101 +1,109 @@
 #pragma once
 
-#include <vector>
-#include <algorithm>
-#include <cmath>
 #include <cstdint>
-#include <cassert>
-#include <cstring>
+#include <cstddef>
+#include <algorithm>
 #include "../core/Types.h"
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
  * @brief Buffer circular prealocado para captura y extracción de fragmentos de audio (Reglas 9, 10, 46)
- * Permite registrar el audio entrante y leer rebanadas (slices/fragments) hacia adelante o en reversa.
+ * Acelerado con núcleo en Rust de alto rendimiento.
  */
 class EventCaptureBuffer {
 public:
-    EventCaptureBuffer() = default;
+    explicit EventCaptureBuffer(RustEventCaptureBuffer* existing = nullptr, bool owns = true)
+        : rustInstance_(existing != nullptr ? existing : n8_rust_event_capture_buffer_create()),
+          ownsCore_(existing == nullptr || owns)
+    {
+    }
+
+    ~EventCaptureBuffer() {
+        if (ownsCore_ && rustInstance_ != nullptr) {
+            n8_rust_event_capture_buffer_destroy(rustInstance_);
+            rustInstance_ = nullptr;
+        }
+    }
+
+    EventCaptureBuffer(const EventCaptureBuffer&) = delete;
+    EventCaptureBuffer& operator=(const EventCaptureBuffer&) = delete;
+
+    EventCaptureBuffer(EventCaptureBuffer&& other) noexcept
+        : rustInstance_(other.rustInstance_),
+          ownsCore_(other.ownsCore_)
+    {
+        other.rustInstance_ = nullptr;
+        other.ownsCore_ = false;
+    }
+
+    EventCaptureBuffer& operator=(EventCaptureBuffer&& other) noexcept {
+        if (this != &other) {
+            if (ownsCore_ && rustInstance_ != nullptr) {
+                n8_rust_event_capture_buffer_destroy(rustInstance_);
+            }
+            rustInstance_ = other.rustInstance_;
+            ownsCore_ = other.ownsCore_;
+            other.rustInstance_ = nullptr;
+            other.ownsCore_ = false;
+        }
+        return *this;
+    }
 
     void prepare(double sampleRate, double maxHistorySeconds = 5.0, uint32_t numChannels = 2) {
-        numChannels_ = numChannels;
-        capacitySamples_ = static_cast<size_t>(std::max(1.0, sampleRate) * maxHistorySeconds);
-        
-        channelData_.clear();
-        channelData_.resize(numChannels_);
-        for (uint32_t ch = 0; ch < numChannels_; ++ch) {
-            channelData_[ch].assign(capacitySamples_, 0.0f);
+        if (rustInstance_ != nullptr) {
+            n8_rust_event_capture_buffer_prepare(rustInstance_, sampleRate, maxHistorySeconds, numChannels);
         }
-        writePos_ = 0;
     }
 
     void reset() noexcept {
-        for (auto& ch : channelData_) {
-            std::fill(ch.begin(), ch.end(), 0.0f);
+        if (rustInstance_ != nullptr) {
+            n8_rust_event_capture_buffer_reset(rustInstance_);
         }
-        writePos_ = 0;
     }
 
-    // Escribe un bloque entrante en el buffer circular (Regla 9: sin malloc, optimizado con memcpy en bloques)
     void write(const float* const* input, uint32_t numChannels, uint32_t numSamples) noexcept {
-        if (capacitySamples_ == 0 || input == nullptr || numSamples == 0) return;
-
-        const uint32_t channelsToCopy = std::min(numChannels_, numChannels);
-
-        // Si el bloque entrante excede la capacidad del buffer, registrar solo las últimas capacitySamples_
-        if (numSamples >= capacitySamples_) {
-            const size_t skip = numSamples - capacitySamples_;
-            for (uint32_t ch = 0; ch < channelsToCopy; ++ch) {
-                if (input[ch] != nullptr) {
-                    std::memcpy(channelData_[ch].data(), input[ch] + skip, capacitySamples_ * sizeof(float));
-                }
-            }
-            writePos_ = 0;
-            return;
-        }
-
-        const size_t firstChunk = std::min(static_cast<size_t>(numSamples), capacitySamples_ - writePos_);
-        const size_t secondChunk = numSamples - firstChunk;
-
-        for (uint32_t ch = 0; ch < channelsToCopy; ++ch) {
-            if (input[ch] != nullptr) {
-                std::memcpy(channelData_[ch].data() + writePos_, input[ch], firstChunk * sizeof(float));
-                if (secondChunk > 0) {
-                    std::memcpy(channelData_[ch].data(), input[ch] + firstChunk, secondChunk * sizeof(float));
-                }
-            }
-        }
-        writePos_ = (writePos_ + numSamples) % capacitySamples_;
+        if (rustInstance_ == nullptr || input == nullptr || numSamples == 0) return;
+        const float* inL = (numChannels > 0) ? input[0] : nullptr;
+        const float* inR = (numChannels > 1) ? input[1] : inL;
+        n8_rust_event_capture_buffer_write(rustInstance_, inL, inR, numSamples);
     }
 
-    // Lee una muestra con interpolación lineal a un offset relativo respecto a la posición de captura
     float readSample(uint32_t channel, double sampleOffsetFromWritePos) const noexcept {
-        if (capacitySamples_ == 0 || channel >= numChannels_) return 0.0f;
-
-        // Offset positivo = atrás en el tiempo
-        double readIndex = static_cast<double>(writePos_) - sampleOffsetFromWritePos;
-        while (readIndex < 0.0) readIndex += static_cast<double>(capacitySamples_);
-        while (readIndex >= static_cast<double>(capacitySamples_)) readIndex -= static_cast<double>(capacitySamples_);
-
-        const size_t idx0 = static_cast<size_t>(readIndex) % capacitySamples_;
-        const size_t idx1 = (idx0 + 1) % capacitySamples_;
-        const float frac = static_cast<float>(readIndex - std::floor(readIndex));
-
-        const float s0 = channelData_[channel][idx0];
-        const float s1 = channelData_[channel][idx1];
-        return s0 + frac * (s1 - s0);
+        if (rustInstance_ != nullptr) {
+            return n8_rust_event_capture_buffer_read_sample(rustInstance_, channel, sampleOffsetFromWritePos);
+        }
+        return 0.0f;
     }
 
-    size_t getCapacitySamples() const noexcept { return capacitySamples_; }
-    size_t getWritePosition() const noexcept { return writePos_; }
-    uint32_t getNumChannels() const noexcept { return numChannels_; }
+    size_t getCapacitySamples() const noexcept {
+        if (rustInstance_ != nullptr) {
+            return n8_rust_event_capture_buffer_get_capacity(rustInstance_);
+        }
+        return 0;
+    }
+
+    size_t getWritePosition() const noexcept {
+        if (rustInstance_ != nullptr) {
+            return n8_rust_event_capture_buffer_get_write_pos(rustInstance_);
+        }
+        return 0;
+    }
+
+    uint32_t getNumChannels() const noexcept {
+        if (rustInstance_ != nullptr) {
+            return static_cast<uint32_t>(n8_rust_event_capture_buffer_get_num_channels(rustInstance_));
+        }
+        return 0;
+    }
+
+    RustEventCaptureBuffer* getRustInstance() noexcept { return rustInstance_; }
+    const RustEventCaptureBuffer* getRustInstance() const noexcept { return rustInstance_; }
 
 private:
-    uint32_t numChannels_{ 2 };
-    size_t capacitySamples_{ 0 };
-    size_t writePos_{ 0 };
-    std::vector<std::vector<float>> channelData_;
+    RustEventCaptureBuffer* rustInstance_{ nullptr };
+    bool ownsCore_{ true };
 };
 
 } // namespace audio_graph

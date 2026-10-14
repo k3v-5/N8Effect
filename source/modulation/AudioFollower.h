@@ -2,73 +2,93 @@
 
 #include <cmath>
 #include <algorithm>
+#include <cstdint>
+#include "../dsp/rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
  * @brief Seguidor de envolvente de audio (Audio Follower) para modulación dinámica (Reglas 7 y 46)
+ * Delega toda la detección balística de picos al núcleo Rust de alto rendimiento.
  */
 class AudioFollower {
 public:
-    AudioFollower() = default;
+    explicit AudioFollower(RustAudioFollower* existing = nullptr, bool owns = true)
+        : rustCore_(existing ? existing : n8_rust_audio_follower_create()), ownsCore_(owns)
+    {
+    }
+
+    ~AudioFollower() {
+        if (rustCore_ && ownsCore_) {
+            n8_rust_audio_follower_destroy(rustCore_);
+            rustCore_ = nullptr;
+        }
+    }
+
+    AudioFollower(const AudioFollower&) = delete;
+    AudioFollower& operator=(const AudioFollower&) = delete;
+
+    AudioFollower(AudioFollower&& other) noexcept
+        : rustCore_(other.rustCore_), ownsCore_(other.ownsCore_)
+    {
+        other.rustCore_ = nullptr;
+        other.ownsCore_ = false;
+    }
+
+    AudioFollower& operator=(AudioFollower&& other) noexcept {
+        if (this != &other) {
+            if (rustCore_ && ownsCore_) {
+                n8_rust_audio_follower_destroy(rustCore_);
+            }
+            rustCore_ = other.rustCore_;
+            ownsCore_ = other.ownsCore_;
+            other.rustCore_ = nullptr;
+            other.ownsCore_ = false;
+        }
+        return *this;
+    }
 
     void prepare(double sampleRate) noexcept {
-        sampleRate_ = (sampleRate > 0.0) ? sampleRate : 44100.0;
-        envelope_ = 0.0f;
-        updateCoefficients();
+        if (rustCore_) {
+            n8_rust_audio_follower_prepare(rustCore_, sampleRate);
+        }
     }
 
     void reset() noexcept {
-        envelope_ = 0.0f;
+        if (rustCore_) {
+            n8_rust_audio_follower_reset(rustCore_);
+        }
     }
 
-    void setAttackMs(float ms) noexcept { attackMs_ = std::max(0.1f, ms); updateCoefficients(); }
-    void setReleaseMs(float ms) noexcept { releaseMs_ = std::max(1.0f, ms); updateCoefficients(); }
+    void setAttackMs(float ms) noexcept {
+        if (rustCore_) {
+            n8_rust_audio_follower_set_attack_ms(rustCore_, ms);
+        }
+    }
 
-    // Procesa un bloque de audio estéreo y actualiza la envolvente seguida
+    void setReleaseMs(float ms) noexcept {
+        if (rustCore_) {
+            n8_rust_audio_follower_set_release_ms(rustCore_, ms);
+        }
+    }
+
     float processBlock(const float* const* input, uint32_t numChannels, uint32_t numSamples) noexcept {
-        if (input == nullptr || numSamples == 0 || numChannels == 0) {
-            return envelope_;
+        if (rustCore_) {
+            return n8_rust_audio_follower_process_block(rustCore_, input, numChannels, numSamples);
         }
-
-        float blockPeak = 0.0f;
-        for (uint32_t s = 0; s < numSamples; ++s) {
-            float sampleMag = 0.0f;
-            for (uint32_t ch = 0; ch < numChannels; ++ch) {
-                if (input[ch] != nullptr) {
-                    sampleMag = std::max(sampleMag, std::abs(input[ch][s]));
-                }
-            }
-            blockPeak = std::max(blockPeak, sampleMag);
-        }
-
-        // Filtro de seguimiento balístico
-        if (blockPeak > envelope_) {
-            envelope_ += attackCoeff_ * (blockPeak - envelope_);
-        } else {
-            envelope_ += releaseCoeff_ * (blockPeak - envelope_);
-        }
-
-        return std::clamp(envelope_, 0.0f, 1.0f);
+        return 0.0f;
     }
 
-    float getCurrentValue() const noexcept { return envelope_; }
+    float getCurrentValue() const noexcept {
+        if (rustCore_) {
+            return n8_rust_audio_follower_get_current_value(rustCore_);
+        }
+        return 0.0f;
+    }
 
 private:
-    void updateCoefficients() noexcept {
-        const float attackSamples = (attackMs_ * 0.001f) * static_cast<float>(sampleRate_);
-        const float releaseSamples = (releaseMs_ * 0.001f) * static_cast<float>(sampleRate_);
-
-        attackCoeff_ = 1.0f - std::exp(-1.0f / std::max(1.0f, attackSamples));
-        releaseCoeff_ = 1.0f - std::exp(-1.0f / std::max(1.0f, releaseSamples));
-    }
-
-    double sampleRate_{ 44100.0 };
-    float attackMs_{ 10.0f };
-    float releaseMs_{ 100.0f };
-    float attackCoeff_{ 0.01f };
-    float releaseCoeff_{ 0.001f };
-    float envelope_{ 0.0f };
+    RustAudioFollower* rustCore_{ nullptr };
+    bool ownsCore_{ true };
 };
 
 } // namespace audio_graph

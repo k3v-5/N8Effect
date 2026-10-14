@@ -7,11 +7,13 @@
 #include <span>
 #include "../graph/AudioProcessorNode.h"
 #include "../graph/NodeFactory.h"
+#include "rust_core/include/n8_rust_core.h"
 
 namespace audio_graph {
 
 /**
- * @brief Nodo de Delay con Feedback e interpolación suave (Reglas 5, 8, 14, 18, 35)
+ * @brief Nodo de Delay con Feedback e interpolación suave (Reglas 5, 8, 14, 18, 35, 46, 47)
+ * Delegado al motor SIMD de alto rendimiento en Rust (n8_rust_simple_delay).
  */
 class SimpleDelayNode : public AudioProcessorNode {
 public:
@@ -27,82 +29,85 @@ public:
         params_[0] = { DelayTimeMs, "Time", 250.0f, 1.0f, 2000.0f, true };
         params_[1] = { Feedback, "Feedback", 0.4f, 0.0f, 0.95f, true };
         params_[2] = { DryWet, "Mix", 0.5f, 0.0f, 1.0f, true };
+
+        rustNode_ = n8_rust_simple_delay_create();
+    }
+
+    ~SimpleDelayNode() override {
+        if (rustNode_) {
+            n8_rust_simple_delay_destroy(rustNode_);
+            rustNode_ = nullptr;
+        }
+    }
+
+    SimpleDelayNode(const SimpleDelayNode&) = delete;
+    SimpleDelayNode& operator=(const SimpleDelayNode&) = delete;
+
+    SimpleDelayNode(SimpleDelayNode&& other) noexcept
+        : spec_(other.spec_),
+          pins_(other.pins_),
+          params_(other.params_),
+          rustNode_(other.rustNode_) {
+        other.rustNode_ = nullptr;
+    }
+
+    SimpleDelayNode& operator=(SimpleDelayNode&& other) noexcept {
+        if (this != &other) {
+            if (rustNode_) {
+                n8_rust_simple_delay_destroy(rustNode_);
+            }
+            spec_ = other.spec_;
+            pins_ = other.pins_;
+            params_ = other.params_;
+            rustNode_ = other.rustNode_;
+            other.rustNode_ = nullptr;
+        }
+        return *this;
     }
 
     void prepare(const ProcessSpec& spec) override {
         spec_ = spec;
-        // Buffer para máximo 2.5 segundos de delay
-        maxDelaySamples_ = static_cast<size_t>(spec.sampleRate * 2.5);
-        bufferL_.assign(maxDelaySamples_, 0.0f);
-        bufferR_.assign(maxDelaySamples_, 0.0f);
-        writeIndex_ = 0;
-        reset();
-    }
-
-    void reset() override {
-        std::fill(bufferL_.begin(), bufferL_.end(), 0.0f);
-        std::fill(bufferR_.begin(), bufferR_.end(), 0.0f);
-        writeIndex_ = 0;
-    }
-
-    void process(ProcessContext& context) override {
-        if (maxDelaySamples_ == 0) return;
-
-        const float delayInSamples = std::clamp(
-            (delayTimeMs_ * 0.001f) * static_cast<float>(spec_.sampleRate),
-            1.0f,
-            static_cast<float>(maxDelaySamples_ - 2)
-        );
-
-        const float fb = std::clamp(feedback_, 0.0f, 0.95f); // Protección contra runaway feedback (Regla 12)
-        const float mix = std::clamp(dryWet_, 0.0f, 1.0f);
-
-        for (uint32_t s = 0; s < context.numSamples; ++s) {
-            const float inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr) ? context.inputChannels[0][s] : 0.0f;
-            const float inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr) ? context.inputChannels[1][s] : inL;
-
-            // Lectura con interpolación lineal
-            float readPos = static_cast<float>(writeIndex_) - delayInSamples;
-            if (readPos < 0.0f) readPos += static_cast<float>(maxDelaySamples_);
-
-            size_t idx0 = static_cast<size_t>(readPos) % maxDelaySamples_;
-            size_t idx1 = (idx0 + 1) % maxDelaySamples_;
-            float frac = readPos - std::floor(readPos);
-
-            float delayedL = bufferL_[idx0] + frac * (bufferL_[idx1] - bufferL_[idx0]);
-            float delayedR = bufferR_[idx0] + frac * (bufferR_[idx1] - bufferR_[idx0]);
-
-            // Escritura en buffer circular
-            bufferL_[writeIndex_] = inL + delayedL * fb;
-            bufferR_[writeIndex_] = inR + delayedR * fb;
-
-            writeIndex_ = (writeIndex_ + 1) % maxDelaySamples_;
-
-            if (context.numOutputChannels > 0 && context.outputChannels[0] != nullptr) {
-                context.outputChannels[0][s] = inL * (1.0f - mix) + delayedL * mix;
-            }
-            if (context.numOutputChannels > 1 && context.outputChannels[1] != nullptr) {
-                context.outputChannels[1][s] = inR * (1.0f - mix) + delayedR * mix;
-            }
+        if (rustNode_) {
+            n8_rust_simple_delay_prepare(rustNode_, spec.sampleRate);
         }
     }
 
+    void reset() override {
+        if (rustNode_) {
+            n8_rust_simple_delay_reset(rustNode_);
+        }
+    }
+
+    void process(ProcessContext& context) override {
+        if (!rustNode_ || context.numSamples == 0 || context.outputChannels == nullptr) return;
+
+        const float* inL = (context.numInputChannels > 0 && context.inputChannels[0] != nullptr) ? context.inputChannels[0] : nullptr;
+        const float* inR = (context.numInputChannels > 1 && context.inputChannels[1] != nullptr) ? context.inputChannels[1] : inL;
+
+        float* outL = (context.numOutputChannels > 0) ? context.outputChannels[0] : nullptr;
+        float* outR = (context.numOutputChannels > 1) ? context.outputChannels[1] : nullptr;
+
+        n8_rust_simple_delay_process(
+            rustNode_,
+            inL,
+            inR,
+            outL,
+            outR,
+            static_cast<uint32_t>(context.numSamples)
+        );
+    }
+
     void setParameter(ParameterId id, float value) override {
-        switch (id) {
-            case DelayTimeMs: delayTimeMs_ = std::clamp(value, 1.0f, 2000.0f); break;
-            case Feedback: feedback_ = std::clamp(value, 0.0f, 0.95f); break;
-            case DryWet: dryWet_ = std::clamp(value, 0.0f, 1.0f); break;
-            default: break;
+        if (rustNode_) {
+            n8_rust_simple_delay_set_parameter(rustNode_, id, value);
         }
     }
 
     float getParameter(ParameterId id) const override {
-        switch (id) {
-            case DelayTimeMs: return delayTimeMs_;
-            case Feedback: return feedback_;
-            case DryWet: return dryWet_;
-            default: return 0.0f;
+        if (rustNode_) {
+            return n8_rust_simple_delay_get_parameter(rustNode_, id);
         }
+        return 0.0f;
     }
 
     NodeType getType() const override { return NodeType::Delay; }
@@ -116,16 +121,8 @@ public:
     std::span<const ParameterInfo> getParameters() const override { return params_; }
 
 private:
-    ProcessSpec spec_;
-    size_t maxDelaySamples_{ 0 };
-    size_t writeIndex_{ 0 };
-    std::vector<float> bufferL_;
-    std::vector<float> bufferR_;
-
-    float delayTimeMs_{ 250.0f };
-    float feedback_{ 0.4f };
-    float dryWet_{ 0.5f };
-
+    ProcessSpec spec_{ 44100.0, 512, 2, 2 };
+    RustSimpleDelay* rustNode_{ nullptr };
     std::array<PinDescriptor, 2> pins_;
     std::array<ParameterInfo, 3> params_;
 };
